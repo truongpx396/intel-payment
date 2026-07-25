@@ -87,10 +87,11 @@ type Quantity struct {
 type Event struct {
 	Scope      Scope
 	Resource   string            // host taxonomy: "llm.chat" | "storage" | "connector.sync" | …
-	Quantities []Quantity        // priced by the Pricer; the ONLY input to cost math
+	RateKey    string            // pricing selector (model / storage-tier / sku) — a LEGITIMATE cost input
+	Quantities []Quantity        // integer counts; priced by the Pricer over RateKey + Quantities
 	IdemKey    string            // REQUIRED
 	OccurredAt time.Time
-	Attributes map[string]string // model, provider, feature, user_id, trace_id — for the usage log/audit ONLY, never for pricing
+	Attributes map[string]string // provider, feature, user_id, trace_id — usage-log/audit ONLY, never a cost input
 }
 
 // Price is the output of pricing an Event: the internal debit plus an informational
@@ -167,8 +168,8 @@ type Receipt struct {
 // Pricer converts a metered Event into an internal debit. It is the ONE product-specific
 // port: the LLM-token pricer is one implementation; a storage, seat, or api-call pricer is another.
 type Pricer interface {
-	// Price MUST be a PURE function of e.Quantities and a versioned, injected rate card:
-	// deterministic and side-effect-free, so the SAME computation runs at the call site,
+	// Price MUST be a PURE function of e.RateKey + e.Quantities and a versioned, injected rate
+	// card: deterministic and side-effect-free, so the SAME computation runs at the call site,
 	// during reconciliation, and in an audit replay and yields the SAME number.
 	// It MUST NOT read e.Attributes for cost math (those are for the usage log only) and
 	// MUST NOT perform I/O on the hot path.
@@ -271,7 +272,7 @@ type ReconcileReport struct {
 2. **Dual idempotency guard.** Every credit-affecting apply carries an `IdemKey`. A Redis `SET NX billing:applied:{tag}:{idem}` is the fast-path no-op; `credit_ledger UNIQUE(idem_key)` is the durable backstop. The Redis guard is **not** a correctness primitive under async-replication failover (the Redlock critique) — correctness always rests on the Postgres unique index (research §12). `Receipt.Applied=false` reports a replay.
 3. **Admission is a gate, not a reservation.** `Admit` reads current balance/counters and refuses an over-limit call; it does not pre-debit. Concurrent admits against a near-empty balance may settle it slightly negative — **bounded overshoot** ≈ *in-flight concurrency × per-call ceiling* — accepted in Phase 1 and healed at settlement + hourly reconcile ([llm-gateway.md](./llm-gateway.md#L77-L78)). A hard per-call reservation is an opt-in, not the default (it either serializes a scope or doubles ledger writes).
 4. **Partial settlement on cancel.** A unit of work aborted midway (e.g. a cancelled stream) is billed for what it **actually produced** — not zero (which makes "start then abort" a free-usage exploit) and not the full ceiling (which over-bills). Callers pass the real produced `Quantities` to `Record` ([llm-gateway.md](./llm-gateway.md#L79)).
-5. **Deterministic, replayable pricing.** `Pricer.Price` is pure over `Quantities` + a versioned rate card (see the Pricer port). Reconciliation and audits re-derive cost from the immutable event.
+5. **Deterministic, replayable pricing.** `Pricer.Price` is pure over `RateKey` + `Quantities` + a versioned rate card (see the Pricer port); it fails **closed** on an unknown `RateKey`/`Unit` (never prices at zero). Reconciliation and audits re-derive cost from the immutable event.
 6. **Integer money only.** `Credits int64` (signed delta) internally; `Money{MinorUnits, Currency}` at the fiat boundary. Never floats, anywhere.
 7. **Documented RPO direction on hot-store loss.** The hot path does `DECRBY + LPUSH` atomically in Redis and returns before the durable write. If Redis loses that atomic pair before `Drain` runs (AOF `everysec` window, or a failover), the ledger row is never written, and `Reconcile` — which trusts the ledger as source of truth — heals the balance **upward**, i.e. the charge is silently forgotten. **This is under-billing, not double-billing, and the ledger is authoritative.** Implementations MUST state this direction and pick a `SettlementDurability` (below) accordingly; they MUST NOT imply reconcile makes every loss whole. *(Closes the "reconcile heals in the under-bill direction" gap.)*
 8. **Atomic usage-log + debit enqueue.** `Record` MUST write the usage/analytics record and enqueue the debit intent in **one** atomic step (one Lua script over both Redis structures, or one Postgres tx in `journal` mode) — never as two independent best-effort writes, which could log a call with no debit or debit with no log. *(Closes the "per-call chain lacks the outbox's atomicity" gap.)*
@@ -308,6 +309,207 @@ The Phase 1 system is these ports bound to the LLM domain — nothing in the ker
 | Payments (`Grant` producers) | Phase 2 `PaymentProvider` adapters publish `billing.grant.<tag>` on a verified webhook ([draft-plan.md](../../draft-plan.md#phase-2-billing-and-payments)) |
 
 Swapping ContextEngine for, say, a storage-metering product = write a `StorageBytePricer`, set `Scope.Kind="account"`, define its `Limit`s. The ledger, outbox, reconcile, idempotency, and payments code are untouched.
+
+---
+
+## Reference `Pricer`: `LLMTokenPricer`
+
+The concrete implementation behind the wiring table — pure, versioned, fails closed. Lives in the product tier (`internal/pricing/`), depends only on `kernel/metering`.
+
+```go
+package pricing // backend-go/internal/pricing
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/aisat/backend-go/kernel/metering"
+)
+
+// Units this pricer understands. Convention: input = NON-cached input tokens,
+// cached = cache-read input tokens (billed at a discount), output = generated tokens —
+// decomposed by the caller so the pricer is a plain sum (no double count).
+const (
+	UnitInputToken  metering.Unit = "llm_input_token"
+	UnitCachedToken metering.Unit = "llm_cached_token"
+	UnitOutputToken metering.Unit = "llm_output_token"
+)
+
+// ModelRate is provider cost in USD micros per token.
+type ModelRate struct {
+	InMicros     int64 // per input token
+	CachedMicros int64 // per cache-read token (usually << InMicros)
+	OutMicros    int64 // per output token
+}
+
+// RateCard is IMMUTABLE + versioned. A price change publishes a new Version; rows are
+// never edited in place, so past ledger + reconcile replays stay auditable.
+type RateCard struct {
+	Version         string               // e.g. "2026-07-01"
+	MicrosPerCredit int64                // USD micros that 1 internal credit represents (margin baked in). MUST be > 0.
+	Models          map[string]ModelRate // keyed by RateKey (model id), e.g. "gpt-4o"
+}
+
+// LLMTokenPricer implements metering.Pricer.
+type LLMTokenPricer struct{ card RateCard }
+
+func NewLLMTokenPricer(card RateCard) (*LLMTokenPricer, error) {
+	if card.MicrosPerCredit <= 0 {
+		return nil, fmt.Errorf("pricing: MicrosPerCredit must be > 0, got %d", card.MicrosPerCredit)
+	}
+	if len(card.Models) == 0 {
+		return nil, fmt.Errorf("pricing: rate card %q has no models", card.Version)
+	}
+	return &LLMTokenPricer{card: card}, nil
+}
+
+// Price is PURE: reads only e.RateKey + e.Quantities + the injected card. No I/O, no clock,
+// no e.Attributes. Fails CLOSED on an unknown model or unit — never prices unpriceable usage at zero.
+func (p *LLMTokenPricer) Price(_ context.Context, e metering.Event) (metering.Price, error) {
+	rate, ok := p.card.Models[e.RateKey]
+	if !ok {
+		return metering.Price{}, fmt.Errorf("pricing: no rate for %q in card %q", e.RateKey, p.card.Version)
+	}
+	var costMicros int64
+	for _, q := range e.Quantities {
+		if q.Amount < 0 {
+			return metering.Price{}, fmt.Errorf("pricing: negative quantity for unit %q", q.Unit)
+		}
+		switch q.Unit {
+		case UnitInputToken:
+			costMicros += q.Amount * rate.InMicros
+		case UnitCachedToken:
+			costMicros += q.Amount * rate.CachedMicros
+		case UnitOutputToken:
+			costMicros += q.Amount * rate.OutMicros
+		default:
+			return metering.Price{}, fmt.Errorf("pricing: unpriceable unit %q", q.Unit)
+		}
+	}
+	// credits = ceil(costMicros / MicrosPerCredit) — round UP so rounding never under-bills.
+	credits := (costMicros + p.card.MicrosPerCredit - 1) / p.card.MicrosPerCredit
+	return metering.Price{Credits: metering.Credits(credits), CostMicros: costMicros}, nil
+}
+```
+
+Notes that make it production-standard: **integer-only** math (no float touches money); **round-up** on the credit conversion so rounding is always platform-favorable (aligns with the never-under-bill posture, invariant 7); **fail-closed** on unknown model/unit; and rate cards are **swapped by value, never mutated**, so a price change is a new version and old ledger rows re-price identically.
+
+---
+
+## Contract-test skeleton
+
+These validate *any* implementation of the ports against the invariants, so a swapped `Pricer` or a service-mode `Ledger` is held to the same guarantees. The `Pricer` suite is pure (no infra); the `Ledger` suite runs against a real impl via Testcontainers (`//go:build integration`, per the repo test convention).
+
+```go
+package metering_test
+
+// PricerContract runs against ANY metering.Pricer — pure, no infra.
+func PricerContract(t *testing.T, p metering.Pricer) {
+	ctx := context.Background()
+	base := metering.Event{
+		Scope: metering.Scope{Kind: "workspace", ID: "w1"}, Resource: "llm.chat", RateKey: "gpt-4o",
+		Quantities: []metering.Quantity{
+			{Unit: pricing.UnitInputToken, Amount: 1000},
+			{Unit: pricing.UnitOutputToken, Amount: 500},
+		}, IdemKey: "e1",
+	}
+
+	t.Run("deterministic", func(t *testing.T) {
+		a, err := p.Price(ctx, base); mustNoErr(t, err)
+		b, _ := p.Price(ctx, base)
+		if a != b { t.Fatalf("non-deterministic: %+v != %+v", a, b) }
+	})
+	t.Run("audit attributes never affect price", func(t *testing.T) {
+		withAttrs := base; withAttrs.Attributes = map[string]string{"user_id": "u9", "trace_id": "t9"}
+		a, _ := p.Price(ctx, base); b, _ := p.Price(ctx, withAttrs)
+		if a != b { t.Fatalf("attributes changed price: %+v != %+v", a, b) }
+	})
+	t.Run("empty event is free", func(t *testing.T) {
+		z := base; z.Quantities = nil
+		got, err := p.Price(ctx, z); mustNoErr(t, err)
+		if got.Credits != 0 || got.CostMicros != 0 { t.Fatalf("empty event not free: %+v", got) }
+	})
+	t.Run("fails closed on unknown rate key", func(t *testing.T) {
+		u := base; u.RateKey = "no-such-model"
+		if _, err := p.Price(ctx, u); err == nil { t.Fatal("unknown model must error, never price at zero") }
+	})
+	t.Run("credits round up (never under-bill)", func(t *testing.T) {
+		one := base; one.Quantities = []metering.Quantity{{Unit: pricing.UnitInputToken, Amount: 1}}
+		got, err := p.Price(ctx, one); mustNoErr(t, err)
+		if got.CostMicros > 0 && got.Credits < 1 { t.Fatalf("rounding under-billed: %+v", got) }
+	})
+	t.Run("monotonic in quantity", func(t *testing.T) {
+		more := base; more.Quantities = []metering.Quantity{{Unit: pricing.UnitInputToken, Amount: 2000}, {Unit: pricing.UnitOutputToken, Amount: 500}}
+		a, _ := p.Price(ctx, base); b, _ := p.Price(ctx, more)
+		if b.Credits < a.Credits { t.Fatalf("more tokens cost fewer credits: %d < %d", b.Credits, a.Credits) }
+	})
+}
+
+// LedgerContract runs against a REAL metering.Ledger (Testcontainers Redis).  //go:build integration
+func LedgerContract(t *testing.T, newLedger func(t *testing.T) metering.Ledger) {
+	ctx := context.Background()
+	ws := metering.Scope{Kind: "workspace", ID: uuidv7()}
+	balanceOnly := metering.Limit{Name: "workspace_balance", Scope: ws, Unit: "credit", Max: 0, Window: metering.Balance, DenyCode: "payment_required"}
+
+	t.Run("debit is idempotent on idem_key", func(t *testing.T) {
+		l := newLedger(t); seed(t, l, ws, 1000)
+		c := metering.Charge{Scope: ws, Amount: 100, IdemKey: "chg-1", Reason: "query"}
+		r1, err := l.Debit(ctx, c); mustNoErr(t, err)
+		if !r1.Applied { t.Fatal("first debit should apply") }
+		r2, err := l.Debit(ctx, c); mustNoErr(t, err) // replay
+		if r2.Applied { t.Fatal("replay must be a no-op (Applied=false)") }
+		if bal, _ := l.Balance(ctx, ws); bal != 900 { t.Fatalf("double-charged: balance=%d want 900", bal) }
+	})
+	t.Run("admit gates without reserving (no pre-debit)", func(t *testing.T) {
+		l := newLedger(t); seed(t, l, ws, 50)
+		adm, err := l.Admit(ctx, ws, balanceOnly); mustNoErr(t, err)
+		if !adm.Allowed { t.Fatal("positive balance should admit") }
+		if bal, _ := l.Balance(ctx, ws); bal != 50 { t.Fatalf("admit pre-debited: balance=%d want 50", bal) }
+	})
+	t.Run("admit refuses an exhausted balance with the right code", func(t *testing.T) {
+		l := newLedger(t); seed(t, l, ws, 0)
+		adm, _ := l.Admit(ctx, ws, balanceOnly)
+		if adm.Allowed { t.Fatal("empty balance must be refused") }
+		if adm.Exceeded == nil || adm.Exceeded.DenyCode != "payment_required" { t.Fatal("must report the 402 limit") }
+	})
+	t.Run("grant is idempotent on idem_key (replayed webhook)", func(t *testing.T) {
+		l := newLedger(t)
+		g := metering.Grant{Scope: ws, Amount: 500, IdemKey: "pay-1", Reason: "purchase"}
+		_, _ = l.Grant(ctx, g); _, _ = l.Grant(ctx, g)
+		if bal, _ := l.Balance(ctx, ws); bal != 500 { t.Fatalf("replayed grant double-credited: %d want 500", bal) }
+	})
+}
+
+// Wiring — the concrete impls plug into the shared suites:
+//   func TestLLMTokenPricer_Contract(t *testing.T) { p, _ := pricing.NewLLMTokenPricer(testCard()); PricerContract(t, p) }
+//   func TestRedisLedger_Contract(t *testing.T)   { LedgerContract(t, func(t *testing.T) metering.Ledger { return newRedisLedger(t, startRedis(t)) }) }
+```
+
+---
+
+## Deployment topology: embedded library **or** standalone runtime service
+
+**Yes — the metering/credit/billing engine can run as its own runtime service, and the ports are what make it a config+wiring change rather than a rewrite** (the same library↔service move the LLM gateway makes, research §21). Two shapes, one set of interfaces:
+
+1. **Embedded library (Phase 1 default).** Callers import `kernel/metering`; `Admit`/`Debit` are in-process Redis ops — sub-ms, no extra network hop. Note the durable half is *already* its own runtime: `LedgerWriter` runs in the single-owner `cmd/worker` role, event-driven over NATS.
+2. **Standalone metering service.** Wrap the *same* ports behind a thin gRPC/HTTP facade (`MeteringService`), hand callers a client stub, and the service owns the credit Redis + outbox. Only the `Meter` binding changes (in-process impl → client stub); caller logic does not.
+
+| Concern | Extract as a service? | Note |
+|---|---|---|
+| Durable writer (`Drain`/`Reconcile`/`Rehydrate`) | ✅ **already separate** | it is the `cmd/worker` role — nothing to do |
+| Producer → ledger decoupling | ✅ already | `billing.deduct.<tag>` NATS subject already crosses the boundary |
+| Hot-path `Admit`/`Debit` | ✅ but adds one network hop | co-locate (same node/AZ, or a sidecar over a Unix socket); keep the atomic `DECRBY + LPUSH` server-side = one round trip |
+| `Scope` / tenancy context | ✅ | already passed explicitly — no ambient RLS needed at the port |
+| Pricing | ✅ | `Pricer` runs at the call site *or* inside the service; pure + versioned either way |
+| Single-writer invariant | ✅ preserved | the service simply *becomes* the one writer |
+
+What makes it **not free** (decide these before extracting):
+- **Latency** — `Admit` is on every request's critical path. A hop is fine co-located; a cross-region metering service taxes every call. Keep the API coarse (one atomic op), never chatty.
+- **Availability** — the service becomes **Tier-0** (like the gateway). Pick fail-open (serve, risk bounded overspend healed by reconcile) vs fail-closed (block) explicitly; the admission-gate + bounded-overshoot posture already tolerates brief fail-open windows.
+- **Auth between caller ↔ service** — it mutates money, so callers authenticate (mTLS / signed service token); a compromised caller must not forge `Grant`s. Grants stay behind the payments/webhook path, never an open `Debit` API.
+- **Redis ownership moves with the service** — it owns `credit:{tag}:balance`, `outbox:{shard}`, `billing:applied` (the role-partitioned DBs in research §11 already isolate these cleanly).
+
+**Recommended posture:** start **embedded**; extract to a **co-located service** the moment a *second* product needs to draw on the same credit pool — at which point it is a deploy/config change plus a client stub, exactly the guidance the LLM gateway already follows ("MAY start library-mode and swap to the service later with no caller changes").
 
 ---
 
