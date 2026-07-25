@@ -644,6 +644,209 @@ Net: `metering/` (engine) + `metering/billing/` (fiat adapter) is a cohesive, se
 
 ---
 
+## Machine-enforced boundary (lint + config)
+
+Two complementary linters make the extraction rules a CI gate, not a convention. **go-arch-lint** enforces the *internal* component graph (one-direction deps); **depguard** bans *specific* imports (product tier + infra SDKs in the core). Both drop in on day one; they fail the build the moment the boundary is crossed.
+
+### `.go-arch-lint.yml` — the hexagon's dependency graph
+
+```yaml
+version: 3
+workdir: backend-go
+allow:
+  depOnAnyVendor: true          # infra SDKs are gated by depguard below, not here
+
+components:
+  metering-domain:   { in: kernel/metering/domain }
+  metering-ports:    { in: kernel/metering/ports }
+  metering-app:      { in: kernel/metering/app }
+  metering-driven:   { in: kernel/metering/adapters/driven/** }
+  metering-driving:  { in: kernel/metering/adapters/driving/** }
+  metering-billing:  { in: kernel/metering/billing/** }
+  product:           { in: internal/** }
+  cmd:               { in: cmd/** }
+
+deps:
+  metering-domain:   { mayDependOn: [] }                                   # pure — nothing
+  metering-ports:    { mayDependOn: [ metering-domain ] }
+  metering-app:      { mayDependOn: [ metering-domain, metering-ports ] }
+  metering-driven:   { mayDependOn: [ metering-domain, metering-ports ] }  # implements ports; NOT app
+  metering-driving:  { mayDependOn: [ metering-domain, metering-ports ] }  # drives via the Meter port
+  metering-billing:  { mayDependOn: [ metering-domain, metering-ports ] }
+  product:           { mayDependOn: [ metering-ports ] }                   # ← product sees ONLY the interfaces
+  cmd:               { mayDependOn: [ metering-domain, metering-ports, metering-app,
+                                      metering-driven, metering-driving, metering-billing, product ] }
+```
+
+The two load-bearing rows: `product → metering-ports` only (the product can't reach into `app`/adapters — it depends on interfaces), and `cmd` is the *only* place allowed to wire concrete impls together. `metering-domain` depends on nothing, so it lifts out untouched.
+
+### `.golangci.yml` — banned imports (depguard v2)
+
+```yaml
+linters:
+  enable: [ depguard ]
+linters-settings:
+  depguard:
+    rules:
+      # 1. The CORE (domain + ports + app) is pure: no infra, no product.
+      metering-core-pure:
+        list-mode: lax
+        files:
+          - "**/kernel/metering/domain/**"
+          - "**/kernel/metering/ports/**"
+          - "**/kernel/metering/app/**"
+        deny:
+          - { pkg: "github.com/aisat/backend-go/internal", desc: "core must not import the product tier — keep it extractable" }
+          - { pkg: "github.com/redis/go-redis",            desc: "no infra in the core; use the BalanceStore driven port" }
+          - { pkg: "github.com/jackc/pgx",                 desc: "no infra in the core; use the LedgerStore driven port" }
+          - { pkg: "github.com/nats-io",                   desc: "no broker in the core; use the Bus driven port" }
+          - { pkg: "google.golang.org/grpc",              desc: "no transport in the core; grpc lives in adapters/driving" }
+      # 2. The WHOLE module never depends on the product (the extraction guarantee).
+      metering-no-product:
+        list-mode: lax
+        files: [ "**/kernel/metering/**" ]
+        deny:
+          - { pkg: "github.com/aisat/backend-go/internal", desc: "metering/** is the extraction unit — it may not import internal/** (product)" }
+      # 3. The PRODUCT touches metering only through ports (+ cmd wiring), never its guts.
+      product-uses-ports-only:
+        list-mode: lax
+        files: [ "**/internal/**" ]
+        deny:
+          - { pkg: "github.com/aisat/backend-go/kernel/metering/app",              desc: "wire via cmd/ + the Meter port, not app internals" }
+          - { pkg: "github.com/aisat/backend-go/kernel/metering/adapters/driven",  desc: "product must not reach into metering's infra adapters" }
+```
+
+Rule 2 *is* the litmus test as a lint: if nothing under `metering/**` imports `internal/**`, the `git mv … && go mod init` extraction compiles.
+
+### `config.go` — the module's only configuration surface
+
+The host passes **one** `Config` value in at wire time; the core reads no env / global config directly, so the config travels with the module on extraction.
+
+```go
+package metering
+
+import (
+	"errors"
+	"fmt"
+	"time"
+)
+
+type SettlementDurability string
+
+const (
+	SettlementOutbox  SettlementDurability = "outbox"  // fast; accepts bounded under-bill RPO (default)
+	SettlementJournal SettlementDurability = "journal" // durable-first: +1 sync write, no under-bill
+)
+
+// Config is the ENTIRE configuration surface of the metering module.
+type Config struct {
+	// Stores — driven adapters dial these; the core never does.
+	BalanceRedisURL string // hot balance + outbox + idempotency guards (noeviction + AOF)
+	LedgerDSN       string // durable Postgres (credit_ledger, account_credits)
+
+	// Bus — subject convention; the Bus port owns the transport.
+	SubjectPrefix string // default "billing" → billing.deduct.<tag> / billing.grant.<tag>
+
+	// Sharding — fixed at init; N drainers/reconcilers scale under it (research §3).
+	Shards int // default 16; MUST be >= 1 and stable for a deployment's life
+
+	// Settlement + reconcile.
+	Settlement         SettlementDurability // default SettlementOutbox
+	ReconcileInterval  time.Duration        // default 1h
+	ReconcileTolerance Credits              // |drift| above this PAGES instead of silently healing; default 0
+	DefaultWarnAt      float64              // near-limit warn fraction when a Limit omits it; default 0.8
+
+	// Hot-path safety.
+	AdmitTimeout  time.Duration // admission-gate deadline; default 250ms
+	RecordTimeout time.Duration // settle deadline; default 500ms
+	FailOpen      bool          // hot store unreachable on Admit: true = serve (bounded overspend, healed by reconcile); false = block. Default false
+}
+
+func (c *Config) withDefaults() {
+	if c.SubjectPrefix == "" {
+		c.SubjectPrefix = "billing"
+	}
+	if c.Shards == 0 {
+		c.Shards = 16
+	}
+	if c.Settlement == "" {
+		c.Settlement = SettlementOutbox
+	}
+	if c.ReconcileInterval == 0 {
+		c.ReconcileInterval = time.Hour
+	}
+	if c.DefaultWarnAt == 0 {
+		c.DefaultWarnAt = 0.8
+	}
+	if c.AdmitTimeout == 0 {
+		c.AdmitTimeout = 250 * time.Millisecond
+	}
+	if c.RecordTimeout == 0 {
+		c.RecordTimeout = 500 * time.Millisecond
+	}
+}
+
+// Validate checks the EFFECTIVE config (defaults applied to a copy; caller not mutated).
+func (c Config) Validate() error {
+	c.withDefaults()
+	var errs []error
+	if c.BalanceRedisURL == "" {
+		errs = append(errs, errors.New("BalanceRedisURL is required"))
+	}
+	if c.LedgerDSN == "" {
+		errs = append(errs, errors.New("LedgerDSN is required"))
+	}
+	if c.Shards < 1 {
+		errs = append(errs, fmt.Errorf("Shards must be >= 1, got %d", c.Shards))
+	}
+	switch c.Settlement {
+	case SettlementOutbox, SettlementJournal:
+	default:
+		errs = append(errs, fmt.Errorf("Settlement must be outbox|journal, got %q", c.Settlement))
+	}
+	if c.ReconcileTolerance < 0 {
+		errs = append(errs, errors.New("ReconcileTolerance must be >= 0"))
+	}
+	if c.DefaultWarnAt < 0 || c.DefaultWarnAt > 1 {
+		errs = append(errs, fmt.Errorf("DefaultWarnAt must be in [0,1], got %v", c.DefaultWarnAt))
+	}
+	return errors.Join(errs...)
+}
+```
+
+### `Deps` + `New` — product specifics injected, nothing reached into
+
+```go
+package app // kernel/metering/app
+
+// Deps are the driven ports the core needs. The host supplies them in cmd/ — the ONLY
+// product-specific one is Pricer; the rest are generic infra adapters.
+type Deps struct {
+	Pricer  ports.Pricer       // ← product-specific (LLMTokenPricer, StorageBytePricer, …)
+	Balance ports.BalanceStore // redis adapter
+	Ledger  ports.LedgerStore  // postgres adapter
+	Bus     ports.Bus          // nats adapter
+	Clock   ports.Clock        // default: system clock
+	IDs     ports.IDSource     // uuid v7
+}
+
+// New validates config, assembles the core, and returns it as the ports.Meter interface.
+func New(cfg metering.Config, d Deps) (ports.Meter, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("metering config: %w", err)
+	}
+	if d.Pricer == nil || d.Balance == nil || d.Ledger == nil || d.Bus == nil {
+		return nil, errors.New("metering: Pricer, Balance, Ledger and Bus are required")
+	}
+	// … construct the Meter over the driven ports …
+	return &meter{cfg: cfg, deps: d}, nil
+}
+```
+
+So the day-one wiring in `cmd/api/main.go` is: build a `Config`, build the driven adapters, inject a product `Pricer`, call `app.New` → get a `ports.Meter`. Swapping to service mode later replaces that one `app.New(...)` with `grpcclient.New(conn)` — both return `ports.Meter`, and the two linters guarantee nothing downstream ever depended on more than that interface.
+
+---
+
 ## Generalization checklist (before reusing this in another system)
 
 Copy-paste and tick per new host system:
@@ -678,4 +881,3 @@ Extraction-readiness (so it lifts into its own service later without a refactor)
 - **What produces spend** — call sites (LLM gateway client, ingestion, connectors) build `Event`s. The kernel does not instrument callers.
 - **Fiat, tax, invoicing** — the payments boundary (`kernel/billing`, Phase 2) and the provider/MoR. The metering core is fiat-agnostic; it only ever sees `Credits`.
 - **Tenancy semantics** — what a `Scope` *means*, and its RLS predicate, are the host's. The kernel treats it as an opaque identity.
-```
