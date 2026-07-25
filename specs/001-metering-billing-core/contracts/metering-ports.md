@@ -513,24 +513,134 @@ What makes it **not free** (decide these before extracting):
 
 ---
 
-## Package layout (the extraction)
+## Service surface: `MeteringService` (gRPC, contract-locked)
 
-```text
-backend-go/
-  kernel/
-    metering/            # ← REUSABLE core (this contract). No product imports (depguard).
-      scope.go           #   Scope, Tag()
-      types.go           #   Credits, Money, Unit, Quantity, Event, Price, Limit, Receipt…
-      meter.go           #   Meter, Ledger, Pricer, LedgerWriter interfaces
-      ledger_redis.go    #   Ledger impl: atomic DECRBY + outbox LPUSH + SET NX
-      writer.go          #   LedgerWriter impl: Drain / Reconcile / Rehydrate (worker role)
-    billing/             #   PAYMENTS (Phase 2): PaymentProvider port + stripe/polar/paypal adapters,
-                         #   webhook verify→dedup→grant. Produces Grants into kernel/metering. Fiat-only.
-  internal/
-    query/  ingest/  …   #   product tier: constructs Events, provides the LLMTokenPricer (a Pricer impl)
+The service-mode facade is the SAME `Meter`/`Ledger` ports over the wire. gRPC (not REST) because this is an internal, latency-sensitive, strongly-typed hot path. Money crosses the wire as `int64` credits (never floats); `idem_key` is required on every mutating RPC; `Scope` stays opaque `{kind,id}`.
+
+```proto
+syntax = "proto3";
+package metering.v1;
+option go_package = "github.com/acme/metering/api/meteringv1";
+import "google/protobuf/timestamp.proto";
+
+message Scope    { string kind = 1; string id = 2; }              // opaque to the service
+message Quantity { string unit = 1; int64 amount = 2; }           // integer counts only
+
+message Event {
+  Scope scope = 1;
+  string resource = 2;
+  string rate_key = 3;                       // pricing selector (model / tier / sku)
+  repeated Quantity quantities = 4;
+  string idem_key = 5;                       // REQUIRED — exactly-once identity
+  google.protobuf.Timestamp occurred_at = 6;
+  map<string,string> attributes = 7;         // audit only — never a cost input
+}
+
+enum Window { BALANCE = 0; DAILY = 1; HOURLY = 2; ROLLING = 3; }
+message Limit {
+  string name = 1; Scope scope = 2; string unit = 3; int64 max = 4;
+  Window window = 5; int64 dur_seconds = 6;  // ROLLING only
+  double warn_at = 7; string deny_code = 8;  // "payment_required" | "limit_reached"
+}
+message Admission { bool allowed = 1; Limit exceeded = 2; Limit warning = 3; }
+message Receipt   { string idem_key = 1; bool applied = 2; int64 delta = 3; int64 balance = 4; }
+
+message AdmitRequest   { Scope scope = 1; repeated Limit limits = 2; }
+message RecordRequest  { Event event = 1; }
+message GrantRequest   { Scope scope = 1; int64 amount = 2; string idem_key = 3;
+                         string reason = 4; map<string,string> ref = 5; }
+message BalanceRequest { Scope scope = 1; }
+message BalanceReply   { int64 credits = 1; }
+
+service Metering {
+  rpc Admit      (AdmitRequest)   returns (Admission);   // gate, no reservation — hot path, keep co-located
+  rpc Record     (RecordRequest)  returns (Receipt);     // price + settle; idempotent on event.idem_key
+  rpc Grant      (GrantRequest)   returns (Receipt);     // PRIVILEGED: add/remove credits; idempotent
+  rpc GetBalance (BalanceRequest) returns (BalanceReply);
+}
 ```
 
-The split makes the reuse boundary a compiler-enforced fact: `kernel/metering` is the drop-in engine, `kernel/billing` is the fiat adapter layer, and the LLM-specific `Pricer` lives in the product tier where the domain knowledge belongs.
+Contract rules baked into the surface:
+
+- **`Record` prices *inside* the service.** The whole `Meter` (Pricer + Ledger) moves server-side, so the client stub is just a *remote `Meter`* — pricing has one home and rate cards never ship to callers. In a multi-product deployment the service holds each product's rate card keyed by `rate_key`; the `Pricer` strategy is selected by `Unit`s. (Library mode injects the `Pricer` in-process instead — identical semantics.)
+- **No streaming RPC for partial billing.** A cancelled `chat_stream` still settles with ONE terminal `Record` carrying the quantities actually produced (invariant 4). Settlement is a single call, not a stream.
+- **`Grant` is privileged**, separated from `Record` at the RPC level: only the payments/webhook path and admin tools may call it (mTLS + authz), so a compromised spend producer can debit-with-idempotency but never mint credits.
+- **Deadlines + fail policy are the caller's.** `Admit` is on the critical path; callers set a tight deadline and a documented fail-open/closed policy (see Deployment topology). The service is stateless per-RPC; all state is in its Redis + Postgres.
+
+The generated client is wrapped so it satisfies the `Meter` interface — business code depends on `metering.Meter`, not on gRPC:
+
+```go
+// adapters/driving/grpcclient — a remote Meter. Callers can't tell it from the in-process one.
+type Client struct{ c meteringv1.MeteringClient }
+
+func New(conn *grpc.ClientConn) *Client { return &Client{meteringv1.NewMeteringClient(conn)} }
+
+func (m *Client) Admit(ctx context.Context, s metering.Scope, limits ...metering.Limit) (metering.Admission, error) { /* map → RPC → map */ }
+func (m *Client) Record(ctx context.Context, e metering.Event) (metering.Receipt, error)                            { /* map → RPC → map */ }
+
+var _ metering.Meter = (*Client)(nil) // ← the swap is invisible to business code
+```
+
+---
+
+## Extraction-ready code organization
+
+Organize the module as **ports & adapters (hexagonal)** now, so lifting it into its own repo/service later is a `git mv` + `go mod init` — never a refactor. In this repo the unit lives at `backend-go/kernel/metering/` (with `backend-go/kernel/metering/billing/` for the fiat layer); the tree below is shown module-relative so it reads the same in-repo and after extraction. The litmus test for the whole layout:
+
+> **Could I `git mv metering/ ../metering-service/ && cd ../metering-service && go mod init && go build ./...` and have it compile with zero edits?**
+> It compiles iff nothing under `metering/` imports the product, its schema and config travel with it, and the only product-specific things are *injected* (a `Pricer` and a `Scope` constructor).
+
+```text
+metering/                          # THE EXTRACTION UNIT — self-contained, zero inbound product deps
+  go.mod                           #   (optional today; the dir is already `go mod init`-ready)
+  domain/                          #   pure types + invariants — imports NO infra, NO product
+    scope.go  credits.go  money.go  event.go  limit.go  receipt.go
+  ports/                           #   the interfaces = the hexagon's edges
+    driving.go                     #     Meter, LedgerWriter   (how the world calls metering)
+    driven.go                      #     Pricer, BalanceStore, LedgerStore, Bus, Clock, IDs
+                                   #                            (what metering needs from the world)
+  app/                             #   use-cases: compose Pricer + stores; own the invariants
+    meter.go   admit.go  record.go  grant.go   # implement ports.Meter over the driven ports
+    writer.go  reconcile.go  rehydrate.go      # implement ports.LedgerWriter
+  adapters/
+    driven/                        #   swappable INFRA impls of the driven ports
+      redis/     balance + outbox (atomic DECRBY+LPUSH+SETNX)
+      postgres/  ledger store + reconcile queries (+ owns migrations/)
+      nats/      Bus impl
+    driving/                       #   TRANSPORTS that expose app over a boundary
+      inprocess/ returns ports.Meter directly              (library mode)
+      grpcserver/ meteringv1 server over app               (service mode)
+      grpcclient/ meteringv1 client, satisfies ports.Meter (service mode caller)
+  billing/                         #   FIAT boundary (Phase 2): PaymentProvider port + stripe/polar/paypal
+                                   #     adapters, webhook verify→dedup→grant. Emits Grants into app. Fiat-only.
+  migrations/                      #   OWNS its schema — travels with the module
+    NNNN_account_credits.sql  NNNN_credit_ledger.sql  NNNN_outbox.sql  NNNN_payments.sql
+  config.go                        #   metering.Config struct — no os.Getenv scattered in the core
+```
+
+**Dependency rule (one direction only):** `adapters → app → ports → domain`. `domain` and `ports` import nothing outside the module; `app` imports only `ports`+`domain`; `adapters` may import infra SDKs (redis/pgx/nats/grpc) but **never** the product. The two product-specific bindings — the `Pricer` impl and how a `Scope` is built from a request — are supplied by the **host at wire time**, in `cmd/`, never reached into by the module:
+
+```go
+// backend-go/cmd/api/main.go  — the host wires product specifics INTO the generic module
+pricer, _ := pricing.NewLLMTokenPricer(rateCard)          // product-specific Pricer (injected driven port)
+meter := meteringapp.New(meteringapp.Deps{                // generic core
+    Pricer:  pricer,
+    Balance: redisstore.New(creditRedis),                 // driven adapter
+    Ledger:  pgstore.New(db),                             // driven adapter
+    Bus:     natsbus.New(nc),                             // driven adapter
+})
+// business code depends on ports.Meter — today an in-process value, tomorrow grpcclient.New(conn). No caller change.
+```
+
+Enforcement + hygiene that keep the boundary honest over time:
+
+- **`depguard`/`go-arch-lint`** rule: `metering/**` may not import `backend-go/internal/**` (product). CI fails the moment someone reaches across.
+- **Own the schema.** Credit/ledger/outbox/payment tables live in `metering/migrations/`, so extraction takes the data model with it. The one rename that generalizes it: `workspace_credits` → `account_credits` keyed by `scope_tag` (the opaque `Scope.Tag()`), not `workspace_id`.
+- **Own the config.** A `metering.Config` struct (Redis DSN, PG DSN, bus, shard count, reconcile tolerance, settlement durability) passed in — the core never reads global app config or env directly.
+- **Abstract the bus.** `app` depends on a `Bus` *port*, not NATS, so the extracted service can keep NATS or swap it (`billing.deduct.<tag>` becomes the port's subject convention).
+- **Nested module, or module-ready dir.** Either make `metering/` its own Go module today, or keep it import-clean so `go mod init` is the only extraction step. Same choice the LLM gateway offers (library now, service later).
+
+Net: `metering/` (engine) + `metering/billing/` (fiat adapter) is a cohesive, self-contained unit whose *only* seams to the outside world are the injected `Pricer`, the injected `Scope`, and the driven infra adapters — exactly the three things a different host would provide anyway.
 
 ---
 
@@ -550,6 +660,15 @@ Copy-paste and tick per new host system:
 - [ ] **Grant path (if monetized)** — reuse `kernel/billing` `PaymentProvider` adapters, or publish `Grant`s from the host's own top-up flow; grants are just positive ledger rows through the same idempotent path.
 - [ ] **Partial-settlement honored** — any cancellable unit of work reports real produced `Quantities` to `Record`.
 - [ ] **Money is integer** — `Credits`/`Money`; no float touches a balance, a price, or a ledger row.
+
+Extraction-readiness (so it lifts into its own service later without a refactor):
+
+- [ ] **Import-clean module** — nothing under `metering/` imports the product (`internal/**`); a `depguard`/`go-arch-lint` rule enforces it in CI.
+- [ ] **Litmus passes** — `git mv metering/ …/ && go mod init && go build ./...` compiles with zero edits.
+- [ ] **Schema travels** — credit/ledger/outbox/payment tables live in `metering/migrations/`; balance table keyed by opaque `scope_tag`, not `workspace_id`.
+- [ ] **Config self-contained** — a `metering.Config` struct is passed in; the core reads no global app config or env directly.
+- [ ] **Bus abstracted** — `app` depends on a `Bus` port, not a concrete broker.
+- [ ] **Both transports present** — `driving/inprocess` (library) and `driving/grpcserver`+`grpcclient` (service), both satisfying `Meter`; the swap is a wiring change in `cmd/`.
 
 ---
 
