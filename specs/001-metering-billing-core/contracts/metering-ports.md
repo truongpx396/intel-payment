@@ -400,6 +400,8 @@ Notes that make it production-standard: **integer-only** math (no float touches 
 
 These validate *any* implementation of the ports against the invariants, so a swapped `Pricer` or a service-mode `Ledger` is held to the same guarantees. The `Pricer` suite is pure (no infra); the `Ledger` suite runs against a real impl via Testcontainers (`//go:build integration`, per the repo test convention).
 
+> **The seam is only *proven* by a second implementation.** A conformance suite exercised by a single impl (`LLMTokenPricer`) demonstrates that impl is correct, not that the port is domain-agnostic. To turn "reusable" from an assertion into evidence, `PricerContract` MUST also run against a **second, test-only fixture `Pricer`** over a different `Unit`/`RateKey` space (a trivial `seatPricer`/`storageBytePricer` living in the `_test` file — not shipped product code, since Phase 1 needs only LLM metering). If the same suite passes unchanged against a genuinely different pricer, the "swap one `Pricer`, no money-path change" claim (SC-006) holds by construction — the metering analogue of the `authz` `ParityContract`. Task: T091a.
+
 ```go
 package metering_test
 
