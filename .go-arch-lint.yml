@@ -1,0 +1,34 @@
+# The hexagon's dependency graph, machine-enforced.
+# The two load-bearing facts: metering-domain depends on NOTHING (so it is portable by
+# construction), and billing/entitlement may depend on metering's PORTS but never its app
+# or adapters — so the fiat layer mints credits through the interface, exactly as any
+# other host would, and cannot reach around it.
+version: 3
+workdir: .
+allow:
+  depOnAnyVendor: true      # infra SDKs are gated by depguard, not here
+
+components:
+  metering-domain:  { in: metering/domain }
+  metering-ports:   { in: metering/ports }
+  metering-app:     { in: metering/app }
+  metering-driven:  { in: metering/adapters/driven/** }
+  metering-driving: { in: metering/adapters/driving/** }
+  metering-config:  { in: metering }
+  billing:          { in: billing/** }
+  entitlement:      { in: entitlement/** }
+  api:              { in: api/** }
+  cmd:              { in: cmd/** }
+
+deps:
+  metering-domain:  { mayDependOn: [] }
+  metering-ports:   { mayDependOn: [ metering-domain ] }
+  metering-config:  { mayDependOn: [ metering-domain ] }
+  metering-app:     { mayDependOn: [ metering-domain, metering-ports, metering-config ] }
+  metering-driven:  { mayDependOn: [ metering-domain, metering-ports, metering-config ] }
+  metering-driving: { mayDependOn: [ metering-domain, metering-ports, metering-config, api ] }
+  billing:          { mayDependOn: [ metering-domain, metering-ports, api ] }
+  entitlement:      { mayDependOn: [ metering-domain, metering-ports, api ] }
+  cmd:              { mayDependOn: [ metering-domain, metering-ports, metering-config,
+                                     metering-app, metering-driven, metering-driving,
+                                     billing, entitlement, api ] }

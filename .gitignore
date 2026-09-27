@@ -1,0 +1,28 @@
+# Env & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Go
+bin/
+dist/
+vendor/
+*.test
+coverage.out
+
+# Node (credits-ui reference package)
+node_modules/
+.next/
+build/
+
+# Editors / OS
+.DS_Store
+.idea/
+*.swp
+
+# Local infra state
+.data/
+pgdata/
+redisdata/

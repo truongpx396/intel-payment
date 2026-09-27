@@ -1,0 +1,79 @@
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - depguard
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gosec
+    - revive
+    - bodyclose
+    - rowserrcheck
+    - errorlint
+
+linters-settings:
+  depguard:
+    rules:
+      # 1. The CORE (domain + ports + app) is pure: no infra, no transport, no provider SDK.
+      metering-core-pure:
+        list-mode: lax
+        files:
+          - "**/metering/domain/**"
+          - "**/metering/ports/**"
+          - "**/metering/app/**"
+        deny:
+          - pkg: "github.com/redis/go-redis"
+            desc: "no infra in the core; use the BalanceStore driven port"
+          - pkg: "github.com/jackc/pgx"
+            desc: "no infra in the core; use the LedgerStore driven port"
+          - pkg: "github.com/nats-io"
+            desc: "no broker in the core; use the Bus driven port"
+          - pkg: "google.golang.org/grpc"
+            desc: "no transport in the core; grpc lives in adapters/driving"
+          - pkg: "net/http"
+            desc: "no transport in the core"
+          - pkg: "github.com/stripe/stripe-go"
+            desc: "no provider SDK near the core; see billing/adapters/driven/stripe"
+
+      # 2. The ENGINE stands alone. This rule IS the portability guarantee (SC-006).
+      metering-is-standalone:
+        list-mode: lax
+        files: [ "**/metering/**" ]
+        deny:
+          - pkg: "github.com/truongpx396/intel-payment/billing"
+            desc: "metering/ must stand alone — fiat depends on it, never the reverse"
+          - pkg: "github.com/truongpx396/intel-payment/entitlement"
+            desc: "metering/ must stand alone"
+          - pkg: "github.com/truongpx396/intel-payment/cmd"
+            desc: "the core never imports its own wiring"
+
+      # 3. The FIAT and ENTITLEMENT layers touch metering only through ports.
+      layers-use-ports-only:
+        list-mode: lax
+        files: [ "**/billing/**", "**/entitlement/**" ]
+        deny:
+          - pkg: "github.com/truongpx396/intel-payment/metering/app"
+            desc: "mint credits via the Meter/Ledger port, not app internals"
+          - pkg: "github.com/truongpx396/intel-payment/metering/adapters/driven"
+            desc: "do not reach into metering's infra adapters"
+
+      # 4. A provider SDK may only be imported by its own adapter (payments principle 1).
+      provider-sdk-containment:
+        list-mode: lax
+        files:
+          - "**"
+          - "!**/billing/adapters/driven/stripe/**"
+          - "!**/billing/adapters/driven/polar/**"
+          - "!**/billing/adapters/driven/paypal/**"
+        deny:
+          - pkg: "github.com/stripe/stripe-go"
+            desc: "a provider SDK belongs only in its own adapter"
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters: [ gosec, errcheck ]

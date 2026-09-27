@@ -1,0 +1,111 @@
+name: CI
+on:
+  push: { branches: [ main ] }
+  pull_request:
+
+permissions: { contents: read }
+
+jobs:
+  go:
+    name: build · test · boundary
+    runs-on: ubuntu-latest
+    # The repo currently carries the design; Go steps activate with go.mod.
+    steps:
+      - uses: actions/checkout@v4
+      - id: gomod
+        run: echo "present=$([ -f go.mod ] && echo yes || echo no)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v5
+        if: steps.gomod.outputs.present == 'yes'
+        with: { go-version: '1.23', cache: true }
+
+      - name: Build
+        if: steps.gomod.outputs.present == 'yes'
+        run: go build ./...
+
+      - name: Test (units + conformance suites)
+        if: steps.gomod.outputs.present == 'yes'
+        run: go test -race -count=1 ./...
+
+      - name: Integration (Testcontainers)
+        if: steps.gomod.outputs.present == 'yes'
+        run: go test -race -count=1 -tags=integration ./...
+
+      - name: golangci-lint (incl. depguard boundary rules)
+        if: steps.gomod.outputs.present == 'yes'
+        uses: golangci/golangci-lint-action@v6
+        with: { version: latest }
+
+      - name: Architecture graph
+        if: steps.gomod.outputs.present == 'yes'
+        run: |
+          go install github.com/fe3dback/go-arch-lint@latest
+          go-arch-lint check --project-path .
+
+      # SC-006: the engine must never depend on the fiat or entitlement layers.
+      - name: Verify portability
+        if: steps.gomod.outputs.present == 'yes'
+        run: make verify-portability
+
+      - name: govulncheck
+        if: steps.gomod.outputs.present == 'yes'
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  migrations:
+    name: migrations up/down
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_USER: payment, POSTGRES_PASSWORD: payment, POSTGRES_DB: payment }
+        ports: [ '5432:5432' ]
+        options: >-
+          --health-cmd "pg_isready -U payment" --health-interval 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply every migration
+        env: { PGPASSWORD: payment }
+        run: |
+          for f in migrations/*.sql; do
+            echo "== $f"
+            psql -h localhost -U payment -d payment -v ON_ERROR_STOP=1 -f "$f"
+          done
+      - name: Assert the invariant-critical constraints exist
+        env: { PGPASSWORD: payment }
+        run: |
+          # The idempotency backstop: realm-scoped, and on its own non-partitioned
+          # table — a partitioned ledger cannot carry it (D21). This index IS SC-002.
+          psql -h localhost -U payment -d payment -v ON_ERROR_STOP=1 -c "
+            SELECT 1/COUNT(*) FROM pg_indexes
+            WHERE tablename='credit_idem' AND indexdef ILIKE '%UNIQUE%realm%idem_key%';"
+          # The webhook replay guard.
+          psql -h localhost -U payment -d payment -v ON_ERROR_STOP=1 -c "
+            SELECT 1/COUNT(*) FROM pg_indexes
+            WHERE tablename='payment_events' AND indexdef ILIKE '%UNIQUE%provider_event_id%';"
+
+  secrets:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: gitleaks/gitleaks-action@v2
+        env: { GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}' }
+
+  docs:
+    name: contract links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No dangling relative markdown links
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            grep -oE '\]\(\.[^)#]*\.(md|sql|excalidraw)' "$f" | sed 's/^](//' | while read -r l; do
+              t="$(cd "$(dirname "$f")" && printf '%s' "$(realpath -m "$l")")"
+              [ -e "$t" ] || { echo "DANGLING: $f -> $l"; exit 1; }
+            done || fail=1
+          done < <(find . -name '*.md' -not -path './node_modules/*')
+          exit $fail

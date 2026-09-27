@@ -1,26 +1,28 @@
-# Contract: Credits, Limits & Billing UI (reusable ports)
+# Contract: Credits, Limits & Billing UI (core ports)
 
-**Plan**: [../plan.md](../plan.md) | **Status**: Design addition — the reusability seam for the browser-facing half of metering (FR-016…FR-020, US4). It factors the balance/limits/ledger surface into ports so the *same* components render **any** metered product's position, and so this product's credit vocabulary plugs in as data rather than as component internals. **Changes no Phase 1 behavior** — the same screen shows the same numbers; this names the render seam before the screen is built, which is the cheapest moment to name it. Same treatment [metering-ports.md](./metering-ports.md), [stream-ui-ports.md](./stream-ui-ports.md), [audit-ports.md](./audit-ports.md), [notification-ports.md](./notification-ports.md) and [approval-ports.md](./approval-ports.md) gave their backbones.
+**Spec**: [../spec.md](../spec.md) | **Plan**: [../plan.md](../plan.md) | **Status**: Normative — the browser-facing half of `intel-payment`.
 
-> **Why this contract exists at all.** The backend half of metering is already exemplary: `kernel/metering` is an import-clean hexagon with a `Pricer`/`Ledger`/`Meter` port set, a generalization checklist, a `git mv` compile litmus, and a conformance suite (T091a) that *proves* reuse by running the same `PricerContract` against a second fixture `Pricer`. The UI half has none of that, and [stream-ui-ports.md](./stream-ui-ports.md) coupling #2 deliberately **ejects** credit UI from the reusable stream package via `ChromeSlots` — correctly, since a stream renderer must not know what a credit is. The consequence is that no contract owns the credit surface, so by default it would be built the way the mockups are drawn: hardcoded to three specific ceilings, to the word "credits", and to the feature names `Query`/`Ingestion`/`Captioning`/`Rerank`.
->
-> **The asymmetry is the bug.** The kernel already models limits generically as `[]Limit` with `Window`/`WarnAt`/`DenyCode`, and spend generically as `Unit` + `Quantity`. Re-hardcoding that generality away in the view layer discards it at the last step.
+The server half of this system ([metering-ports.md](./metering-ports.md)) models limits generically as `[]Limit` with `Window`/`WarnAt`/`DenyCode`, and spend generically as `Unit` + `Quantity`. **Re-hardcoding that generality away in the view layer discards it at the last step** — which is what happens by default, because credit screens get built from a mockup, and a mockup is drawn for one product.
+
+This contract is the seam that stops it. The `credits-ui` package renders balances, limits, spend breakdowns, a ledger and a plan catalogue over an **opaque `Unit`** and an **opaque `Scope`**; only the `UnitLabels`, the registered `LedgerColumn`s, the `BreakdownSeries` and the `BillingAnchor` are product-specific.
+
+> **Provenance.** Extracted with history from [aisat-intel](https://github.com/truongpx396/aisat-intel), where it was written as the render seam for that product's credits screen. See [PROVENANCE.md](../../../PROVENANCE.md).
+
+> **Framework independence.** The types below are TypeScript and framework-free. `model.ts` is pure — no React, no store, no fetch. Only the components bind to a framework; the reference implementation is React, and a Vue or Svelte port reuses `ports.ts` + `model.ts` unchanged. A host that wants none of it consumes [rest-api.md](./rest-api.md) directly and renders its own.
 
 ---
 
 ## Why: the five couplings this removes
 
-| # | Coupling if built from the mockup as drawn | Evidence it is a coupling | The port that removes it |
+Each row is a real coupling a credit screen acquires when it is built from one product's mockup.
+
+| # | Coupling | What it costs another product | The port that removes it |
 |---|---|---|---|
-| 1 | **Three specific ceilings**, hardcoded as three cards | `credits.html` draws "Workspace pool", "Your daily allowance", "Your per-call output cap" as three bespoke blocks. A product with one ceiling renders two empty cards; one with five cannot render the other two | `LimitView[]` — the panel renders an **ordered list of limits** from the kernel's `[]Limit`, whatever its length |
-| 2 | **"Credits" is baked into the copy** | Every label, the hero, the ledger column header and the empty states say *credits*. A product metering seats, GB-months or API calls inherits a screen that lies about its own unit | `UnitLabels` — unit name, symbol, precision and pluralization injected; the kernel formats a `Quantity`, never a "credit" |
-| 3 | **This product's spend taxonomy is a component detail** | `Query`/`Ingestion`/`Captioning`/`Rerank` appear as a fixed four-item list with a fixed four-colour ramp, in two places, in a fixed order | `BreakdownSeries[]` — the host supplies dimension members; the ramp assigns slots by index, and > 4 folds to `Other` |
-| 4 | **The ledger row is a fixed 7-column table** | Columns `operation/actor/feature/model/tokens/credits/when` are the *schema*, and `model`/`tokens` are LLM-specific. A storage product has no `model` | `LedgerColumn[]` + `LedgerRow` with an opaque `attributes` bag — the product's columns are registered, exactly as `TraceSection` registers run-detail |
-| 5 | **Billing anchoring is assumed to be org-level** | Both mockups hardcode "the organization buys, workspaces are allocated". A single-tenant product has no such level, and a reseller has three | `BillingAnchor` — the anchor is described to the component (or absent), rather than assumed |
-
-The rule, stated once: **the credits-UI kernel renders balances, limits, spend breakdowns and a ledger over an opaque `Unit` and an opaque `Scope`; only the `UnitLabels`, the registered `LedgerColumn`s, the `BreakdownSeries` and the `BillingAnchor` are product-specific.**
-
----
+| 1 | **A fixed number of ceilings**, hardcoded as N bespoke cards | A product with one ceiling renders N−1 empty cards; one with N+2 cannot render the rest | `LimitView[]` — the panel renders an **ordered list** from the kernel's `[]Limit`, whatever its length |
+| 2 | **"Credits" baked into the copy** | A product metering seats, GB-months or API calls inherits a screen that lies about its own unit | `UnitLabels` — unit name, symbol, precision and pluralization injected; the package formats a `Quantity`, never a "credit" |
+| 3 | **One product's spend taxonomy as a component detail** | A fixed feature list with a fixed colour ramp, in a fixed order, in two places | `BreakdownSeries[]` — the host supplies members; the ramp assigns slots by index, and overflow folds to `Other` |
+| 4 | **The ledger row as a fixed column set** | Columns *are* the schema, and domain columns (`model`, `tokens`) are meaningless to a storage product | `LedgerColumn[]` + `LedgerRow` with an opaque `attributes` bag — the product registers its columns |
+| 5 | **Billing anchoring assumed** | A single-tenant product has no org above the scope; a reseller has two | `BillingAnchor` — the anchor is *described* to the component, or absent |
 
 ## Ports at a glance
 
@@ -54,10 +56,12 @@ Four seams a host swaps independently: the **`CreditsSource`** (its transport), 
 ## Domain types
 
 ```typescript
-// frontend/src/credits-ui/ports.ts — ZERO imports from features/, lib/, or the app store.
+// ui/credits-ui/src/ports.ts — ZERO imports from a host: no feature dir, no app store, no fetch layer.
 
-/** Opaque to this package. The host's billing subject: workspace, org, user, account. */
-export interface Scope { readonly kind: string; readonly id: string; }
+/** Opaque to this package. The host's billing subject: workspace, org, user, account.
+ *  `realm` mirrors the server's isolation axis so a shared deployment's snapshots can
+ *  never be rendered under the wrong product's labels. */
+export interface Scope { readonly realm?: string; readonly kind: string; readonly id: string; }
 
 /** Integer minor units. Never a float — the money rule from metering-ports.md holds
  *  identically in the view layer, where a rounded display is how a reconciliation
@@ -82,7 +86,7 @@ export interface LimitView {
   readonly window: "period" | "day" | "hour" | "call" | "none";
   readonly resetsAt?: string;       // ISO; omitted when window === "call" | "none"
   readonly warnAtPct: number;       // from Limit.WarnAt — NOT a hardcoded 80
-  readonly denyCode?: string;       // maps to the host's 402/429 (metering-ports.md)
+  readonly denyCode?: string;       // maps to the host's 402/429 ([metering-ports.md](./metering-ports.md))
   readonly scopeHint?: string;      // "all members" | "you"
 }
 
@@ -102,8 +106,8 @@ export interface BreakdownSeries {
 }
 
 /** A ledger entry. `delta` is SIGNED — consumption negative, grants positive — which
- *  is what lets a Phase-2 `subscription_grant`/`refund` land in the same column with
- *  no schema-shaped change (see pages/credits.md). `attributes` is opaque: the
+ *  is what lets a `subscription_grant`/`refund` land in the same column with
+ *  no schema-shaped change (see [design-system/pages/credits.md](../../../design-system/pages/credits.md)). `attributes` is opaque: the
  *  package passes it to registered columns and never reads a key. */
 export interface LedgerRow {
   readonly id: string;
@@ -111,7 +115,7 @@ export interface LedgerRow {
   readonly delta: Quantity;
   readonly at: string;              // ISO
   readonly actor?: { readonly label: string; readonly kind?: string };
-  readonly idempotent?: boolean;    // renders the `deduped` tag (FR-019)
+  readonly idempotent?: boolean;    // renders the `deduped` tag
   readonly attributes: Readonly<Record<string, unknown>>;
 }
 
@@ -209,13 +213,13 @@ export interface CheckoutSource {
 ## Invariants every implementation MUST uphold
 
 1. **The meter fill encodes consumption, never remainder.** A hero reading "12,480 left" beside a bar filled to 82% is only coherent under one reading, and it must be the same reading on every screen. The component derives fill from `used/cap` and refuses to accept a pre-computed percentage.
-2. **`warnAtPct` comes from the limit, never from a constant.** The threshold is admin-configurable (FR-017); a hardcoded 80 in the view silently overrides an operator's setting.
-3. **Never a silent failure state.** A limit at or past `cap` renders a blocking notice carrying `denyCode` and a remedy affordance (FR-018, SC-010). "Renders nothing" is not a permitted state for an exhausted limit.
+2. **`warnAtPct` comes from the limit, never from a constant.** The threshold is admin-configurable; a hardcoded 80 in the view silently overrides an operator's setting.
+3. **Never a silent failure state.** A limit at or past `cap` renders a blocking notice carrying `denyCode` and a remedy affordance. "Renders nothing" is not a permitted state for an exhausted limit.
 4. **Money is integer, end to end.** No float reaches a balance, a delta or a total. Display rounding never changes a rendered figure's value.
-5. **Totals shown together must reconcile.** If the panel shows both a total and its parts, the parts sum to the total, or the panel renders an explicit residual row. This is the view-layer half of SC-006 — a screen selling exact reconciliation must not itself present arithmetic that does not close.
+5. **Totals shown together must reconcile.** If the panel shows both a total and its parts, the parts sum to the total, or the panel renders an explicit residual row. This is the view-layer half of SC-002 — a screen selling exact reconciliation must not itself present arithmetic that does not close.
 6. **The package never interprets `unit`, `operationType`, or an `attributes` key.** Any behavior conditioned on the string `"credits"`, `"query"`, or `"model"` inside `credits-ui/**` is a defect.
 7. **Colour never carries identity alone.** Every series renders its label and value as text; the categorical ramp is decoration on top of an already-readable row.
-8. **Status hues and categorical hues are disjoint sets** (MASTER.md). A limit's tone comes from its threshold state; a series' colour comes from its index. Neither borrows from the other.
+8. **Status hues and categorical hues are disjoint sets** (see the host's design system). A limit's tone comes from its threshold state; a series' colour comes from its index. Neither borrows from the other.
 9. **Every meter is a `role="progressbar"`** with `aria-valuenow` and an `aria-valuetext` that states the ratio in the host's units.
 10. **`granted` is never inferred from a checkout return.** The package renders `processing` on return and only shows `granted` when `CheckoutSource.fulfilment()` reports it. Any client-side optimism here produces the single worst failure this surface can have — a user who believes a payment failed and pays twice.
 11. **A blocked offer exposes no checkout action.** `PlanOffer.blocked` renders reason + remedy; there is no override affordance, because the block exists to prevent a change that would silently shrink someone else's budget.
@@ -225,10 +229,10 @@ export interface CheckoutSource {
 
 ---
 
-## Reference wiring: AISAT credits as ONE implementation
+## Reference wiring: LLM credits as ONE implementation
 
 ```typescript
-// frontend/src/features/credits/  — the APP side. All product specifics live here.
+// host-app/src/features/credits/  — the HOST side. All product specifics live here.
 const labels: UnitLabels = { unit: "credits", one: "credit", abbr: "cr" };
 
 const columns: LedgerColumn[] = [
@@ -248,46 +252,59 @@ const columns: LedgerColumn[] = [
 />
 ```
 
-Swapping this for a storage product is: a different `UnitLabels`, an `EgressColumn` instead of `ModelColumn`/`TokensColumn`, no `BillingAnchor`, and a different `CreditsSource`. **No component edit.** That is the same swap `metering-ports.md` promises on the server (`Pricer` + `Scope`), and the two halves now match.
+Swapping this for a storage product is: a different `UnitLabels`, an `EgressColumn` instead of `ModelColumn`/`TokensColumn`, no `BillingAnchor`, and a different `CreditsSource`. **No component edit.** That is the same swap [metering-ports.md](./metering-ports.md) makes on the server (`Pricer` + `Scope`), and the two halves match by design:
+
+| Server seam | UI seam | Swapped together when a product changes |
+|---|---|---|
+| `Pricer` | `UnitLabels` + `BreakdownSeries` | what is metered, and what it is called |
+| `Scope` | `Scope` + `BillingAnchor` | who is billed, and what sits above them |
+| `Unit` / `Quantity` | `Quantity` + `LedgerColumn[]` | the dimensions and how a row displays them |
+| `Limit[]` | `LimitView[]` | the ceilings — **count included** |
+| `PaymentProvider` | `CheckoutSource` | how money is taken, and where the user is sent |
+
+Nothing in the middle column names a product, and nothing in the left column knows there is a UI.
 
 ---
 
-## Wire gap this exposes (must be closed for the screen to be buildable)
+## The wire shape (one round trip, one snapshot)
 
-`GET /credits` currently returns `{ balance, warning_threshold_pct, near_limit }` ([bff-rest.md](./bff-rest.md)). The designed screen needs materially more, and the gap is real rather than cosmetic — today there is **no endpoint** that returns the per-user daily allowance, the per-call cap, the time series, the breakdown, or the ledger page:
+The panel needs materially more than a balance figure, and it needs it in one shape — `GET /credits` returns the whole `CreditsSnapshot`. This was the gap the original host had (a balance-and-threshold endpoint that made the designed screen unbuildable), and closing it here is why `limits[]` is the load-bearing field: it is what makes the ceiling panel generic instead of N hardcoded cards, and the server already holds the data in exactly that shape.
 
-| Snapshot field | Backing source | Status |
+| Snapshot field | Backing source | Note |
 |---|---|---|
-| `balance.remaining` / `granted` | `workspace_credits` | present |
-| `limits[]` (pool, daily, per-call) | kernel `[]Limit` | **missing from the wire** — the kernel has it; the BFF does not expose it |
-| `balance.burnRatePerDay` | `token_usage_daily` | **missing** |
-| `series[]` (14-day) | `token_usage_daily` | **missing** |
-| `breakdown[]` (by feature) | `llm_cost_daily` | admin-only today (`/admin/usage`); needs a member-scoped, self-only view |
-| `ledger[]` + `idempotent` | `credit_ledger` | **missing** — FR-019's "charged at most once" is currently unobservable to the member it protects |
-| `anchor` (Phase 2) | `organization_credits` | Phase 2 |
+| `balance.remaining` / `granted` | `account_credits` | hot balance; the ledger is authoritative |
+| `limits[]` | kernel `[]Limit` for the realm | pass-through, including `warnAtPct` and `denyCode` — **no translation table on either side** |
+| `balance.burnRatePerDay` | `usage_daily` rollup | drives "runs out in ~N days", the figure people actually act on |
+| `series[]` | `usage_daily` rollup | default 14 days, `?days=` configurable |
+| `breakdown[]` | `usage_daily` grouped by dimension | **scoped to the caller's own spend** unless they hold the admin entitlement — a member must not learn colleagues' usage from a credits screen |
+| `ledger[]` + `idempotent` | `credit_ledger` | the `deduped` tag is how "charged at most once" becomes *observable to the person it protects*, rather than a claim in a spec |
+| `anchor` | resolved by the host | absent when this scope *is* the billing entity |
 
-Extending `GET /credits` to return `CreditsSnapshot` keeps one round trip and one shape. The `limits[]` array is the load-bearing part: it is what makes the ceiling panel generic instead of three hardcoded cards, and the kernel already has the data in exactly that shape.
+See [rest-api.md](./rest-api.md) for the full endpoint contract and [entitlement-ports.md](./entitlement-ports.md) for the admin gate on `breakdown[]`.
 
 ---
 
 ## Extraction-ready code organization
 
 ```text
-frontend/src/credits-ui/          # the package — zero app imports
-  ports.ts                        # the types above
-  model.ts                        # pure snapshot → view derivation
-  CreditsPanel.tsx                # composition root
-  components/{BalanceHero,LimitMeter,SpendChart,Breakdown,LedgerTable}.tsx
-  theme.css                       # reads --su-* ONLY
-frontend/src/features/credits/    # the app — every product specific
-  BffCreditsSource.ts  labels.ts  columns.tsx  OrgPlanPointer.tsx
+ui/credits-ui/                    # THE PACKAGE — publishable, zero host imports
+  package.json                    #   @intel-payment/credits-ui
+  src/
+    ports.ts                      #   the types above — framework-free
+    model.ts                      #   pure snapshot → view derivation (no React, no fetch)
+    CreditsPanel.tsx              #   composition root
+    components/{BalanceHero,LimitMeter,SpendChart,Breakdown,LedgerTable,PlanCatalog}.tsx
+    theme.css                     #   reads design tokens ONLY — no hex, no palette utility
+
+ui/examples/llm-credits/          # THE REFERENCE BINDING — every product specific
+  RestCreditsSource.ts  labels.ts  columns.tsx  OrgPlanPointer.tsx
 ```
 
-Enforced by the same ESLint `no-restricted-paths` rule that guards `stream-ui/` (coupling #3 there), plus the static scan below. The litmus: **`git mv frontend/src/credits-ui/ ../some-other-app/src/ && npm run build` compiles with zero edits.**
+Enforced by an ESLint `no-restricted-paths` rule (`credits-ui/**` may not import `examples/**`) plus a static scan for the string `credit` inside the package. The litmus: **`npm pack` the package, install it in an unrelated app, `npm run build` — compiles with zero edits.**
 
 ---
 
-## Generalization checklist (before reusing this in another product)
+## Adoption checklist (per host product)
 
 - [ ] **Unit labelled** — `UnitLabels` supplied; no occurrence of the string `credit` inside `credits-ui/**`.
 - [ ] **Limits sourced from the kernel** — `limits[]` comes from `[]Limit`, including `warnAtPct` and `denyCode`; the view hardcodes no threshold and no ceiling count.
@@ -298,7 +315,7 @@ Enforced by the same ESLint `no-restricted-paths` rule that guards `stream-ui/` 
 - [ ] **Fulfilment is server-reported** — `granted` comes from `fulfilment()`, never from a redirect.
 - [ ] **Purchase permission is data** — `canPurchase` + reason supplied by the host; the package embeds no role model.
 - [ ] **Blocked states wired** — every `denyCode` maps to a visible, actionable notice.
-- [ ] **Theme via `--su-*` only** — no hex, no Tailwind palette utility, no literal `rounded-*` under `credits-ui/**`.
+- [ ] **Theme via tokens only** — no hex, no palette utility, no literal radius under `credits-ui/**`; the host supplies the token values.
 - [ ] **Reconciliation holds** — parts sum to totals, or a residual is shown.
 
 ---
@@ -306,6 +323,6 @@ Enforced by the same ESLint `no-restricted-paths` rule that guards `stream-ui/` 
 ## Non-goals (stays in the host, by design)
 
 - **Pricing and rate cards** — a `Pricer` concern; this package renders what was charged, never what things cost.
-- **Checkout, payment methods, receipts** — the payments boundary (`kernel/billing`, Phase 2). The panel links to them via `BillingAnchor`/`BillingSlots` and renders no card data and no provider IDs, ever ([pages/credits.md](../../../design-system/aisat-intel/pages/credits.md) Don'ts).
+- **Card data, payment methods, receipts** — the provider's hosted checkout and portal own these. The panel hands off via `CheckoutSource.begin()` / `portalUrl()` and renders no card data and no provider IDs, ever ([design-system/pages/credits.md](../../../design-system/pages/credits.md) Don'ts).
 - **What produces spend** — call sites build the events; this package never instruments anything.
 - **Tenancy semantics** — what a `Scope` *means* is the host's; the package treats it as an opaque identity.
