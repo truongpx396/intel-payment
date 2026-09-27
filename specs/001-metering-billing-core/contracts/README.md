@@ -10,7 +10,10 @@ The normative surface of `intel-payment`. Read them in this order.
 | [credits-ui-ports.md](./credits-ui-ports.md) | **The browser half.** `CreditsSource`/`LimitView`/`LedgerColumn`/`PlanCatalog`/`CheckoutSource`, 14 invariants |
 | [grpc-surface.md](./grpc-surface.md) | The service-mode wire contract for the hot path |
 | [rest-api.md](./rest-api.md) | The HTTP surface: host API, webhook ingress, operations, error codes |
-| [bus-subjects.md](./bus-subjects.md) | The async seam and the scheduled ticks |
+| [bus-subjects.md](./bus-subjects.md) | The async seam, the scheduled ticks, and the two `Bus` adapters (Redis Streams by default, NATS JetStream optional) |
+
+Post-paid settlement — rating, tiered schedules, commitments, immutable invoices, credit notes,
+discounts, trials — is [feature 002](../../002-postpaid-invoicing/), additive to everything here.
 
 ## How to read an invariant
 

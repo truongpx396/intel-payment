@@ -28,7 +28,8 @@ writer; starting the API first means charges queue with nothing draining them.
 | Admission latency | `metering_admit_latency_seconds` p99 | ≤ 5 ms co-located, ≤ 1 ms embedded |
 | Denials | `metering_admit_denied_total` by limit | steady; spikes are abuse or a misconfigured limit |
 | **Drift** | `metering_ledger_drift_credits` | within tolerance |
-| **Outbox depth / age** | `metering_outbox_depth`, `_age_seconds` | depth low, age seconds not minutes |
+| **Outbox depth / age** | `metering_outbox_depth`, `_age_seconds` | depth low, age seconds not minutes. Both come from `Bus.Pending` — `XPENDING` on Redis, consumer info on JetStream |
+| **Stream length** | `metering_bus_stream_len` | well under `PAYMENT_BUS_MAX_LEN`. Streams only |
 | Heal direction | `metering_reconcile_healed_credits{direction}` | ~zero. Steady *up* is silent under-billing |
 | Fail-open | `metering_admit_failopen_total` | **zero** on a `fail_closed` deployment |
 | Uncapped admits | `metering_admit_uncapped_total` | zero once every caller passes `MaxCost` |
@@ -83,6 +84,16 @@ kubectl logs -l app=payment-worker --tail=200
 2. Postgres reachable, not at a connection limit, not locked?
 3. **Age high with depth low** means a poisoned head-of-line entry. Inspect it, and if it cannot
    be applied, move it to `credit_outbox_dead` rather than leaving it blocking every entry behind it.
+4. On Redis Streams, check for **abandoned consumers**: `XINFO GROUPS billing:outbox:0` shows
+   per-consumer pending counts. A consumer that no longer exists still holds its entries until
+   `XAUTOCLAIM` reclaims them past `PAYMENT_BUS_ACK_WAIT`; if the adapter's reclaim loop is not
+   running, nothing else will do it.
+
+```bash
+redis-cli XINFO STREAM billing:outbox:0
+redis-cli XINFO GROUPS billing:outbox:0            # pending per consumer
+redis-cli XPENDING billing:outbox:0 drain - + 10   # the oldest stuck entries
+```
 
 Scale drainers by raising `PAYMENT_SHARDS`… **no.** Shards are fixed for a deployment's life —
 changing the count orphans queued entries. Add worker replicas bound to existing shards instead.
@@ -116,6 +127,27 @@ ORDER BY received_at DESC LIMIT 50;
   lost. Replay them once it recovers; never process them optimistically.
 
 ---
+
+## Alert: stream length approaching the cap
+
+**Means:** the trim tick is not running, or a consumer group is so far behind that nothing is
+acked and therefore nothing is trimmable. **Redis Streams only.**
+
+This matters more than it looks. The balance Redis is `noeviction` by requirement, so an untrimmed
+stream does not evict — it fills memory and then **the hot path stops**, because `XADD` fails inside
+the same script that moves the balance.
+
+```bash
+redis-cli XLEN billing:outbox:0
+redis-cli XINFO GROUPS billing:outbox:0     # is anything acking?
+```
+
+1. Is `billing.trim.tick` scheduled and succeeding?
+2. Is a consumer group stalled? Un-acked entries are **never** trimmed — by design — so a stalled
+   drainer converts directly into unbounded growth. Fix the drainer first.
+3. **Do not `XTRIM` manually to make the alert go away.** Un-acked entries are money intents; the
+   only correct order is drain, then trim.
+4. If memory is genuinely critical, raise `maxmemory` — never change the eviction policy.
 
 ## Recovery: hot store lost
 
@@ -212,5 +244,10 @@ edited rate card — and the second one should be impossible.
 
 - **Postgres** — the ledger is the record. Test restores by actually restoring; an untested backup
   is a hypothesis. Never drop a ledger partition you might need to reconcile.
-- **Redis** — a derived cache. AOF shortens the rebuild, but recovery is `Rehydrate`, not a
-  restore. Rehearse it and record the measured time against your RTO.
+- **Redis** — balances are derived and recovered by `Rehydrate`, not by restore. **But with a stream
+  bus the same instance also holds un-drained outbox entries, which are not derived** — an entry lost
+  before it reaches Postgres is a forgotten charge (the documented under-bill direction of `outbox`
+  settlement). AOF is therefore load-bearing here in a way it is not for a pure cache: keep
+  `appendfsync everysec` at minimum, consider `always` for high-value units, or run `journal`
+  settlement so the durable intent never depends on Redis at all. Rehearse `Rehydrate` and record the
+  measured time against your RTO.

@@ -180,7 +180,9 @@ tolerance pages rather than silently healing, and that `/readyz` fails on a behi
 - **FR-042**: The system MUST fail its readiness probe when the schema is behind head.
 - **FR-043**: The system MUST park, never drop, an intent that exhausts its retry budget, and MUST alert when it does.
 - **FR-044**: The system MUST run both as an embedded library and as a standalone service over the same ports, switchable by wiring alone.
-- **FR-045**: The system MUST ship as a container with its migrations, requiring only a Redis URL, a Postgres DSN and a bus URL to start.
+- **FR-045**: The system MUST ship as a container with its migrations, requiring only a Redis URL and a Postgres DSN to start. A separate broker MUST NOT be required.
+- **FR-046**: The system MUST implement its async seam behind a `Bus` port with **Redis Streams as the default adapter** — publishing the debit intent from the same atomic script that moves the balance, so no window exists in which an intent is in the outbox but not on the bus — and MUST offer **NATS JetStream** as a drop-in alternative with identical subjects, handlers and guarantees. The same conformance suite MUST pass against both.
+- **FR-047**: With a stream-backed bus the system MUST enforce an explicit retention floor, MUST NOT trim un-acked entries under any circumstance, and MUST alert rather than trim when a stream approaches its length cap.
 
 ### Key entities
 - **Realm** — one host product on a deployment; the outermost isolation key.
@@ -210,10 +212,13 @@ tolerance pages rather than silently healing, and that `/readyz` fails on a behi
 - **SC-011**: A capability check denies on an undeclared key and on a store outage in 100% of cases.
 - **SC-012**: The credits surface renders correctly for one, three and five ceilings, and for a non-credit unit, with no component edit. A per-job and a per-call ceiling render distinguishably — one as a draining budget, the other as a wall.
 - **SC-012a**: A multi-step job halts at its own cap without reaching any calendar ceiling, and a transfer interrupted at any point either applies both sides or neither.
-- **SC-013**: A single `docker compose up` yields a service passing `/readyz` with migrations at head.
+- **SC-013**: A single `docker compose up` yields a service passing `/readyz` with migrations at head, with **no broker in the dependency set**.
+- **SC-014**: The bus conformance suite passes unchanged against both the Redis Streams and NATS JetStream adapters, including redelivery of a killed consumer's in-flight entry.
 
 ## Out of scope
 
+- **Post-paid usage invoicing** — meter now, invoice at period close, pay on terms. This is the settlement model most B2B contracts use, and it is designed as [feature 002](../002-postpaid-invoicing/spec.md) rather than omitted. It cannot be retrofitted as a smarter `Pricer`: tiered and volume pricing depend on period-to-date totals, which a pure per-event function cannot compute.
+- **Invoices, credit notes, discounts, coupons, trials, quantity-bearing subscriptions** — all [feature 002](../002-postpaid-invoicing/spec.md).
 - Tax computation, filing, and merchant-of-record duties — provider or specialist service (FR-028).
 - Invoice rendering and dunning email templates — the provider's hosted invoices and the host's notification system.
 - End-user authentication and authorization — the host's. This system authenticates *callers*.
