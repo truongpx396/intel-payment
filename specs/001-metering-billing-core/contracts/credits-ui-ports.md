@@ -83,7 +83,12 @@ export interface LimitView {
   readonly label: string;
   readonly used: Quantity;
   readonly cap: Quantity | null;    // null = uncapped (render as a figure, no meter)
-  readonly window: "period" | "day" | "hour" | "call" | "none";
+  /** Mirrors the kernel's Window 1:1, so the wire is a pass-through and neither side owns a
+   *  translation table. "job" is a cumulative budget for one unit of work (a long-running
+   *  task's own cap); "call" is a per-invocation ceiling that never accumulates. The two read
+   *  very differently to a person — one is a draining budget, the other is a wall — so a meter
+   *  must not render them the same way. */
+  readonly window: "period" | "day" | "hour" | "job" | "call" | "none";
   readonly resetsAt?: string;       // ISO; omitted when window === "call" | "none"
   readonly warnAtPct: number;       // from Limit.WarnAt — NOT a hardcoded 80
   readonly denyCode?: string;       // maps to the host's 402/429 ([metering-ports.md](./metering-ports.md))

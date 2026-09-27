@@ -29,7 +29,8 @@ The durable mirror of the hot balance. The ledger is authoritative; this row exi
 The account of record. Append-only, partitioned by `created_at` (monthly); expiry is a partition `DROP`.
 - `id` UUID v7, `realm`, `scope_kind`, `scope_id`
 - `delta BIGINT NOT NULL` — **signed** ([D1](./design-decisions.md)). Negative consumption, positive grant.
-- `operation_type TEXT NOT NULL` — open vocabulary, not an enum: host consumption types plus `purchase`, `subscription_grant`, `signup_grant`, `promo`, `refund`, `chargeback`, `expiry`, `writeoff`, `admin_adjustment`, `reconcile`. **Not a Postgres enum**, because adding a value to one is a migration and a host will invent types this schema cannot predict.
+- `operation_type TEXT NOT NULL` — open vocabulary, not an enum: host consumption types plus `purchase`, `subscription_grant`, `signup_grant`, `promo`, `refund`, `chargeback`, `expiry`, `writeoff`, `admin_adjustment`, `reconcile`, `allocation_out`, `allocation_in`. **Not a Postgres enum**, because adding a value to one is a migration and a host will invent types this schema cannot predict.
+- `counter_scope_kind` / `counter_scope_id` — set on both rows of a `Transfer` (the counterparty). A reconcile pairs `allocation_out` with `allocation_in` on a shared `idem_key` and asserts the pair sums to zero, so a half-applied allocation is detectable rather than silent ([D23](./design-decisions.md)).
 - `idem_key TEXT NOT NULL` — indexed for lookup. **Uniqueness lives in `credit_idem`, not here** — see below and [D21](./design-decisions.md).
 - `rate_card_version TEXT` — which card priced it ([D6](./design-decisions.md)). Null for non-priced rows (grants, adjustments).
 - `cost_micros BIGINT` — informational upstream cost, for usage analytics only. Never a billing input.

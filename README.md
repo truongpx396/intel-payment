@@ -48,6 +48,8 @@ rather than a claim.
 | **Sub-millisecond enforcement** | One atomic Redis script per operation: `DECRBY` + outbox `LPUSH` + idempotency `SET NX`. No durable-store wait on the hot path |
 | **Exactly-once accounting** | A realm-scoped idempotency guard in Postgres. Retries, double-clicks, redelivered bus messages and replayed webhooks all converge on one effect |
 | **Refuse before you spend** | The gate evaluates every ceiling *and* the call's cost bound, so overshoot is bounded rather than hoped for |
+| **Runaway jobs have their own ceiling** | A `Job` window caps one multi-step task's cumulative spend, independently of every calendar limit — because a daily budget alone still lets one loop burn the day |
+| **Pools and allocations** | `Transfer` moves credits between scopes atomically: a parent buys once, children draw allocations with an optional cap, and the realm's total is invariant |
 | **A ledger that reconciles** | Append-only, partitioned, with periodic drift detection that **alarms** past tolerance instead of silently healing |
 | **Payments that cannot double-grant** | Signature-verified webhooks are the only fulfilment path; an atomic event claim plus the idempotency guard make replays no-ops |
 | **Entitlements, not plan-code `if`s** | Flags, quotas and enums as data, with `override > subscription > default` precedence and provenance on every grant |

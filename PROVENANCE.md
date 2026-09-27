@@ -78,10 +78,11 @@ so the framing changed while the substance did not:
 
 ## Design work added during the lift
 
-21 decisions are recorded in
-[design-decisions.md](specs/001-metering-billing-core/design-decisions.md): three questions the
-originating design left open and resolved here, and eighteen refinements. The ones that change
-behaviour rather than presentation:
+23 decisions are recorded in
+[design-decisions.md](specs/001-metering-billing-core/design-decisions.md). The originating design
+left **five** open decisions and all five are resolved here (D1–D3, plus D9 for tax/invoicing and
+D11 for proration); the rest are refinements. The ones that change behaviour rather than
+presentation:
 
 | # | Change | Why it mattered |
 |---|---|---|
@@ -92,6 +93,8 @@ behaviour rather than presentation:
 | **D8** | The `Entitler` port | A plan's value is rarely only credits. With no port, every host re-derives capabilities from plan codes at call sites |
 | **D16** | Subscription drift sweep | Webhooks are the source of truth and webhooks get missed; a dropped cancellation event otherwise leaves a cancelled customer entitled forever |
 | **D21** | Idempotency guard moved to its own non-partitioned table | **The inherited schema was not constructible.** See below |
+| **D22** | `Window: Job` — a cumulative budget for one unit of work | The originating design had a hard per-run cap precisely because *"the daily budget alone would still permit one task to burn a large bill"*. No original window expressed it, and `MaxCost` bounds one call rather than a run — so the worst failure mode in an agentic product had no engine ceiling |
+| **D23** | `Transfer` — the pool → allocation primitive | The originating design had a purchased parent pool with child allocations and an optional per-child cap. Leaving it to the host means two independent `Grant`s, where a crash between them destroys or mints credits and no reconcile can tell which |
 
 ### D21 — a constraint that could not exist
 

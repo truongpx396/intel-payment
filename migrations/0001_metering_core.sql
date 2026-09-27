@@ -35,7 +35,15 @@ CREATE TABLE credit_ledger (
 
     -- Open vocabulary, deliberately NOT a Postgres enum: adding a value to an enum is a
     -- migration, and a host will invent operation types this schema cannot predict.
+    -- Engine-reserved values: reconcile, writeoff, expiry, allocation_out, allocation_in.
+    -- A Transfer writes the allocation pair under ONE idem_key, and the pair sums to zero
+    -- (invariant 14) — which is what makes a half-applied allocation detectable.
     operation_type    TEXT        NOT NULL,
+
+    -- Set on both rows of a Transfer: the counterparty scope. Lets a reconcile pair
+    -- allocation_out with allocation_in and assert the realm's total is unchanged.
+    counter_scope_kind TEXT,
+    counter_scope_id   TEXT,
 
     -- The durable idempotency backstop. REALM-SCOPED (D4): two host products both minting
     -- 'invoice-1' must not silently collapse into one another's no-op.

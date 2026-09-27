@@ -132,9 +132,23 @@ type Window int
 
 const (
 	Balance Window = iota // no reset — the durable credit balance (→ 402 when exhausted)
-	Daily                 // calendar-day counter (→ 429)
-	Hourly                // calendar-hour counter (→ 429)
-	Rolling               // sliding window of Limit.Dur (→ 429)
+	Daily                 // calendar-day counter (→ 409)
+	Hourly                // calendar-hour counter (→ 409)
+	Rolling               // sliding window of Limit.Dur (→ 409)
+
+	// Job is a cumulative budget for ONE unit of work, keyed by Limit.Scope (an ephemeral
+	// scope such as {Kind:"run", ID:run_id}) and expiring with it after Limit.Dur.
+	//
+	// It exists because the other windows cannot bound a single multi-step job. A daily
+	// ceiling still permits one runaway agent loop to burn the whole day's budget in an hour,
+	// and AdmitRequest.MaxCost bounds one call rather than a run's accumulated spend. So a
+	// long-horizon job carries its own cap, checked after each step, and stops when it is
+	// reached — independently of every calendar ceiling.
+	//
+	// Unlike Balance this is a COUNTER, not a balance: no credits are granted to the job and
+	// no ledger rows are written for it. Leftover budget needs no return, and a job that dies
+	// mid-run leaks nothing but a TTL'd Redis key.
+	Job
 )
 
 // Limit is one ceiling evaluated at admission. The generic form of the three ceilings
@@ -142,7 +156,8 @@ const (
 // to the wire error the host already speaks.
 type Limit struct {
 	Name     string        // stable, surfaced in the deny reason: "workspace_balance" | "role_daily" | "user_daily"
-	Scope    Scope         // whose counter (MAY differ from the charge scope — e.g. per-user within a workspace)
+	Scope    Scope         // whose counter (MAY differ from the charge scope — e.g. per-user within a
+	                       // workspace, or an ephemeral {Kind:"run", ID:…} for a Job window)
 	Unit     Unit          // what the ceiling is measured in
 	Max      int64         // the ceiling
 	Window   Window
@@ -186,6 +201,10 @@ type Charge struct {
 	Amount  Credits           // positive magnitude to debit
 	IdemKey string            // REQUIRED
 	Reason  string            // operation_type: "query" | "ingest" | "enrich" | "caption" | …
+	// Job is the unit-of-work scope this charge also counts against, when the caller is a step
+	// of a multi-step job carrying a `Window: Job` ceiling. Zero value = not part of a job.
+	// The charge still debits Scope; Job only increments that job's counter.
+	Job     Scope
 	Ref     map[string]string // trace_id, call_id — audit metadata
 }
 
@@ -195,6 +214,29 @@ type Grant struct {
 	IdemKey string            // REQUIRED (e.g. provider_payment_id / invoice_id)
 	Reason  string            // "purchase" | "subscription_grant" | "signup" | "refund" | "chargeback" | "admin_adjustment"
 	Ref     map[string]string
+}
+
+// Transfer moves credits between two scopes in ONE realm, atomically, under one IdemKey.
+//
+// This is the pool→allocation pattern, and it is common enough to belong in the engine: an
+// enterprise buys once at the parent scope and its teams draw allocations from that pool. The
+// alternative — two independent Grants — is not equivalent, because a crash between them leaves
+// credits destroyed at the source or minted at the destination, and no reconcile can tell which.
+//
+// It is NOT a Grant: no credits enter or leave the realm, so the realm's total is invariant.
+// That makes it auditable as a pair (`allocation_out` at From, `allocation_in` at To) sharing one
+// IdemKey, and a reconcile can assert the pair sums to zero.
+type Transfer struct {
+	From    Scope             // the pool. MUST have sufficient balance — a transfer never overdraws
+	To      Scope             // the allocation. MUST share From.Realm
+	Amount  Credits           // positive magnitude
+	IdemKey string            // REQUIRED
+	Reason  string            // "allocation" | "reallocation" | "reclaim"
+	// MaxDestBalance caps what the destination may HOLD after the transfer (0 = uncapped).
+	// A ceiling on spend is a Limit; this is a ceiling on the allocation itself, which is what
+	// stops one team being handed the whole pool by an errant admin action.
+	MaxDestBalance Credits
+	Ref            map[string]string
 }
 
 // Receipt is the outcome of an idempotent apply. Applied=false ⇒ this IdemKey was already
@@ -253,6 +295,26 @@ type Ledger interface {
 	// Grant mirrors Debit for positive/negative credit changes (payments, refunds, admin).
 	// Same atomic Redis step + outbox intent + idempotency guard.
 	Grant(ctx context.Context, g Grant) (Receipt, error)
+
+	// Transfer moves credits between two scopes in one realm. BOTH sides apply or NEITHER does:
+	// the decrement, the increment, the two outbox intents and the idempotency guard are one
+	// atomic step (a single Lua script — the scopes' keys must therefore share a hash slot, which
+	// Scope.Tag()'s realm prefix does not guarantee, so an implementation either co-locates by
+	// realm or takes both keys in one script under a `{realm}` tag).
+	//
+	// It refuses rather than overdraws: an insufficient pool, a cross-realm destination, or a
+	// destination that would exceed MaxDestBalance all return an error and change nothing.
+	Transfer(ctx context.Context, t Transfer) (TransferReceipt, error)
+}
+
+// TransferReceipt reports both sides, because an allocation that moved only one is the bug this
+// operation exists to prevent.
+type TransferReceipt struct {
+	IdemKey     string
+	Applied     bool    // false = idempotent replay
+	Amount      Credits
+	FromBalance Credits
+	ToBalance   Credits
 }
 ```
 
@@ -330,7 +392,8 @@ type ReconcileReport struct {
 11. **Realm isolation.** No read or write crosses a realm. Every key, subject, ledger row, plan, rate card, limit and idempotency guard is realm-partitioned, and a query that omits the realm predicate is a defect. A caller authenticated for realm A can never name a scope in realm B (enforced at the transport, see [security.md](../../../docs/security.md)).
 12. **A negative balance is a policy, never an accident.** A refund or chargeback for credits already consumed drives the balance below zero, and there is no arithmetic that avoids it. The engine therefore makes it an explicit `NegativeBalancePolicy` — `allow_debt` (record it, keep serving; the host collects), `clamp_to_zero` (floor the balance and write a `writeoff` ledger row so the books still close), or `block_and_flag` (floor it and refuse further spend pending an operator decision). Silently flooring with no compensating row is forbidden: it breaks `balance == SUM(ledger)` and makes the next reconcile page for a drift the system created itself.
 13. **Grants are privileged.** Minting credits is separated from spending them at the API boundary and the authz boundary both. A caller able to `Record` spend must not be able to `Grant`. Grants originate only from a verified payment webhook, an administrative action with an audit row, or a host's own signup/promo path — never from an open endpoint.
-14. **Every terminal state is observable.** Out-of-tolerance drift, a poison outbox entry, a failed webhook verification, an uncapped admit, and an exhausted retry budget each emit a named metric and land in durable storage. "Logged and moved on" is not a permitted outcome for anything that touched money.
+14. **A transfer conserves the realm.** `Transfer` moves credits between scopes and never creates or destroys them, so the realm's total is invariant across it. Both sides apply atomically under one `IdemKey`, and the paired `allocation_out`/`allocation_in` rows MUST sum to zero — a reconcile asserts this, because a half-applied allocation is indistinguishable from theft. A transfer never overdraws its source; it refuses.
+15. **Every terminal state is observable.** Out-of-tolerance drift, a poison outbox entry, a failed webhook verification, an uncapped admit, an exhausted retry budget and a refused transfer each emit a named metric and land in durable storage. "Logged and moved on" is not a permitted outcome for anything that touched money.
 
 ---
 
@@ -358,6 +421,8 @@ The binding that first exercised these ports was an AI product metering LLM toke
 | `Pricer` | `LLMTokenPricer`: `Credits` from `input_tokens·rate_in + cached·rate_cached + output·rate_out`; `CostMicros` feeds the usage dashboard |
 | `Event.Quantities` | `[{llm_input_token, n}, {llm_cached_token, c}, {llm_output_token, m}]` from the gateway's returned usage |
 | `AdmitRequest.MaxCost` | `max_tokens` priced through the same `Pricer` — the request's own ceiling, so overshoot is bounded |
+| `Window: Job` | a long-horizon agent run's per-run cap, checked after each step — bounds a runaway loop independently of the daily ceiling |
+| `Transfer` | an organization buys the pool; each workspace draws an allocation with an optional per-workspace cap |
 | `Limit[]` | `workspace_balance` (Balance→402) · `role_daily` on a per-role token budget (Daily→429) · `user_daily` (Daily→429), `WarnAt=0.8` |
 | `Charge.Reason` / `Grant.Reason` | `credit_ledger.operation_type`: `query`/`ingest`/`enrich`/`caption` · `purchase`/`subscription_grant`/`refund`/`reconcile` |
 | `Ledger` / `LedgerWriter` | Redis `DECRBY` + `outbox:{shard}` → single-owner worker → `credit_ledger` + periodic reconcile |
@@ -583,6 +648,60 @@ func LedgerContract(t *testing.T, newLedger func(t *testing.T) ports.Ledger) {
 		// and the next reconcile pages for a drift the engine created itself (invariant 12).
 		if !hasLedgerRow(t, ws, "writeoff", -90) { t.Fatal("clamp must append a writeoff row") }
 	})
+
+	t.Run("a job budget halts work without touching any calendar ceiling", func(t *testing.T) {
+		l := newLedger(t); seed(t, l, ws, 1_000_000)          // account is nowhere near empty
+		run := domain.Scope{Realm: "t1", Kind: "run", ID: "r1"}
+		cap := domain.Limit{Name: "run_cap", Scope: run, Unit: "credit", Max: 500,
+			Window: domain.Job, Dur: time.Hour, DenyCode: "limit_reached"}
+		for i := 0; i < 5; i++ {                              // five steps × 100 = the cap
+			_, _ = l.Debit(ctx, domain.Charge{Scope: ws, Amount: 100,
+				IdemKey: fmt.Sprintf("step-%d", i), Reason: "agent_step", Job: run})
+		}
+		adm, err := l.Admit(ctx, ws, domain.AdmitRequest{Limits: []domain.Limit{cap}, MaxCost: 100})
+		mustNoErr(t, err)
+		if adm.Allowed { t.Fatal("a runaway loop must halt at its own cap, not at the daily ceiling") }
+		if bal, _ := l.Balance(ctx, ws); bal != 999_500 {
+			t.Fatalf("job budget must be a counter, not a granted balance: %d", bal)
+		}
+	})
+
+	t.Run("transfer applies both sides or neither", func(t *testing.T) {
+		l := newLedger(t)
+		pool := domain.Scope{Realm: "t1", Kind: "organization", ID: "o1"}
+		alloc := domain.Scope{Realm: "t1", Kind: "workspace", ID: "w1"}
+		seed(t, l, pool, 5000)
+		r, err := l.Transfer(ctx, domain.Transfer{From: pool, To: alloc, Amount: 2000,
+			IdemKey: "alloc-1", Reason: "allocation"})
+		mustNoErr(t, err)
+		if r.FromBalance != 3000 || r.ToBalance != 2000 { t.Fatalf("one-sided transfer: %+v", r) }
+
+		// Replay: neither side moves again.
+		r2, _ := l.Transfer(ctx, domain.Transfer{From: pool, To: alloc, Amount: 2000,
+			IdemKey: "alloc-1", Reason: "allocation"})
+		if r2.Applied { t.Fatal("replayed allocation must be a no-op") }
+		if b, _ := l.Balance(ctx, pool); b != 3000 { t.Fatalf("pool drained twice: %d", b) }
+	})
+	t.Run("transfer refuses rather than overdrawing, and honours the destination cap", func(t *testing.T) {
+		l := newLedger(t)
+		pool := domain.Scope{Realm: "t1", Kind: "organization", ID: "o2"}
+		alloc := domain.Scope{Realm: "t1", Kind: "workspace", ID: "w2"}
+		seed(t, l, pool, 100)
+		if _, err := l.Transfer(ctx, domain.Transfer{From: pool, To: alloc, Amount: 500,
+			IdemKey: "over-1", Reason: "allocation"}); err == nil {
+			t.Fatal("a transfer must refuse an insufficient pool, never overdraw it")
+		}
+		if _, err := l.Transfer(ctx, domain.Transfer{From: pool, To: alloc, Amount: 100,
+			IdemKey: "cap-1", Reason: "allocation", MaxDestBalance: 50}); err == nil {
+			t.Fatal("a transfer must refuse to push the destination past MaxDestBalance")
+		}
+		// Cross-realm is never a transfer, it is a mint and a burn.
+		other := domain.Scope{Realm: "t2", Kind: "workspace", ID: "w9"}
+		if _, err := l.Transfer(ctx, domain.Transfer{From: pool, To: other, Amount: 10,
+			IdemKey: "xr-1", Reason: "allocation"}); err == nil {
+			t.Fatal("a cross-realm transfer must be refused (invariant 11)")
+		}
+	})
 }
 
 // Wiring — every impl plugs into the SAME suites. Three pricers over disjoint unit
@@ -644,7 +763,7 @@ message Event {
   map<string,string> attributes = 7;         // audit only — never a cost input
 }
 
-enum Window { BALANCE = 0; DAILY = 1; HOURLY = 2; ROLLING = 3; }
+enum Window { BALANCE = 0; DAILY = 1; HOURLY = 2; ROLLING = 3; JOB = 4; }
 message Limit {
   string name = 1; Scope scope = 2; string unit = 3; int64 max = 4;
   Window window = 5; int64 dur_seconds = 6;  // ROLLING only
@@ -663,11 +782,18 @@ message GrantRequest   { Scope scope = 1; int64 amount = 2; string idem_key = 3;
 message BalanceRequest { Scope scope = 1; }
 message BalanceReply   { int64 credits = 1; }
 
+message TransferRequest { Scope from = 1; Scope to = 2; int64 amount = 3; string idem_key = 4;
+                          string reason = 5; int64 max_dest_balance = 6;
+                          map<string,string> ref = 7; }
+message TransferReply   { string idem_key = 1; bool applied = 2; int64 amount = 3;
+                          int64 from_balance = 4; int64 to_balance = 5; }
+
 service Metering {
   rpc Admit      (AdmitRequest)   returns (Admission);   // gate, no reservation — hot path, keep co-located
   rpc Record     (RecordRequest)  returns (Receipt);     // price + settle; idempotent on event.idem_key
   rpc Grant      (GrantRequest)   returns (Receipt);     // PRIVILEGED: add/remove credits; idempotent
   rpc GetBalance (BalanceRequest) returns (BalanceReply);
+  rpc Transfer   (TransferRequest) returns (TransferReply);  // PRIVILEGED: pool → allocation
 }
 ```
 
@@ -1081,7 +1207,7 @@ So the wiring is: build a `Config`, build the driven adapters, inject a `Pricer`
 
 ## Observability contract
 
-Invariant 14 requires that every terminal state be observable, which means the metric names are part of the contract, not an implementation detail — a host writes alerts against them before it ever reads the code.
+Invariant 15 requires that every terminal state be observable, which means the metric names are part of the contract, not an implementation detail — a host writes alerts against them before it ever reads the code.
 
 | Metric | Type | Why it pages |
 |---|---|---|
@@ -1097,6 +1223,7 @@ Invariant 14 requires that every terminal state be observable, which means the m
 | `metering_price_error_total` | counter (`realm`, `rate_key`, `reason`) | fail-closed pricing rejecting real traffic — usually a rate card missing a newly launched SKU |
 | `billing_webhook_verify_failed_total` | counter (`provider`) | a signature failure is a **security** event, not a parse error (see [payment-provider-ports.md](./payment-provider-ports.md)) |
 | `billing_grant_applied_total` | counter (`realm`, `reason`) | reconciles against the provider's own payout report |
+| `metering_transfer_refused_total` | counter (`realm`, `reason`) | an allocation refused for an empty pool or a destination cap — usually a budget that needs raising, occasionally an admin script in a loop |
 
 Health endpoints: `/healthz` (process up) and `/readyz` (hot store reachable, durable store reachable, migrations at head). `/readyz` MUST fail when migrations are behind — a service that serves money against a half-migrated schema is worse than one that is down.
 
@@ -1118,6 +1245,8 @@ Copy-paste and tick once per realm. [docs/integration-guide.md](../../../docs/in
 - [ ] **Realm chosen** — a stable slug for this product; every `Scope` it constructs carries it. One realm per product, never per tenant.
 - [ ] **Rate card published** — a versioned row set in `rate_cards`/`rate_card_entries`, not a Go literal, so repricing is an operator action.
 - [ ] **`MaxCost` supplied at the gate** — every caller passes an upper bound, so the overshoot bound is enforced. Turn on `RequireMaxCost` once they all do.
+- [ ] **Multi-step work capped** — any job that spends across several steps carries a `Window: Job` limit on an ephemeral scope. A daily ceiling alone still lets one runaway loop burn the day.
+- [ ] **Allocation model decided (if a pool is shared)** — `Transfer` for parent-buys/child-draws, with `MaxDestBalance` set so one destination cannot absorb the pool.
 - [ ] **Negative-balance policy chosen** — `allow_debt` / `clamp_to_zero` / `block_and_flag`, matching how the host actually handles a refund past spend.
 - [ ] **Credit expiry decided** — `off` or `lots_fifo`; if on, the expiry sweep is scheduled.
 - [ ] **Grant path (if monetized)** — use the [`PaymentProvider`](./payment-provider-ports.md) adapters, or publish `Grant`s from the host's own top-up flow; grants are just positive ledger rows through the same idempotent path.

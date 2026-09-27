@@ -145,6 +145,8 @@ tolerance pages rather than silently healing, and that `/readyz` fails on a behi
 - **FR-015**: The system MUST apply an explicit, configured policy when a credit change would drive a balance negative, and MUST record a compensating row when it floors one.
 - **FR-016**: The system MUST support an optional credit-expiry mode that consumes and expires grants oldest-first.
 - **FR-017**: The system MUST load ceilings and rate cards as per-realm configuration data, so launching a price or a limit requires no redeploy.
+- **FR-017a**: The system MUST support a cumulative ceiling scoped to a single unit of work, so a multi-step job's total spend is bounded independently of every calendar ceiling. It MUST be a counter rather than a granted balance, so no ledger rows accrue per job and abandoned work leaks nothing.
+- **FR-017b**: The system MUST provide an atomic transfer of credits between two scopes in one realm under a single idempotency key, writing a paired out/in record that sums to zero, refusing rather than overdrawing the source, and optionally capping what the destination may hold. It MUST NOT create or destroy credits — a realm's total is invariant across a transfer.
 
 ### Functional — Payments
 - **FR-018**: The system MUST verify every provider webhook's signature on the raw body, in constant time, within a timestamp tolerance, **before any parsing or side effect**, and MUST reject failures with `400` as a security event.
@@ -186,7 +188,8 @@ tolerance pages rather than silently healing, and that `/readyz` fails on a behi
 - **Credits** — the signed internal accounting unit. Negative is consumption, positive is a grant.
 - **Money** — a fiat amount in integer minor units plus a currency, used only at the payments boundary.
 - **Rate card** — an immutable, versioned price list; a change publishes a new version.
-- **Limit** — one ceiling: a unit, a maximum, a window, a warn fraction and a deny code.
+- **Limit** — one ceiling: a unit, a maximum, a window (account · calendar · rolling · **per-job**), a warn fraction and a deny code.
+- **Allocation** — credits moved from a pool scope to a drawing scope, recorded as a paired out/in that conserves the realm.
 - **Ledger** — the append-only account of record; the authoritative balance.
 - **Plan** — a purchasable thing: prices per currency, a credit allotment, entitlements.
 - **Payment / Payment event** — a fiat transaction and the verified provider event that caused it.
@@ -205,7 +208,8 @@ tolerance pages rather than silently healing, and that `/readyz` fails on a behi
 - **SC-009**: Drift beyond tolerance pages a human in 100% of injected cases and is never silently absorbed.
 - **SC-010**: Every ledger row can be re-priced exactly from its recorded event and rate-card version.
 - **SC-011**: A capability check denies on an undeclared key and on a store outage in 100% of cases.
-- **SC-012**: The credits surface renders correctly for one, three and five ceilings, and for a non-credit unit, with no component edit.
+- **SC-012**: The credits surface renders correctly for one, three and five ceilings, and for a non-credit unit, with no component edit. A per-job and a per-call ceiling render distinguishably — one as a draining budget, the other as a wall.
+- **SC-012a**: A multi-step job halts at its own cap without reaching any calendar ceiling, and a transfer interrupted at any point either applies both sides or neither.
 - **SC-013**: A single `docker compose up` yields a service passing `/readyz` with migrations at head.
 
 ## Out of scope

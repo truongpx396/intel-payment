@@ -24,8 +24,8 @@ reviewer can check the test rather than the prose.
 - [ ] **T020** [P] `metering/domain/realm.go`, `scope.go` — `Realm`, `Scope`, `Tag()` with the realm inside it (**FR-014**, D4).
 - [ ] **T021** [P] `credits.go`, `money.go` — signed `Credits int64`, `Money{MinorUnits, Currency}` (**FR-012**).
 - [ ] **T022** [P] `event.go` — `Unit`, `Quantity`, `Event`, `Price` **with `RateCardVersion`** (**FR-002**, D6).
-- [ ] **T023** [P] `limit.go` — `Window`, `Limit`, `AdmitRequest` **with `MaxCost`**, `Admission` **with `Headroom`** (**FR-005**, D5).
-- [ ] **T024** [P] `receipt.go` — `Charge`, `Grant`, `Receipt`.
+- [ ] **T023** [P] `limit.go` — `Window` (incl. **`Job`**), `Limit`, `AdmitRequest` **with `MaxCost`**, `Admission` **with `Headroom`** (**FR-005**, **FR-017a**, D5, D22).
+- [ ] **T024** [P] `receipt.go` — `Charge` (with its optional `Job` scope), `Grant`, `Transfer`, `Receipt`, `TransferReceipt` (**FR-017b**, D23).
 - [ ] **T025** [P] `policy.go` — `SettlementDurability`, `NegativeBalancePolicy`, `CreditExpiry`, `AdmitFailPolicy`, `PlanChangePolicy`, `TaxMode` (D7, D2, D11, D9).
 - [ ] **T026** `metering/config.go` — `Config` + `withDefaults` + `Validate`. No `os.Getenv` in any core package.
 
@@ -33,13 +33,15 @@ reviewer can check the test rather than the prose.
 - [ ] **T030** `metering/ports/driven.go` — `Pricer`, `BalanceStore`, `LedgerStore`, `LimitStore`, `RateCardStore`, `Bus`, `Clock`, `IDSource`, `Metrics`.
 - [ ] **T031** `metering/ports/driving.go` — `Meter`, `LedgerWriter`.
 - [ ] **T032** `PricerContract` — determinism, attributes-never-price, empty-is-free, fail-closed on unknown key/unit, round-up, monotonicity, **rate-card version reported**.
-- [ ] **T033** `LedgerContract` — debit idempotent, admit gates without reserving, exhausted refusal carries the code, grant idempotent, **`MaxCost` bounds overshoot**, **idem keys do not collide across realms**, **`clamp_to_zero` writes a `writeoff` row** (D5, D4, D7).
+- [ ] **T033** `LedgerContract` — debit idempotent, admit gates without reserving, exhausted refusal carries the code, grant idempotent, **`MaxCost` bounds overshoot**, **idem keys do not collide across realms**, **`clamp_to_zero` writes a `writeoff` row**, **a job budget halts without touching a calendar ceiling**, **a transfer applies both sides or neither and refuses rather than overdrawing** (D5, D4, D7, D22, D23).
 - [ ] **T034** `LedgerWriterContract` — drain exactly-once under redelivery, reconcile heals *and* alarms past tolerance, rehydrate rebuilds under a per-scope lock.
 
 ### App
 - [ ] **T040** `app/admit.go` — resolve realm limits from `LimitStore`, merge caller limits, evaluate windows, apply `MaxCost`, compute `Headroom`, emit warn/blocked, honour `AdmitFailPolicy` (**FR-004…006**).
 - [ ] **T041** `app/record.go` — price via `Pricer`, then **one atomic step** writing the usage record and enqueueing the debit (**FR-008**, invariant 8).
 - [ ] **T042** `app/grant.go` — signed grants, idempotent, `NegativeBalancePolicy` **with the compensating `writeoff` row** (**FR-015**, invariant 12).
+- [ ] **T042a** `app/transfer.go` — atomic pool→allocation: one Lua script over both scopes' keys, paired `allocation_out`/`allocation_in` under one idem key; refuse on insufficient pool, cross-realm destination, or `MaxDestBalance` breach. Reconcile asserts the pair sums to zero (**FR-017b**, invariant 14, D23).
+- [ ] **T042b** `Window: Job` counters — keyed on an ephemeral scope with a TTL; a counter, not a granted balance, so no ledger rows accrue per job (**FR-017a**, D22).
 - [ ] **T043** `app/writer.go` — drain; at-least-once + `credit_idem (realm, idem_key)` collapses retries (**FR-007**).
 - [ ] **T044** `app/reconcile.go` — expected vs observed, heal row, **alarm past tolerance**, `reconcile_runs` row every run (**FR-009**).
 - [ ] **T045** `app/rehydrate.go` — rebuild from ledger under a per-scope lock before serving (**FR-010**).
@@ -76,7 +78,7 @@ reviewer can check the test rather than the prose.
 - [ ] **T084** `billing/app/webhook.go` — verify → claim → resolve → dispatch → mark, exactly the flow in the contract. **Every money branch goes through `Meter.Grant`** (**FR-022**).
 - [ ] **T085** `billing/app/checkout.go` — catalogue resolve, customer upsert, provider checkout. Returns a URL and grants nothing.
 - [ ] **T086** `adapters/driven/stripe` — `Stripe-Signature` HMAC, constant-time, timestamp tolerance; **key grants on payment/invoice id, never the session** (the double-grant trap).
-- [ ] **T087** [P] `adapters/driven/polar`, **T088** [P] `adapters/driven/paypal` (remote verification: deadline, retry budget, **park unverifiable — never fail open**, invariant 14).
+- [ ] **T087** [P] `adapters/driven/polar`, **T088** [P] `adapters/driven/paypal` (remote verification: deadline, retry budget, **park unverifiable — never fail open**, payments invariant 14).
 - [ ] **T089** `TaxStrategy` impls: `provider_managed`, `external_hook`, `none` (**FR-028**, D9).
 - [ ] **T090** `PlanChangePolicy` in `ChangePlan` (**FR-029**, D11).
 - [ ] **T091** Catalogue store — plans, per-currency prices, provider price mapping (D12).
