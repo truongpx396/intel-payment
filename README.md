@@ -6,6 +6,19 @@ self-contained container.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
+> ## ⚠️ Status: design complete, **implementation not started**
+> This repository currently contains the **specification** — contracts, data model, verified
+> migrations and deployment scaffolding. There is **no Go code yet**, so the commands below
+> describe the intended interface rather than something you can run today. Start at
+> [ROADMAP.md](ROADMAP.md) for what exists, what is designed, and what is deliberately absent;
+> [tasks.md](specs/001-metering-billing-core/tasks.md) is the build order.
+>
+> **Scope, stated honestly:** this is a *metering, credits and payment-collection engine* for
+> products that need an internal credit unit with sub-millisecond refuse-before-spend enforcement.
+> **Post-paid usage invoicing** ("invoice us monthly for what we used") is designed as
+> [Phase 2](specs/002-postpaid-invoicing/) and not built. If you do not need credits plus hot-path
+> enforcement, [ROADMAP.md](ROADMAP.md) names the tools you probably want instead.
+
 ```text
                  ┌─────────────────────────────────────────────────────────┐
   HOST PRODUCT   │  Admit(scope, maxCost) → allowed? headroom?             │  sub-ms gate,
@@ -18,7 +31,8 @@ self-contained container.
 │  entitlement/  what a plan unlocks besides credits: flags · quotas · enums           │
 │  ui/           credits-ui: balance · ceilings · spend · ledger · plan catalogue      │
 └────────────────────────────────────────────────────────────────────────────────────┘
-        Redis (hot balance + outbox)   ·   Postgres (the account of record)   ·   bus
+   Redis — hot balance + outbox STREAM (the bus, by default)   ·   Postgres — the account of record
+              (NATS JetStream is an optional swap, not a requirement)
 ```
 
 ## Why this exists
@@ -54,14 +68,16 @@ rather than a claim.
 | **Payments that cannot double-grant** | Signature-verified webhooks are the only fulfilment path; an atomic event claim plus the idempotency guard make replays no-ops |
 | **Entitlements, not plan-code `if`s** | Flags, quotas and enums as data, with `override > subscription > default` precedence and provenance on every grant |
 | **A credits UI that is not hardcoded** | The ceiling count, the unit, the ledger columns and the dimension members are all data. One ceiling or five, credits or GB-months, same components |
+| **Two stores, not three** | The bus defaults to **Redis Streams**, so the outbox *is* the stream — published by the same atomic script that moves the balance. No broker to stand up; **NATS JetStream is a one-line swap** when you need quorum replication or cross-region mirroring |
 | **Library or container** | The same ports, embedded in-process or behind gRPC + REST. Switching is a wiring change in `cmd/` |
 | **A boundary you cannot cross by accident** | `go-arch-lint` + `depguard` make the portability guarantee a CI gate |
 
-## Quick start
+## Quick start *(intended interface — needs the Phase 1 implementation)*
 
 ```bash
 cp .env.example .env
-make up                          # postgres + redis + nats + migrations + paymentd + worker
+make up                          # postgres + redis + migrations + paymentd + worker
+                                 # (no broker: the bus is Redis Streams by default)
 curl -s localhost:8080/readyz    # {"status":"ready","migrations":"head"}
 make seed REALM=my-product       # a rate card, three ceilings, two plans, a free tier
 ```
@@ -121,6 +137,12 @@ on every request, so a cross-region hop taxes all of them.
 **Multi-product** — one deployment, one realm per product. Plans, cards, ceilings, credentials and
 idempotency keys are all realm-partitioned, so nothing crosses.
 
+**Bus** — Redis Streams by default, which keeps required infrastructure to Redis + Postgres and
+removes a failure class: with a broker, an intent can sit in the outbox but not yet on the bus,
+whereas a stream outbox is published by the same atomic script that moves the balance. Swap to
+**NATS JetStream** (`PAYMENT_BUS=nats_jetstream`) for quorum replication or cross-region mirroring.
+Same subjects, same handlers, same invariants — see [bus-subjects.md](specs/001-metering-billing-core/contracts/bus-subjects.md).
+
 Either way the durable writer is its own process — the sole writer of the ledger, never a
 request-serving tier.
 
@@ -128,7 +150,9 @@ request-serving tier.
 
 | | |
 |---|---|
+| [**ROADMAP.md**](ROADMAP.md) | What exists, what is designed, what is absent, and when to use something else |
 | [**Contracts**](specs/001-metering-billing-core/contracts/) | The normative surface: ports, invariants, conformance suites |
+| [Post-paid invoicing (Phase 2)](specs/002-postpaid-invoicing/) | Rating, tiered schedules, commitments, immutable invoices, credit notes, discounts, trials |
 | [Spec](specs/001-metering-billing-core/spec.md) | 45 functional requirements, 13 success criteria, the edge cases |
 | [Data model](specs/001-metering-billing-core/data-model.md) | The schema and why each constraint exists |
 | [Design decisions](specs/001-metering-billing-core/design-decisions.md) | Every resolved question and refinement, with what was rejected |
@@ -156,9 +180,10 @@ contracts; these are the load-bearing few:
 
 ## Status
 
-The design is complete and normative; the implementation is the task list. Contracts, data model,
-migrations and deployment scaffolding are in place — migrations are verified against PostgreSQL 16
-and the seed path is exercised. Start at [tasks.md](specs/001-metering-billing-core/tasks.md).
+Design complete and normative; **implementation not started**. Contracts, data model, migrations and
+deployment scaffolding are in place — all six migrations are verified against PostgreSQL 16 and the
+seed path is exercised. Everything else, including the honest gap list, is in
+[ROADMAP.md](ROADMAP.md). Build order: [tasks.md](specs/001-metering-billing-core/tasks.md).
 
 ## Provenance
 

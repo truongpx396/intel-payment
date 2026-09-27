@@ -84,6 +84,14 @@ jobs:
           psql -h localhost -U payment -d payment -v ON_ERROR_STOP=1 -c "
             SELECT 1/COUNT(*) FROM pg_indexes
             WHERE tablename='payment_events' AND indexdef ILIKE '%UNIQUE%provider_event_id%';"
+          # One invoice per period — the durable half of single-owner period close.
+          psql -h localhost -U payment -d payment -v ON_ERROR_STOP=1 -c "
+            SELECT 1/COUNT(*) FROM pg_indexes
+            WHERE tablename='invoices' AND indexdef ILIKE '%UNIQUE%period_id%';"
+          # One open period per scope — the claim that makes close idempotent.
+          psql -h localhost -U payment -d payment -v ON_ERROR_STOP=1 -c "
+            SELECT 1/COUNT(*) FROM pg_indexes
+            WHERE indexname='billing_periods_one_open_per_scope';"
 
   secrets:
     name: gitleaks

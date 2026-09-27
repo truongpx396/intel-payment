@@ -13,9 +13,9 @@ importable library and as a container. The design is complete and normative
 | Concern | Choice | Why |
 |---|---|---|
 | Language | Go 1.23+ | The hot path is a sub-millisecond admission check; the durable writer is a long-lived single-owner worker. Both want a compiled language with cheap concurrency, and the ports were designed in Go |
-| Hot store | Redis 7+, **`noeviction` + AOF** | Atomic `DECRBY` + `LPUSH` + `SET NX` in one Lua script is the whole fast path. The eviction policy is not a tuning choice: an LRU policy here turns a cache miss into a billing incident |
+| Hot store | Redis 7+, **`noeviction` + AOF** | Atomic `DECRBY` + `XADD` + `SET NX` in one Lua script is the whole fast path. The eviction policy is not a tuning choice: an LRU policy here turns a cache miss into a billing incident — and with a stream outbox, evicting an entry drops a money intent |
 | Durable store | PostgreSQL 15+ | `UNIQUE(realm, idem_key)` is the correctness backstop for every guarantee in the system. Partitioned ledger, generated `scope_tag`, `JSONB` for immutable event payloads |
-| Bus | NATS JetStream (reference) behind a `Bus` port | Durable streams + queue groups give at-least-once with single-delivery-per-group. Abstracted so Kafka/SQS/Pub-Sub is one adapter |
+| Bus | **Redis Streams (default)**, NATS JetStream optional, both behind a `Bus` port | Streams give durable entries + consumer groups + `XAUTOCLAIM` redelivery — everything needed — **without a second system**, and the outbox *becomes* the stream, published by the same atomic script that moves the balance. JetStream when quorum replication or cross-region mirroring is required. A third adapter (Kafka/SQS) is one implementation |
 | Transports | gRPC (hot path) + REST (everything else) | gRPC for typed, deadline-bounded, connection-reused `Admit`; REST for non-Go hosts, browser snapshots, webhooks and operations |
 | UI package | TypeScript, framework-free ports + React reference components | `ports.ts`/`model.ts` carry no framework, so a non-React host reuses the derivation |
 | Providers | Stripe, Polar, PayPal adapters | Each SDK confined to its own package by a lint rule |
@@ -63,6 +63,10 @@ passes against all three and `LedgerContract` passes against the Redis adapter.
 **Phase 2 — Transports.** Proto, gRPC server, gRPC client wrapped to satisfy `ports.Meter`,
 REST handlers, `/healthz`, `/readyz`, metrics. **Done when** an integration test passes
 identically against the in-process meter and the client stub — that equivalence *is* FR-044.
+
+The `Bus` port gets **two adapters in this phase, not one**: Redis Streams and NATS JetStream, both
+passing the same `BusContract`. Shipping one and claiming swappability is the thing this repo's own
+conformance-suite discipline exists to prevent.
 
 **Phase 3 — Payments.** `billing` domain and ports, `ProviderContract` and `IngressContract`,
 the webhook ingress, the Stripe adapter, then Polar and PayPal against the same suite. **Done

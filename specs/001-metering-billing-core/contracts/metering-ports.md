@@ -27,17 +27,20 @@ CALLER (any runtime, any domain)
    │  Admit(scope, limits…, maxCost)   ── admission gate (no reservation)
    │  Record(event)                    ── price + settle, idempotent
    ▼
-┌── Meter (orchestration) ─────────────────────────────────────────────┐
-│   Pricer.Price(event)  → Credits (+ informational CostMicros)   PURE  │
-│   Ledger.Debit(charge) → fast path: atomic Redis DECRBY + outbox LPUSH │
-└───────────────────────────────────────────────┬───────────────────────┘
-        returns now (no durable-store wait)      │  outbox:{shard}
-                                                 ▼
-┌── LedgerWriter (SOLE durable writer · single-owner worker role) ──────┐
-│   Drain      LPOP outbox:{shard} → INSERT credit_ledger (idem UNIQUE) │
-│   Reconcile  expected = SUM(ledger); heal drift; ALARM if > tolerance │
-│   Rehydrate  rebuild hot balance from ledger (cold-start / Redis loss)│
-└───────────────────────────────────────────────────────────────────────┘
+┌── Meter (orchestration) ─────────────────────────────────────────────────┐
+│   Pricer.Price(event)  → Credits (+ informational CostMicros)      PURE   │
+│   Ledger.Debit(charge) → fast path: ONE atomic Redis script:              │
+│                          DECRBY balance + XADD outbox + SET NX applied    │
+└──────────────────────────────────────────────────┬───────────────────────┘
+        returns now (no durable-store wait)         │  outbox:{shard}  (a STREAM,
+                                                    │  not a list — so the intent is
+                                                    ▼  already on the durable bus)
+┌── LedgerWriter (SOLE durable writer · single-owner worker role) ─────────┐
+│   Drain      XREADGROUP outbox:{shard} → INSERT credit_ledger → XACK     │
+│              (XAUTOCLAIM recovers a dead consumer's un-acked entries)    │
+│   Reconcile  expected = SUM(ledger); heal drift; ALARM if > tolerance    │
+│   Rehydrate  rebuild hot balance from ledger (cold-start / Redis loss)   │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 Three seams a host can swap independently: the **`Pricer`** (its domain), the **`Ledger`/`LedgerWriter`** backend (its infra), and the **`Scope`** binding (its tenancy). The reference implementation uses Redis + Postgres + NATS, but nothing in the port signatures requires them — the driven ports name capabilities, not products.
@@ -217,6 +220,7 @@ type Grant struct {
 }
 
 // Transfer moves credits between two scopes in ONE realm, atomically, under one IdemKey.
+// It is NOT a hot-path operation: it settles durably first (see Ledger.Transfer).
 //
 // This is the pool→allocation pattern, and it is common enough to belong in the engine: an
 // enterprise buys once at the parent scope and its teams draw allocations from that pool. The
@@ -286,21 +290,34 @@ type Ledger interface {
 	Admit(ctx context.Context, s Scope, req AdmitRequest) (Admission, error)
 
 	// Debit settles a completed unit of work on the fast path. Idempotent on c.IdemKey:
-	//   1. atomically in Redis: DECRBY balance:{tag} + LPUSH outbox:{shard} {intent}
-	//      + SET NX billing:applied:{tag}:{idem}   (all-or-nothing; one Lua script / MULTI)
+	//   1. atomically in Redis, ONE Lua script: DECRBY balance:{tag}
+	//      + XADD outbox:{shard} {intent} + SET NX billing:applied:{tag}:{idem}
 	//   2. return immediately (no durable-store wait)
 	// A replay (SET NX miss) returns Receipt{Applied:false} without a second decrement.
+	//
+	// The outbox is a STREAM with a consumer group, not a list. That is what collapses the
+	// old two-step "drain the outbox, then publish to a broker" into one: the atomic step has
+	// already put the intent on the durable bus, so there is no window in which an intent
+	// exists in the outbox but not on the bus, and no translation layer between them.
 	Debit(ctx context.Context, c Charge) (Receipt, error)
 
 	// Grant mirrors Debit for positive/negative credit changes (payments, refunds, admin).
 	// Same atomic Redis step + outbox intent + idempotency guard.
 	Grant(ctx context.Context, g Grant) (Receipt, error)
 
-	// Transfer moves credits between two scopes in one realm. BOTH sides apply or NEITHER does:
-	// the decrement, the increment, the two outbox intents and the idempotency guard are one
-	// atomic step (a single Lua script — the scopes' keys must therefore share a hash slot, which
-	// Scope.Tag()'s realm prefix does not guarantee, so an implementation either co-locates by
-	// realm or takes both keys in one script under a `{realm}` tag).
+	// Transfer moves credits between two scopes in one realm. BOTH sides apply or NEITHER does.
+	//
+	// Unlike Debit/Grant this settles in POSTGRES FIRST, not on the Redis fast path — one
+	// transaction writing the paired allocation_out/allocation_in rows and the idempotency
+	// guard, then the two hot balances are updated (and reconcile heals them if that second
+	// step is lost, because the ledger is authoritative).
+	//
+	// The reason is a hard constraint rather than a preference: under Redis Cluster a Lua script
+	// may not touch keys in different hash slots, and two scopes' keys are in different slots by
+	// construction. Forcing them together with a shared `{realm}` tag would put every scope in a
+	// realm on ONE slot — destroying the sharding the rest of the design depends on. Since a
+	// transfer is an administrative operation measured in per-day, not per-request, paying a
+	// Postgres round trip for real atomicity is the right trade. See design-decisions.md D24.
 	//
 	// It refuses rather than overdraws: an insufficient pool, a cross-realm destination, or a
 	// destination that would exceed MaxDestBalance all return an error and change nothing.
@@ -386,7 +403,7 @@ type ReconcileReport struct {
 5. **Deterministic, replayable pricing — and the card version is recorded.** `Pricer.Price` is pure over `RateKey` + `Quantities` + a versioned rate card (see the `Pricer` port); it fails **closed** on an unknown `RateKey`/`Unit` (never prices at zero). Reconciliation and audits re-derive cost from the immutable event. Every ledger row persists `rate_card_version`, because replay is only *possible* if the row says which card priced it — otherwise a re-derivation months later quietly applies today's rates and disagrees with the charge it is meant to verify.
 6. **Integer money only.** `Credits int64` (signed delta) internally; `Money{MinorUnits, Currency}` at the fiat boundary. Never floats, anywhere.
 7. **Documented RPO direction on hot-store loss.** The hot path does `DECRBY + LPUSH` atomically in Redis and returns before the durable write. If Redis loses that atomic pair before `Drain` runs (AOF `everysec` window, or a failover), the ledger row is never written, and `Reconcile` — which trusts the ledger as source of truth — heals the balance **upward**, i.e. the charge is silently forgotten. **This is under-billing, not double-billing, and the ledger is authoritative.** Implementations MUST state this direction and pick a `SettlementDurability` (below) accordingly; they MUST NOT imply reconcile makes every loss whole. *(Closes the "reconcile heals in the under-bill direction" gap.)*
-8. **Atomic usage-log + debit enqueue.** `Record` MUST write the usage/analytics record and enqueue the debit intent in **one** atomic step (one Lua script over both Redis structures, or one Postgres tx in `journal` mode) — never as two independent best-effort writes, which could log a call with no debit or debit with no log. *(Closes the "per-call chain lacks the outbox's atomicity" gap.)*
+8. **Atomic usage-log + debit enqueue.** `Record` MUST write the usage/analytics record and enqueue the debit intent in **one** atomic step (one Lua script over the balance key, the outbox stream and the idempotency key, or one Postgres tx in `journal` mode) — never as two independent best-effort writes, which could log a call with no debit or debit with no log. With a stream outbox this is strictly easier than with a list plus a separate broker publish: there is no second hop that can fail after the first succeeded. *(Closes the "per-call chain lacks the outbox's atomicity" gap.)*
 9. **Reconcile alarms on drift beyond tolerance.** Out-of-tolerance drift pages (`ReconcileReport.Alarmed`); it is never silently absorbed by a `reconcile` row. `Tolerance` is configured, not implicit.
 10. **Scope opacity.** The kernel never parses, ranks, or special-cases a `Scope`. Re-anchoring the billing subject (workspace→organization→…) changes only the `Scope` the host constructs and the RLS predicate — never a kernel signature.
 11. **Realm isolation.** No read or write crosses a realm. Every key, subject, ledger row, plan, rate card, limit and idempotency guard is realm-partitioned, and a query that omits the realm predicate is a defect. A caller authenticated for realm A can never name a scope in realm B (enforced at the transport, see [security.md](../../../docs/security.md)).
@@ -894,7 +911,7 @@ Enforcement + hygiene that keep the boundary honest over time:
 - **`depguard`/`go-arch-lint`** rule: `metering/**` may not import `billing/**`, `entitlement/**`, `cmd/**`, or any host package. CI fails the moment someone reaches across.
 - **Own the schema.** Credit/ledger/outbox/payment tables live in `migrations/`, keyed on `(realm, scope_kind, scope_id)` — the opaque scope triple — never on a host's tenant column. See [../data-model.md](../data-model.md).
 - **Own the config.** A `metering.Config` struct (Redis DSN, PG DSN, bus, shard count, reconcile tolerance, settlement durability) passed in — the core never reads global app config or env directly.
-- **Abstract the bus.** `app` depends on a `Bus` *port*, not NATS, so the extracted service can keep NATS or swap it (`billing.deduct.<tag>` becomes the port's subject convention).
+- **Abstract the bus.** `app` depends on a `Bus` *port*, not a concrete broker. The **default adapter is Redis Streams**, which keeps the required infrastructure to Redis + Postgres and lets the hot path's atomic script publish straight onto the durable stream. **NATS JetStream is a drop-in alternative** for deployments that need file-backed storage with replication, cross-region mirroring, or an existing JetStream estate. See [bus-subjects.md](./bus-subjects.md) for both dialects and the trade-off.
 - **One module, clean internal graph.** `metering/` is import-clean with respect to `billing/` and `entitlement/`, so a host that wants only metering can vendor that subtree alone.
 
 Net: `metering/` (engine) + `metering/billing/` (fiat adapter) is a cohesive, self-contained unit whose *only* seams to the outside world are the injected `Pricer`, the injected `Scope`, and the driven infra adapters — exactly the three things a different host would provide anyway.

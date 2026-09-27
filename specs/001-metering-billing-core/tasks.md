@@ -30,7 +30,7 @@ reviewer can check the test rather than the prose.
 - [ ] **T026** `metering/config.go` — `Config` + `withDefaults` + `Validate`. No `os.Getenv` in any core package.
 
 ### Ports & conformance suites (before adapters — the suites are the specification)
-- [ ] **T030** `metering/ports/driven.go` — `Pricer`, `BalanceStore`, `LedgerStore`, `LimitStore`, `RateCardStore`, `Bus`, `Clock`, `IDSource`, `Metrics`.
+- [ ] **T030** `metering/ports/driven.go` — `Pricer`, `BalanceStore`, `LedgerStore`, `LimitStore`, `RateCardStore`, `Bus` (with `Pending` and `Trim`), `Clock`, `IDSource`, `Metrics`.
 - [ ] **T031** `metering/ports/driving.go` — `Meter`, `LedgerWriter`.
 - [ ] **T032** `PricerContract` — determinism, attributes-never-price, empty-is-free, fail-closed on unknown key/unit, round-up, monotonicity, **rate-card version reported**.
 - [ ] **T033** `LedgerContract` — debit idempotent, admit gates without reserving, exhausted refusal carries the code, grant idempotent, **`MaxCost` bounds overshoot**, **idem keys do not collide across realms**, **`clamp_to_zero` writes a `writeoff` row**, **a job budget halts without touching a calendar ceiling**, **a transfer applies both sides or neither and refuses rather than overdrawing** (D5, D4, D7, D22, D23).
@@ -49,9 +49,11 @@ reviewer can check the test rather than the prose.
 - [ ] **T047** `app/new.go` — `Deps`, validation, return `ports.Meter`.
 
 ### Driven adapters
-- [ ] **T050** `adapters/driven/redis` — one Lua script per operation: `DECRBY` + `LPUSH outbox:{shard}` + `SET NX applied` all-or-nothing. Window counters. Locks.
+- [ ] **T050** `adapters/driven/redis` — one Lua script per operation: `DECRBY` + **`XADD outbox:{shard}`** + `SET NX applied`, all-or-nothing. Window counters (incl. `Job`). Locks.
 - [ ] **T051** `adapters/driven/postgres` — ledger store, limit store, rate-card store (+ in-process cache), reconcile queries, journal mode.
-- [ ] **T052** [P] `adapters/driven/nats` — `Bus` over JetStream, subjects per [bus-subjects.md](./contracts/bus-subjects.md).
+- [ ] **T052** [P] `adapters/driven/redisstreams` — **the default `Bus`**. `XADD` inline in the hot-path Lua script; `XREADGROUP` + `XACK` to drain; `XAUTOCLAIM` past `AckWait` to reclaim a dead consumer; `XPENDING` for `Pending()`; explicit `Trim` (**FR-046**, **FR-047**).
+- [ ] **T052a** [P] `adapters/driven/natsjetstream` — the optional `Bus`. Same subjects, same handlers.
+- [ ] **T052b** `BusContract` run against **both** adapters — including a killed consumer's in-flight entry being redelivered, and `Trim` refusing to remove an un-acked entry (**SC-014**).
 - [ ] **T053** [P] `adapters/driven/otel` — `Metrics`, every name from the observability contract (**FR-041**).
 - [ ] **T054** [P] `pricing/llmtoken` — the reference pricer, pure, fails closed, rounds up, reports its card version.
 - [ ] **T055** [P] `pricing/seat`, **T056** [P] `pricing/storagebyte` — **the reuse proof.** Same `PricerContract`, disjoint unit spaces (**SC-004**).
@@ -95,7 +97,7 @@ reviewer can check the test rather than the prose.
 
 ## Phase 5 — Operational surface
 
-- [ ] **T110** Tick handlers: `reconcile`, `expiry`, `dunning`, **`subdrift`** (D16), `events.purge`, `dlq.sweep` — each an idempotent atomic claim so a duplicate tick is a no-op.
+- [ ] **T110** Tick handlers: `reconcile`, `expiry`, `dunning`, **`subdrift`** (D16), `events.purge`, `dlq.sweep`, **`trim`** (stream retention — without it a `noeviction` Redis fills and the hot path stops) — each an idempotent atomic claim so a duplicate tick is a no-op.
 - [ ] **T111** DLQ: park at the cap into `dead_letters`, alert, **never re-drive again, never drop** (**FR-043**).
 - [ ] **T112** Admin endpoints: force reconcile, rehydrate, drift; every one audited.
 - [ ] **T113** `usage_daily` rollup + the member-scoped breakdown (**FR-039**, D20).

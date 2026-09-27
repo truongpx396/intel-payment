@@ -38,9 +38,30 @@ wrong, because that is usually the only thing worth knowing.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `PAYMENT_BUS_URL` | — | JetStream in the reference adapter |
+| `PAYMENT_BUS` | `redis_streams` | `redis_streams` \| `nats_jetstream`. See the comparison below |
+| `PAYMENT_BUS_URL` | — | Empty with `redis_streams` reuses the balance Redis. Required for JetStream |
 | `PAYMENT_SUBJECT_PREFIX` | `billing` | Fit into a host's existing namespace |
 | `PAYMENT_SHARDS` | `16` | **Fixed for a deployment's life.** Changing it re-partitions the outbox key space; entries queued under the old count are orphaned |
+| `PAYMENT_BUS_RETENTION` | `168h` | Acked entries kept this long, then trimmed. Streams only |
+| `PAYMENT_BUS_MAX_LEN` | `1000000` | Per-stream soft cap. Nearing it **alerts**; it never trims un-acked entries |
+| `PAYMENT_BUS_MAX_ATTEMPTS` | `5` | Deliveries before an entry goes to the DLQ |
+| `PAYMENT_BUS_ACK_WAIT` | `30s` | In-flight reclaim threshold (`XAUTOCLAIM` / ack-wait) |
+
+**Why Redis Streams is the default:** it removes a failure class rather than just a dependency. With
+a broker, the hot path writes an outbox entry and something else publishes it later — so an intent can
+exist in the outbox and not on the bus. With a stream outbox, `XADD` runs inside the same atomic
+script as `DECRBY`, so the intent is durable on the bus the instant the balance moves. It also takes
+required infrastructure down to **Redis + Postgres**.
+
+**Choose `nats_jetstream` when** you need quorum (R3/R5) replication or cross-region mirroring for
+money intents, you run `journal` settlement and want the bus as durable as the journal, or you
+already operate JetStream. Subjects, handlers and invariants are identical, and the same
+`BusContract` passes against both.
+
+> **With a stream bus, `PAYMENT_BUS_RETENTION` and the trim tick are not optional.** Nothing in Redis
+> reclaims stream memory on its own. On a `noeviction` instance — which this store must be — an
+> untrimmed stream eventually fills memory and **stops the hot path**. Trim never removes an un-acked
+> entry, so the floor can be set conservatively.
 
 ### Settlement durability
 

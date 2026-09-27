@@ -250,3 +250,107 @@ what stops an errant admin action handing one team the entire pool.
 
 Invariant 14 is what makes it auditable: the pair shares one `IdemKey` and sums to zero, so a
 half-applied allocation is detectable rather than silent. Verified against PostgreSQL 16.
+
+---
+
+## Decisions from the design review
+
+Prompted by a direct question — *is this genuinely production-grade and general-purpose?* — and the
+honest answer was partly. These record what that review changed.
+
+### D24 — `Transfer` settles in Postgres, not on the Redis fast path
+**Changed**: from "one Lua script over both scopes' keys" to a Postgres transaction writing the
+paired rows and the guard, followed by a best-effort hot-balance refresh.
+**Why**: [D23](#d23--transfer--the-pool--allocation-primitive) as first written was **not
+implementable on Redis Cluster**. A Lua script may not touch keys in different hash slots, and two
+scopes' keys are in different slots by construction. The escape hatch I reached for — force them
+together with a shared `{realm}` hash tag — would put every scope in a realm on one slot, destroying
+the sharding the entire design depends on. So the original wording papered over a contradiction
+rather than resolving it.
+
+Postgres-first resolves it properly, and the trade is favourable: a transfer is an administrative
+operation measured per-day, not per-request, so one round trip buys real atomicity on the path where
+atomicity is the whole point. The hot-balance refresh afterwards is advisory — the ledger is
+authoritative, so a lost refresh costs a reconcile rather than money.
+
+The general lesson, worth keeping: **the fast path is for operations that are frequent, not for
+operations that are important.**
+
+### D25 — Redis Streams is the default bus; NATS JetStream is the swap
+**Changed**: from JetStream-as-reference to Redis Streams as the default adapter, both behind the
+same `Bus` port with one conformance suite.
+**Why**: two reasons, and the second is the stronger one.
+
+1. **Required infrastructure drops to Redis + Postgres.** A broker was the third system you had to
+   stand up before taking a single payment, and "quick setup" was not true with it in the list.
+2. **It removes a failure class, not just a dependency.** With a broker, the hot path writes an
+   outbox entry and *something else* publishes it later — so there is a window in which an intent
+   exists in the outbox but not on the bus, and a crash inside that window is a lost charge. With a
+   stream outbox, `XADD` runs **inside the same atomic script as `DECRBY`**, so the intent is durable
+   on the bus the instant the balance moves. The old "drain the outbox, then publish" two-step
+   collapses into one, and there is no translation layer between them to get wrong.
+
+Streams provide everything the design needed from a broker: durable entries, consumer groups with
+one-delivery-per-group, `XAUTOCLAIM` redelivery for a dead consumer, and `XPENDING` for the depth and
+age metrics the runbook depends on.
+
+**What JetStream still wins:** quorum (R3/R5) replication and cross-region mirroring, both
+synchronous. Redis replication is asynchronous, so for `journal`-settlement deployments that want the
+bus as durable as the journal, JetStream is the right answer. It stays a one-line swap.
+
+**The cost, stated plainly:** Redis Streams have no automatic retention. Nothing reclaims stream
+memory, and this instance must be `noeviction`, so an untrimmed stream fills memory and then **stops
+the hot path** — `XADD` fails inside the script that moves the balance. Hence FR-047, the
+`billing.trim.tick`, a stream-length metric, and a runbook entry. Trim never removes an un-acked
+entry, so the floor can be generous.
+
+### D26 — Post-paid invoicing is a separate feature, not a `Pricer` variant
+**Decided**: [feature 002](../002-postpaid-invoicing/spec.md), additive, with its own `Rater` port.
+**Rejected**: extending `Pricer` to handle tiers; bolting invoices onto the credit ledger.
+**Why**: post-paid is the settlement model most B2B contracts use, and its absence was the largest
+gap between what "billing service" implies and what feature 001 delivers. But it cannot be retrofitted
+into `Pricer`, and the reason is structural rather than a matter of effort:
+
+`Pricer` is pure over **one event**, and that purity is what makes reconciliation and dispute replay
+possible. Tiered, graduated and volume pricing depend on **period-to-date volume** — pricing request
+4,312,905 requires knowing it is the 4,312,905th. A `Pricer` that reads cumulative state is no longer
+pure, and the moment it is not pure, every replay guarantee in feature 001 dies with it.
+
+So `Rater` is a second port that is pure over **the set**: it runs once at period close over the
+complete immutable event list, stays replayable for the same reason `Pricer` is, and never touches a
+hot path. Both can serve one scope — `hybrid` settlement meters credits for real-time enforcement and
+rates the period for an overage invoice.
+
+The two also differ in what they produce. `Pricer` produces a number. `Rater` produces a **document**
+a human reads and disputes — which is why 002 carries invariants `Pricer` never needed: immutability
+after finalize, gapless numbering, line-level traceability back to ledger rows, and corrections only
+by credit note.
+
+### D27 — Forward-only migrations, by policy
+**Decided**: no down migrations. Development resets the database; production fixes forward.
+**Rejected**: shipping a `.down.sql` per migration.
+**Why**: I had listed "no down migrations" as a gap, then, writing them, noticed every one began by
+dropping a table that holds an account of record — `credit_ledger`, `credit_idem`, `payments`,
+`audit_log`. Shipping those files asserts that dropping the ledger is a supported operation.
+
+It is not, and a rollback that destroys the ledger is worse than the bad migration it undoes: the
+migration is fixable, the ledger is not reconstructible. A backup restores a *copy*, not the rows a
+live system wrote since.
+
+Two conventions make forward-only safe rather than merely stubborn: forward migrations are
+**additive** (new tables, nullable columns, new indexes — never a drop or a re-key of a money table),
+which means the **previous binary still runs against the new schema**. So a deploy stays reversible
+even when the schema is not: roll back the code, leave the schema, fix forward.
+[002's schema](../002-postpaid-invoicing/data-model.md) follows this and drops nothing.
+
+### D28 — The README states its own status and scope, prominently
+**Changed**: a status banner above everything; Quick Start marked as the intended interface;
+[ROADMAP.md](../../ROADMAP.md) naming the competing tools and the honest gap list.
+**Why**: the README described a service — features, quick start, deployment shapes — for a repository
+containing zero lines of Go, where `make up` cannot work because `cmd/` does not exist. That is an
+overclaim regardless of intent, and a billing system is the worst category of software to overstate,
+because the cost of adopting one for a job it cannot do is measured in someone's revenue.
+
+ROADMAP.md also names **when to use something else** (Stripe Billing, Lago, Orb, OpenMeter, Kill
+Bill). A reusable component that cannot say who should not use it is not being honest about its own
+boundaries.

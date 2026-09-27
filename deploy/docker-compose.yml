@@ -6,7 +6,8 @@ x-env: &env
   PAYMENT_REALM:             ${PAYMENT_REALM:-default}
   PAYMENT_BALANCE_REDIS_URL: redis://redis:6379/0
   PAYMENT_LEDGER_DSN:        postgres://payment:payment@postgres:5432/payment?sslmode=disable
-  PAYMENT_BUS_URL:           nats://nats:4222
+  PAYMENT_BUS:               ${PAYMENT_BUS:-redis_streams}
+  PAYMENT_BUS_URL:           ${PAYMENT_BUS_URL:-}
   PAYMENT_SETTLEMENT:        ${PAYMENT_SETTLEMENT:-outbox}
   PAYMENT_ADMIT_FAIL_POLICY: ${PAYMENT_ADMIT_FAIL_POLICY:-fail_closed}
   PAYMENT_NEGATIVE_BALANCE_POLICY: ${PAYMENT_NEGATIVE_BALANCE_POLICY:-clamp_to_zero}
@@ -41,8 +42,9 @@ services:
 
   redis:
     image: redis:7-alpine
-    # noeviction + AOF: this store holds balances, outbox entries and idempotency guards.
-    # An LRU policy here turns a cache eviction into a billing incident.
+    # noeviction + AOF: this store holds balances, the outbox STREAM and idempotency guards.
+    # An LRU policy here turns a cache eviction into a billing incident — and with the default
+    # bus, evicting a stream entry drops a money intent outright.
     command: >
       redis-server --appendonly yes --appendfsync everysec
                    --maxmemory-policy noeviction
@@ -53,7 +55,11 @@ services:
       interval: 5s
       retries: 10
 
+  # OPTIONAL. The default bus is Redis Streams, so nothing below runs unless you ask:
+  #   docker compose --profile jetstream up -d
+  #   PAYMENT_BUS=nats_jetstream PAYMENT_BUS_URL=nats://nats:4222
   nats:
+    profiles: ["jetstream"]
     image: nats:2-alpine
     command: ["-js", "-sd", "/data"]
     volumes: [natsdata:/data]
@@ -93,6 +99,6 @@ services:
     environment: *env
     depends_on:
       migrate: { condition: service_completed_successfully }
-      nats:    { condition: service_started }
+      redis:   { condition: service_healthy }
 
 volumes: { pgdata: {}, redisdata: {}, natsdata: {} }

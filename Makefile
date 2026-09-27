@@ -4,7 +4,7 @@ MODULE  := github.com/truongpx396/intel-payment
 
 .DEFAULT_GOAL := help
 .PHONY: help build test test-integration lint arch-lint verify-portability \
-        up down logs migrate seed proto fmt vuln secrets ci clean
+        up up-jetstream down down-volumes logs migrate migrate-down seed proto fmt vuln secrets ci clean
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
@@ -47,9 +47,14 @@ secrets: ## gitleaks
 ci: build test lint verify-portability vuln ## Everything CI runs
 
 ## ---- run ------------------------------------------------------------------
-up: ## Start the full stack (postgres + redis + nats + migrate + paymentd + worker)
+up: ## Start the stack (postgres + redis + migrate + paymentd + worker)
 	$(COMPOSE) up -d --build
 	@echo "REST :8080  gRPC :9090   → curl -s localhost:8080/readyz"
+	@echo "bus: Redis Streams (default). For JetStream: make up-jetstream"
+
+up-jetstream: ## Start the stack with NATS JetStream as the bus instead of Redis Streams
+	PAYMENT_BUS=nats_jetstream PAYMENT_BUS_URL=nats://nats:4222 \
+	  $(COMPOSE) --profile jetstream up -d --build
 
 down: ## Stop and remove the stack
 	$(COMPOSE) down
@@ -62,6 +67,9 @@ logs: ## Tail service logs
 
 migrate: ## Run migrations to head
 	$(COMPOSE) run --rm migrate
+
+migrate-down: ## Roll back the last migration (TO=0001 rolls back to that version)
+	$(COMPOSE) run --rm --entrypoint /usr/local/bin/payment-migrate migrate down $(TO)
 
 ## ---- data -----------------------------------------------------------------
 REALM ?= default
