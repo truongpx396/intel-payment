@@ -1,7 +1,13 @@
--- 0006_postpaid_invoicing: the post-paid settlement model (spec 002).
+-- DRAFT — 0101_postpaid_invoicing: the post-paid settlement model (spec 002).
 --
--- ADDITIVE to 0001-0005. Adds tables and nullable columns; drops nothing and re-keys nothing,
--- so a prepaid deployment applies this without touching a money table.
+-- NOT SHIPPED. This file lives with the Phase 2 spec, not in migrations/, because Phase 2 is not
+-- built and migrations are forward-only from the first release: a table shipped before its feature
+-- exists can never be removed again (D38). CI applies it on top of the shipped baseline so the
+-- draft stays constructible; it moves into migrations/ with the Phase 2 code, renumbered then.
+--
+-- Additive to the baseline: new tables and nullable columns, nothing re-keyed and no money table
+-- touched. The one non-additive statement is WIDENING two CHECK constraints on `limits` (a new
+-- window and a new deny code), which rejects no existing row.
 BEGIN;
 
 -- ------------------------------------------------------- settlement model ---
@@ -156,9 +162,9 @@ CREATE TABLE invoices (
     tax_minor           BIGINT      NOT NULL DEFAULT 0,
     total_minor         BIGINT      NOT NULL,
     currency            CHAR(3)     NOT NULL,
-    -- `draft` is the ONLY mutable status. Past `finalized` the document is immutable and a
-    -- trigger enforces it (invariant 3) — immutability is the artifact's only real property,
-    -- and application code is not where you defend it.
+    -- `draft` is the ONLY mutable status. Past `finalized` the document is immutable and the
+    -- triggers at the end of this file enforce it (invariant 3) — immutability is the artifact's
+    -- only real property, and application code is not where you defend it.
     status              TEXT        NOT NULL CHECK (status IN
                           ('draft','finalized','sent','paid','void','uncollectible')),
     issued_at           TIMESTAMPTZ,
@@ -246,7 +252,61 @@ CREATE TABLE late_events (
     recorded_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- --------------------------------- additive changes to 0001/0002 -----------
+-- ------------------------------------------------ immutability, enforced ---
+-- Past `draft`, only the status, the provider's invoice id and updated_at may change, and a status
+-- never returns to draft. Lines of a non-draft invoice cannot be written at all; credit notes are
+-- the only correction, and they are immutable from the moment they exist.
+CREATE OR REPLACE FUNCTION invoices_immutable_after_draft() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        IF OLD.status <> 'draft' THEN
+            RAISE EXCEPTION 'invoice % is % and cannot be deleted; void it or issue a credit note', OLD.id, OLD.status
+                USING ERRCODE = 'integrity_constraint_violation';
+        END IF;
+        RETURN OLD;
+    END IF;
+    IF OLD.status = 'draft' THEN
+        RETURN NEW;
+    END IF;
+    IF NEW.status = 'draft'
+       OR (to_jsonb(NEW) - ARRAY['status','provider_invoice_id','updated_at'])
+          <> (to_jsonb(OLD) - ARRAY['status','provider_invoice_id','updated_at']) THEN
+        RAISE EXCEPTION 'invoice % is % and immutable; corrections are credit notes', OLD.id, OLD.status
+            USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    RETURN NEW;
+END $$;
+
+CREATE TRIGGER invoices_immutable BEFORE UPDATE OR DELETE ON invoices
+    FOR EACH ROW EXECUTE FUNCTION invoices_immutable_after_draft();
+
+CREATE OR REPLACE FUNCTION invoice_lines_draft_only() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE st text;
+BEGIN
+    SELECT status INTO st FROM invoices
+     WHERE id = CASE WHEN TG_OP = 'DELETE' THEN OLD.invoice_id ELSE NEW.invoice_id END;
+    IF st IS DISTINCT FROM 'draft' THEN
+        RAISE EXCEPTION 'lines of a % invoice cannot be written', coalesce(st, 'missing')
+            USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END $$;
+
+CREATE TRIGGER invoice_lines_draft_only BEFORE INSERT OR UPDATE OR DELETE ON invoice_lines
+    FOR EACH ROW EXECUTE FUNCTION invoice_lines_draft_only();
+
+CREATE OR REPLACE FUNCTION forbid_mutation() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION '% rows are immutable (% refused)', TG_TABLE_NAME, TG_OP
+        USING ERRCODE = 'integrity_constraint_violation';
+END $$;
+
+CREATE TRIGGER credit_notes_immutable BEFORE UPDATE OR DELETE ON credit_notes
+    FOR EACH ROW EXECUTE FUNCTION forbid_mutation();
+CREATE TRIGGER credit_note_lines_immutable BEFORE UPDATE OR DELETE ON credit_note_lines
+    FOR EACH ROW EXECUTE FUNCTION forbid_mutation();
+
+-- ------------------------------------------- additive changes to the baseline ---
 -- The post-paid spend cap is a new window; its deny code is DISTINCT from balance exhaustion,
 -- so a client can tell "over your credit limit" from "out of credits" (FR-102).
 ALTER TABLE limits DROP CONSTRAINT IF EXISTS limits_window_kind_check;

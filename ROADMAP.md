@@ -34,13 +34,17 @@ else**, and saying so is more useful than pretending otherwise:
 
 **Status: designed and normative. Implementation not started.** → [specs/001-metering-billing-core](specs/001-metering-billing-core/)
 
-Prepaid credits, deterministic pricing, the admission gate, the single durable writer, the outbox and
-reconcile, idempotency, payment-provider adapters with webhook-driven fulfilment, entitlements, and
-the credits UI package.
+Prepaid credits in pools, exact rational pricing, the admission gate with subject- and plan-sized
+ceilings, the single durable writer with a per-scope sequence watermark, cluster-safe hot-path
+functions, reconcile and recovery, idempotency with fingerprints, payment-provider adapters behind a
+webhook inbox (refunds, disputes, auto top-up), entitlements, outbound events, an admin API, and the
+credits UI package.
+
+**Executable today:** the schema (applied and behaviourally asserted on PostgreSQL 16) and the
+reference hot-path functions (run on Redis 7 in cluster mode) — both in CI.
 
 **Required infrastructure: Redis + Postgres.** The bus defaults to Redis Streams, so there is no
-broker to stand up; NATS JetStream is a swap for deployments needing quorum replication or
-cross-region mirroring.
+broker to stand up; NATS JetStream is an option for downstream replication.
 
 ## Phase 2 — Post-paid usage invoicing
 
@@ -75,15 +79,15 @@ Tracked openly rather than discovered later.
 
 | Gap | Phase | Note |
 |---|---|---|
-| **No implementation — 0 lines of Go** | 1 | The single largest gap. `make up` cannot work until `cmd/` exists |
+| **No implementation — 0 lines of Go** | 1 | The single largest gap. `make up` cannot work until `cmd/` exists. The schema and the reference hot path *are* executable and verified; the Go Redis adapter must load `hot_path.lua` unchanged so that verification stays meaningful |
 | Post-paid invoicing | 2 | Designed, not built |
 | Coupons, discounts, trials, quantity subscriptions | 2 | Designed in 002; absent from 001 |
 | Invoice generation | 2 | Phase 1 collects payments; it issues no invoices |
 | Revenue recognition, GL export | 3 | Not designed. Export instead |
-| No SDKs or client libraries | 1 | gRPC + REST only. A generated Go client is in 001's scope; other languages are not |
-| No API deprecation policy | 1 | `/v1/` exists; the policy for retiring it does not |
+| Client libraries | 1 | **Designed, not built**: a wrapped Go client, and TypeScript and Python clients generated from `api/openapi/v1.yaml` and the protos (T063b) |
+| Active-active multi-region | — | **Out of scope by decision** ([D45](specs/001-metering-billing-core/design-decisions.md)): one home region, Postgres replicated to a DR region, Redis rebuilt from the books |
 | GDPR erasure story | 1 | Holds `billing_email` and `actor_id`. Ledger rows must survive an erasure request for audit, so the answer is pseudonymization rather than deletion — designed nowhere yet |
-| Load tested | 1 | SC-001 is a target, not a measurement |
+| Load tested | 1 | The [scale envelope](specs/001-metering-billing-core/plan.md#scale-envelope) states targets; none is a measurement until T130 |
 | Security reviewed | 1 | Checklists exist; none has been executed |
 | Runbook exercised | 1 | [docs/operations.md](docs/operations.md) is written from reasoning, not from an incident |
 
@@ -92,8 +96,10 @@ Migrations are **forward-only by policy**, not by omission — see [migrations/R
 ## Sequencing advice
 
 Build **Phase 1, phases 0–3** before writing another line of specification. The spec-to-code ratio
-here is inverted — roughly 6,000 lines of markdown against zero of Go — and designs elaborated this
-far ahead of implementation get invalidated on contact with code.
-[D21](specs/001-metering-billing-core/design-decisions.md) is the proof: a constraint this design had
-depended on turned out not to be constructible in PostgreSQL, and it was found by *running* the
-migration rather than by reading it.
+here is inverted, and designs elaborated this far ahead of implementation get invalidated on contact
+with code. The evidence is in this repository twice over:
+[D21](specs/001-metering-billing-core/design-decisions.md) — a constraint that turned out not to be
+constructible in PostgreSQL — and the second design review ([D29–D46](specs/001-metering-billing-core/design-decisions.md#decisions-from-the-second-design-review)),
+whose most serious finding — a hot-path script Redis Cluster refuses outright — was confirmed in
+seconds by *running* it. Both were found by executing the design, not by reading it; the remaining
+mechanism can only be validated the same way, in code, under load and chaos (T130–T131).

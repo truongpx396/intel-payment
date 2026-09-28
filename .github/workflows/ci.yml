@@ -54,7 +54,7 @@ jobs:
           govulncheck ./...
 
   migrations:
-    name: migrations up/down
+    name: schema (apply · seed · assert · phase-2 draft)
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -65,33 +65,33 @@ jobs:
           --health-cmd "pg_isready -U payment" --health-interval 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
-      - name: Apply every migration
-        env: { PGPASSWORD: payment }
-        run: |
-          for f in migrations/*.sql; do
-            echo "== $f"
-            psql -h localhost -U payment -d payment -v ON_ERROR_STOP=1 -f "$f"
-          done
-      - name: Assert the invariant-critical constraints exist
-        env: { PGPASSWORD: payment }
-        run: |
-          # The idempotency backstop: realm-scoped, and on its own non-partitioned
-          # table — a partitioned ledger cannot carry it (D21). This index IS SC-002.
-          psql -h localhost -U payment -d payment -v ON_ERROR_STOP=1 -c "
-            SELECT 1/COUNT(*) FROM pg_indexes
-            WHERE tablename='credit_idem' AND indexdef ILIKE '%UNIQUE%realm%idem_key%';"
-          # The webhook replay guard.
-          psql -h localhost -U payment -d payment -v ON_ERROR_STOP=1 -c "
-            SELECT 1/COUNT(*) FROM pg_indexes
-            WHERE tablename='payment_events' AND indexdef ILIKE '%UNIQUE%provider_event_id%';"
-          # One invoice per period — the durable half of single-owner period close.
-          psql -h localhost -U payment -d payment -v ON_ERROR_STOP=1 -c "
-            SELECT 1/COUNT(*) FROM pg_indexes
-            WHERE tablename='invoices' AND indexdef ILIKE '%UNIQUE%period_id%';"
-          # One open period per scope — the claim that makes close idempotent.
-          psql -h localhost -U payment -d payment -v ON_ERROR_STOP=1 -c "
-            SELECT 1/COUNT(*) FROM pg_indexes
-            WHERE indexname='billing_periods_one_open_per_scope';"
+      # Applies every shipped migration to a clean PostgreSQL 16, seeds a realm, and asserts
+      # BEHAVIOUR — the idempotency guards, insert-only rate cards, database-written audit rows,
+      # partitions created ahead of need — then applies the Phase 2 DRAFT on top and asserts its
+      # immutability triggers. A schema is verified by applying it (constitution XI).
+      - name: Verify the schema
+        env:
+          PGPASSWORD: payment
+          PSQL: psql -h localhost -U payment -d payment
+        run: scripts/verify-schema.sh
+
+  hot-path:
+    name: hot path on Redis Cluster
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Runs the reference Redis Functions against Redis 7 in CLUSTER MODE, where a script that
+      # touches two hash slots is refused — the constraint the key layout exists to satisfy.
+      - name: Verify the reference hot path
+        run: scripts/verify-hot-path.sh
+
+  drift:
+    name: spec drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No retired mechanism described as current
+        run: scripts/check-spec-drift.sh
 
   secrets:
     name: gitleaks

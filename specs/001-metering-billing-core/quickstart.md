@@ -1,160 +1,153 @@
 # Quickstart
 
+> **Intended interface.** Everything below the "Verify the design today" section needs the Phase 1
+> implementation; that section runs now.
+
+## Verify the design today
+
+The parts of the design that can be executed without Go already are, and CI runs them:
+
+```bash
+scripts/verify-hot-path.sh          # reference Redis Functions on Redis 7 in CLUSTER mode (needs Docker)
+make verify-schema                  # every migration + seed + assertions + the Phase 2 draft, on an EMPTY Postgres
+scripts/check-spec-drift.sh         # no document describes a retired mechanism as current
+```
+
 ## Run it as a container
 
 ```bash
 git clone https://github.com/truongpx396/intel-payment && cd intel-payment
 cp .env.example .env          # the defaults work for local development as-is
-make up                       # postgres + redis + nats + migrations + paymentd + worker
-curl -s localhost:8080/readyz  # {"status":"ready","migrations":"head"}
+make up                       # postgres + redis + migrations + paymentd + worker (no broker)
+curl -s localhost:8080/readyz  # {"status":"ready","migrations":"head","shards":256}
 ```
 
 `make up` brings up the dependencies, runs migrations to head, then starts `paymentd`
 (gRPC `:9090`, REST `:8080`) and `payment-worker` (the sole durable writer).
 
-## Seed a realm
-
-Prices, ceilings and plans are **configuration data**, not code — so this is SQL, and changing
-any of it later needs no redeploy.
+Each caller authenticates with a service credential carrying its realms and privileges
+(`PAYMENT_SERVICE_TOKENS` in `.env`). The examples below read three of them from the environment —
+one per privilege, because a spend producer must never hold the credential that mints credits:
 
 ```bash
-make seed REALM=my-product   # a rate card, three limits, two plans, a free tier
+export PAYMENT_TOKEN=…         # privilege: record
+export PAYMENT_GRANT_TOKEN=…   # privilege: grant
+export PAYMENT_ADMIN_TOKEN=…   # privilege: admin
 ```
 
-Or by hand, which is worth reading once because it is the whole configuration model:
+## Seed a realm
 
-```sql
--- 1. A rate card. Immutable and versioned: a price change INSERTS a new version.
-INSERT INTO rate_cards (realm, version, micros_per_credit)
-VALUES ('my-product', '2026-01-01', 1000);            -- 1 credit = $0.001
+Prices, ceilings, pools and plans are **configuration data**, not code:
 
-INSERT INTO rate_card_entries (realm, version, rate_key, unit, micros_per_unit) VALUES
-  ('my-product','2026-01-01','gpt-4o','llm_input_token',   2),
-  ('my-product','2026-01-01','gpt-4o','llm_output_token', 10);
+```bash
+make seed REALM=my-product   # a promo pool, a rate card, three limits, two plans, a free tier, a test Stripe account
+```
 
--- 2. Ceilings. The COUNT is yours — one, three or five all render and enforce correctly.
-INSERT INTO limits (realm, name, scope_kind, unit, max, window, warn_at, deny_code) VALUES
-  ('my-product','scope_balance','organization','credit',      0,'balance',0.80,'payment_required'),
-  ('my-product','user_daily',   'user',        'credit', 10000,'daily',  0.80,'limit_reached');
+[scripts/seed.sql](../../scripts/seed.sql) is worth reading once — it is the whole configuration
+model. The essentials:
 
--- 3. A plan, its price, its allotment, and what it unlocks beyond credits.
-INSERT INTO plans (realm, code, name, kind, credit_allotment, billing_interval, active)
-VALUES ('my-product','pro_monthly','Pro','subscription',100000,'month',true);
+- **1 credit = 1 µ$ of list price.** Fine enough that rounding up once per event costs under a
+  millionth of a dollar; the UI decides how to display it.
+- **Prices are rationals.** gpt-4o-mini input at $0.15 per million tokens is
+  `credits_per_block = 150000, block_size = 1000000` — exact.
+- **`user_daily` belongs to a subject** (the member making the call), and its size comes from the
+  plan: 10 000 000 credits ($10) on the free tier, 50 000 000 on Pro.
 
-INSERT INTO plan_prices (plan_id, currency, minor_units)
-SELECT id,'USD',4900 FROM plans WHERE realm='my-product' AND code='pro_monthly';
+The same through the admin API, which audits every change with your name:
 
-INSERT INTO plan_entitlements (plan_id, feature_key, value_kind, value_bool, value_int)
-SELECT id,'sso','flag',true,NULL     FROM plans WHERE realm='my-product' AND code='pro_monthly'
-UNION ALL
-SELECT id,'seats','quota',NULL,25    FROM plans WHERE realm='my-product' AND code='pro_monthly';
-
--- 4. The free tier.
-INSERT INTO realm_defaults (realm, feature_key, value_kind, value_bool, value_int) VALUES
-  ('my-product','sso',  'flag', false, NULL),
-  ('my-product','seats','quota',NULL,  3);
+```bash
+curl -s localhost:8080/v1/admin/limits/user_daily -X PUT -H "Authorization: Bearer $PAYMENT_ADMIN_TOKEN" -d '{
+  "subject_kind":"user","unit":"credit","max":10000000,"max_entitlement":"daily_user_credits",
+  "window":"daily","tz":"UTC","warn_at":0.8,"deny_code":"limit_reached"}'
 ```
 
 ## Meter something
 
 ```bash
-# Gate BEFORE the work. max_cost is what bounds overshoot — pass it.
-curl -s localhost:8080/v1/admit -H 'Authorization: Bearer dev-token' \
-  -d '{"scope":{"realm":"my-product","kind":"organization","id":"org_1"},"max_cost":500}'
+# Gate BEFORE the work. max_cost bounds overshoot; subjects key the per-member ceiling.
+curl -s localhost:8080/v1/admit -H "Authorization: Bearer $PAYMENT_TOKEN" \
+  -d '{"scope":{"kind":"organization","id":"org_1"},"resource":"llm.chat",
+       "subjects":{"user":"u_1"},"max_cost":50000}'
 # {"allowed":false,"exceeded":{"name":"scope_balance","deny_code":"payment_required"},"headroom":0}
 
-# Grant some credits (privileged — in production only the webhook path calls this).
-curl -s localhost:8080/v1/grant -H 'Authorization: Bearer dev-token' \
-  -H 'Idempotency-Key: seed-1' \
-  -d '{"scope":{"realm":"my-product","kind":"organization","id":"org_1"},
-       "amount":100000,"idem_key":"seed-1","reason":"signup_grant"}'
+# Grant signup credits into the promo pool (privileged — in production only the webhook processor mints).
+curl -s localhost:8080/v1/grant -H "Authorization: Bearer $PAYMENT_GRANT_TOKEN" -H 'Idempotency-Key: signup-org_1' \
+  -d '{"scope":{"kind":"organization","id":"org_1"},"pool":"promo","amount":5000000,"reason":"signup_grant"}'
 
-# Settle real usage — the quantities ACTUALLY produced, not a ceiling.
-curl -s localhost:8080/v1/record -H 'Authorization: Bearer dev-token' \
-  -H 'Idempotency-Key: call-abc' \
-  -d '{"scope":{"realm":"my-product","kind":"organization","id":"org_1"},
-       "resource":"llm.chat","rate_key":"gpt-4o",
-       "quantities":[{"unit":"llm_input_token","amount":1200},
-                     {"unit":"llm_output_token","amount":800}],
-       "idem_key":"call-abc"}'
-# {"idem_key":"call-abc","applied":true,"delta":-11,"balance":99989,"rate_card_version":"2026-01-01"}
+# Settle real usage — the quantities ACTUALLY produced, with a stable occurred_at.
+curl -s localhost:8080/v1/record -H "Authorization: Bearer $PAYMENT_TOKEN" -H 'Idempotency-Key: call-abc' \
+  -d '{"scope":{"kind":"organization","id":"org_1"},"resource":"llm.chat","rate_key":"gpt-4o",
+       "subjects":{"user":"u_1"},"occurred_at":"2026-09-28T10:00:00Z",
+       "quantities":[{"unit":"llm_input_token","amount":1200},{"unit":"llm_output_token","amount":800}]}'
+# {"idem_key":"call-abc","applied":true,"delta":-11000,"balance":4989000,"seq":2,"rate_card_version":"2026-01-01"}
+#   1,200 × 2.5 µ$ + 800 × 10 µ$ = 11,000 credits, exactly — drawn from the promo pool first.
 
 # Replay it. Nothing happens — that is the whole point.
-curl -s localhost:8080/v1/record -H 'Authorization: Bearer dev-token' \
-  -H 'Idempotency-Key: call-abc' -d '{…same body…}'
-# {"idem_key":"call-abc","applied":false,"delta":0,"balance":99989}
+curl -s localhost:8080/v1/record … -H 'Idempotency-Key: call-abc' -d '{…same body…}'
+# {"idem_key":"call-abc","applied":false,"delta":0,"balance":4989000,"seq":2}
+
+# Reuse the key for a DIFFERENT request. Refused, never silently swallowed.
+curl -s localhost:8080/v1/record … -H 'Idempotency-Key: call-abc' -d '{…different quantities…}'
+# 409 {"error":{"code":"idempotency_conflict", …}}
 ```
 
 ## Use it as a library instead
 
 ```go
-import (
-    "github.com/truongpx396/intel-payment/metering"
-    "github.com/truongpx396/intel-payment/metering/app"
-    "github.com/truongpx396/intel-payment/metering/adapters/driven/pricing/llmtoken"
-)
-
 meter, err := app.New(metering.Config{
     Realm:           "my-product",
     BalanceRedisURL: os.Getenv("REDIS_URL"),
     LedgerDSN:       os.Getenv("DATABASE_URL"),
-    Settlement:      metering.SettlementOutbox,
-    AdmitFail:       metering.FailClosed,
-    NegativeBalance: metering.ClampToZero,
 }, app.Deps{
-    Pricer:    pricer,      // yours, or one of the three reference pricers
+    Pricers:   pricing.Registry{"table": table.Pricer{}},
     Balance:   redisstore.New(rdb),
-    Ledger:    pgstore.New(db),
+    Books:     pgstore.New(db),
+    Journal:   pgstore.NewJournal(db),
     Limits:    pgstore.NewLimitStore(db),
+    Pools:     pgstore.NewPoolStore(db),
     RateCards: pgstore.NewRateCardStore(db),
-    Bus:       natsbus.New(nc),
+    Bus:       redisstreams.New(rdb),
 })
-
-// Your handlers depend on ports.Meter. Swap in grpcclient.New(conn) later and nothing
-// downstream changes — the linters guarantee nothing depended on more than the interface.
+// Your handlers depend on ports.Meter. Swap in grpcclient.New(conn) later and nothing changes.
 ```
 
 ## Take a payment
 
 ```bash
-# 1. Configure a provider
-echo 'STRIPE_SECRET_KEY=sk_test_…'      >> .env
-echo 'STRIPE_WEBHOOK_SECRET=whsec_…'    >> .env
-echo 'PAYMENT_PROVIDERS_ENABLED=stripe' >> .env
+# 1. The seed created provider account `stripe-test`, whose secrets are REFERENCES to these variables:
+echo 'STRIPE_SECRET_KEY=sk_test_…'    >> .env
+echo 'STRIPE_WEBHOOK_SECRET=whsec_…'  >> .env
 
-# 2. Map the plan to the provider's price
-psql "$PAYMENT_LEDGER_DSN" -c "
-  INSERT INTO plan_provider_prices (plan_id, provider, currency, provider_price_id)
-  SELECT id,'stripe','USD','price_123' FROM plans
-  WHERE realm='my-product' AND code='pro_monthly';"
+# 2. Map the plan to the provider's price, for that account and currency
+curl -s localhost:8080/v1/admin/plans/pro_monthly/provider-prices -H "Authorization: Bearer $PAYMENT_ADMIN_TOKEN" \
+  -d '{"provider_account":"stripe-test","currency":"USD","provider_price_id":"price_123"}'
 
-# 3. Point the provider at the webhook (locally, via the Stripe CLI)
-stripe listen --forward-to localhost:8080/webhooks/stripe
+# 3. Point the provider at the account's webhook route (locally, via the Stripe CLI)
+stripe listen --forward-to localhost:8080/webhooks/stripe/stripe-test
 
 # 4. Start a checkout
-curl -s localhost:8080/v1/checkout -H 'Authorization: Bearer dev-token' \
-  -d '{"scope":{"realm":"my-product","kind":"organization","id":"org_1"},
-       "plan_code":"pro_monthly","currency":"USD",
+curl -s localhost:8080/v1/checkout -H "Authorization: Bearer $PAYMENT_TOKEN" \
+  -d '{"scope":{"kind":"organization","id":"org_1"},"plan_code":"pro_monthly","currency":"USD",
        "success_url":"https://app.example/done","cancel_url":"https://app.example/plans"}'
 # {"redirect_url":"https://checkout.stripe.com/…"}
 ```
 
-Pay in the provider's test mode. Credits appear **when the verified webhook lands**, not on the
-redirect. Poll `/v1/fulfilment` to see `processing` → `granted`, then replay the webhook from the
-provider's dashboard and confirm the balance does not move.
+Pay in test mode. Credits appear **when the verified webhook is processed**, not on the redirect.
+Poll `/v1/fulfilment` to see `processing` → `granted`, then replay the webhook from the provider's
+dashboard and confirm the balance does not move.
 
 ## Verify the guarantees
 
 ```bash
 make test              # units + every conformance suite
-make test-integration  # Testcontainers: real Redis + Postgres
+make test-integration  # Testcontainers: real Redis (cluster mode) + Postgres, including a forced failover
 make lint              # go-arch-lint + golangci-lint — the portability boundary
-make verify-portability # metering/ builds with no dependency on billing/ or entitlement/
+make ci                # everything CI runs
 ```
 
 ## Next
 
 - [docs/integration-guide.md](../../docs/integration-guide.md) — adopting it in a host, end to end
 - [docs/configuration.md](../../docs/configuration.md) — every knob and its failure mode
-- [docs/security.md](../../docs/security.md) — caller auth, realm binding, webhook posture
-- [docs/operations.md](../../docs/operations.md) — the runbook: drift, outbox, rehydrate, dunning
+- [docs/security.md](../../docs/security.md) — caller auth, realm binding, the money store, webhook posture
+- [docs/operations.md](../../docs/operations.md) — the runbook

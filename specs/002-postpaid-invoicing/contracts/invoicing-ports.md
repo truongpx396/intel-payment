@@ -6,11 +6,13 @@
 
 [`Pricer`](../../001-metering-billing-core/contracts/metering-ports.md) is pure over **one event**. That purity is load-bearing: it is what lets the same computation run at the call site, during reconciliation and in a dispute replay and yield the same number.
 
-Post-paid pricing is not a function of one event. `Rater` is therefore pure over **the set** — the period's complete, immutable event list — rather than over one event. It runs once at close, never on a hot path, and is replayable for the same reason `Pricer` is: it reads only the recorded events and the recorded rate-card versions.
+Post-paid pricing is not a function of one event. `Rater` is therefore pure over **the set** — the period's complete, immutable usage — rather than over one event. It runs once at close, never on a hot path, and is replayable for the same reason `Pricer` is: it reads only recorded usage and recorded schedule versions.
+
+It does not read that usage **event by event**. Every schedule kind depends only on how much of a unit fell under each schedule version, in the order the versions took effect — so the period is aggregated in SQL to one row per (unit, schedule version) before the `Rater` sees it. A period of a billion events rates in the memory of a few rows, and the result is identical to rating the events one by one (proven by `RaterContract`'s equivalence test).
 
 ```text
 HOT PATH (unchanged from 001)                 PERIOD CLOSE (new, off the hot path)
-  Pricer.Price(event) → credits        ┌──▶  Rater.Rate(period, events, schedules)
+  Pricer.Price(card, event) → credits  ┌──▶  Rater.Rate(period, usage aggregates, schedules)
   Ledger.Debit        → ledger row     │         │  graduated · volume · package · flat
   Admit               → enforcement    │         │  commitments · minimums · drawdown
         │                               │         ▼
@@ -220,9 +222,9 @@ type CreditNote struct {
 ```go
 package ports // invoicing/ports
 
-// Rater converts a period's events into invoice lines.
+// Rater converts a period's usage into invoice lines.
 //
-// PURE over the set: it reads only `events` (immutable ledger rows), the schedules and
+// PURE over the set: it reads only `usage` (aggregated from immutable ledger rows), the schedules and
 // commitments handed to it, and nothing else — no clock, no I/O, no ambient config. That is
 // what makes SC-101 (re-rating reproduces the invoice exactly) achievable rather than aspirational.
 //
@@ -234,12 +236,30 @@ type Rater interface {
 
 type RateInput struct {
 	Period      domain.BillingPeriod
-	Events      []metering.LedgerEntry // immutable, complete, ordered by occurred_at
+	// Usage is the period's consumption aggregated per (unit, schedule version), ordered by the
+	// version's effective time — never the raw event list, which can be billions of rows.
+	Usage       []UsageAggregate
 	Schedules   []domain.RateSchedule
 	Commitments []domain.Commitment
 	Currency    string
 	TrialActive bool // rate normally, then zero the amounts and keep the would-be cost visible
 }
+
+// UsageAggregate is one unit's consumption under one schedule version, with the ledger range
+// behind it so every line stays traceable (invariant 4).
+type UsageAggregate struct {
+	Unit            domain.Unit
+	ScheduleVersion string
+	EffectiveFrom   time.Time // orders tiers across a mid-period version change
+	Quantity        int64
+	EventCount      int64
+	Source          domain.LineSource
+}
+
+// Across a mid-period schedule change, GRADUATED tiers are consumed cumulatively in version order
+// (the 1,000,001st unit is in the second tier whichever version priced it); VOLUME selects each
+// version's rate from the PERIOD total under that version's tier table. Both are deterministic,
+// both are named on the line, and both are in RaterContract.
 
 // DiscountEngine applies discounts in ONE documented order. The order is part of the contract,
 // not an implementation detail: percentage-then-fixed and fixed-then-percentage give different
@@ -284,7 +304,7 @@ type Collector interface {
 
 ## Invariants
 
-1. **Rating is pure over the period's immutable event set.** No clock, no I/O, no ambient config. Re-rating a closed period reproduces its invoice byte for byte (SC-101).
+1. **Rating is pure over the period's immutable usage.** No clock, no I/O, no ambient config. It consumes per-(unit, schedule version) aggregates, which is exactly equivalent to rating the events one by one. Re-rating a closed period reproduces its invoice byte for byte (SC-101).
 2. **Lines sum to the subtotal, or a residual line is shown.** Never a silent rounding gap. A document whose whole purpose is exact accounting may not present arithmetic that does not close — the same rule the credits UI holds to, for the same reason.
 3. **A finalized invoice is immutable.** Corrections are credit notes. There is no update path, and an implementation that provides one has broken the artifact's only real property.
 4. **Every line is traceable.** `SourceRef` resolves to the ledger rows behind it. "Trust the total" is not an answer.
@@ -327,6 +347,11 @@ func RaterContract(t *testing.T, r ports.Rater) {
 			t.Fatal("close-time card was applied retroactively (invariant 5)")
 		}
 		if len(got.RateCardVersions()) != 2 { t.Fatal("the invoice must name both versions") }
+	})
+	t.Run("rating aggregates equals rating the events one by one", func(t *testing.T) {
+		if !reflect.DeepEqual(rate(t, r, fixture), rateEventByEvent(t, r, fixture)) {
+			t.Fatal("aggregation changed the result — the Rater may not depend on event order within a version")
+		}
 	})
 	t.Run("re-rating is byte-identical", func(t *testing.T) {
 		a := rate(t, r, fixture); b := rate(t, r, fixture)

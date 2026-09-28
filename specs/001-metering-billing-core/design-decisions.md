@@ -175,6 +175,8 @@ saying the member view must be *narrower*. A credits screen that shows colleague
 privacy leak wearing a billing label.
 
 ### D21 — The idempotency guard is its own non-partitioned table
+> **Refined by [D32](#d32--two-idempotency-guards-two-lifetimes-and-fingerprints):** `credit_idem` is now keyed `(realm, op, idem_key)` and guards minting operations; metered usage has its own window-bounded `usage_idem`.
+
 **Changed**: from `credit_ledger UNIQUE (idem_key)` on a table partitioned by `created_at`, to a
 dedicated `credit_idem PRIMARY KEY (realm, idem_key)` written in the same transaction as the
 ledger row.
@@ -206,6 +208,8 @@ signal; otherwise insert the ledger row — one transaction, so a crash between 
 
 
 ### D22 — `Window: Job` — a cumulative budget for one unit of work
+> **Amended by [D30](#d30--subjects-and-ceilings-sized-by-the-plan):** the job is identified by `Subjects["job"]`, not `Limit.Scope`. The claim below that the UI and engine "enumerate the same five" windows was wrong: the UI's is a view vocabulary with an explicit mapping, documented in credits-ui-ports.md.
+
 **Added**: a fifth `Window` value, keyed by an ephemeral `Limit.Scope` (e.g. `{Kind:"run", ID:…}`)
 and expiring after `Limit.Dur`. Mirrored in the UI as `window: "job"`.
 **Why**: the originating product had this and the extraction initially dropped it. Its agent-run
@@ -259,6 +263,8 @@ Prompted by a direct question — *is this genuinely production-grade and genera
 honest answer was partly. These record what that review changed.
 
 ### D24 — `Transfer` settles in Postgres, not on the Redis fast path
+> **Superseded by [D33](#d33--transfer-is-two-phase-through-the-hot-tier-supersedes-d24).** Settling in Postgres from the request tier made a request handler a ledger writer, and checked sufficiency against a balance that lags the hot one. The lesson below still stands.
+
 **Changed**: from "one Lua script over both scopes' keys" to a Postgres transaction writing the
 paired rows and the guard, followed by a best-effort hot-balance refresh.
 **Why**: [D23](#d23--transfer--the-pool--allocation-primitive) as first written was **not
@@ -277,6 +283,8 @@ The general lesson, worth keeping: **the fast path is for operations that are fr
 operations that are important.**
 
 ### D25 — Redis Streams is the default bus; NATS JetStream is the swap
+> **Made true by [D29](#d29--keys-are-hash-tagged-by-shard-not-by-scope):** the argument below — XADD inside the same atomic script as the balance change — holds on Redis Cluster only once the outbox stream shares the account's hash slot. JetStream, when chosen, sits behind the Redis outbox via a relay (bus-subjects.md).
+
 **Changed**: from JetStream-as-reference to Redis Streams as the default adapter, both behind the
 same `Bus` port with one conformance suite.
 **Why**: two reasons, and the second is the stronger one.
@@ -354,3 +362,192 @@ because the cost of adopting one for a job it cannot do is measured in someone's
 ROADMAP.md also names **when to use something else** (Stripe Billing, Lago, Orb, OpenMeter, Kill
 Bill). A reusable component that cannot say who should not use it is not being honest about its own
 boundaries.
+
+---
+
+## Decisions from the second design review
+
+Prompted by the same question a second time — *is this genuinely production-grade?* — asked of the
+design after D24–D28. The answer was that the principles held but the **mechanism** did not: the
+hot path could not run on Redis Cluster, reconcile could not tell in-flight charges from drift, the
+webhook path could lose a paid grant, and the price format could not represent real prices. Each
+entry below records one fix. Two of them supersede earlier decisions, and say so.
+
+The fixes were verified the way D21 was found — by running them: the key layout and the reference
+hot functions on a cluster-mode Redis ([`scripts/verify-hot-path.sh`](../../scripts/verify-hot-path.sh)),
+and the schema, seed and Phase 2 draft on PostgreSQL 16 with behavioural assertions
+([`scripts/verify-schema.sh`](../../scripts/verify-schema.sh)). Both run in CI.
+
+### D29 — Keys are hash-tagged by shard, not by scope
+**Changed**: every hot key of a scope — account, idempotency guard, window counters — **and the
+outbox stream** carry the shard tag `{s<n>}`, where `shard = fnv1a64(Scope.Tag()) mod Shards`.
+`Shards` defaults to 256 and is recorded in `hot_config`.
+**Why**: the hot-path script touched `credit:{<tag>}:balance` and `billing:outbox:{<shard>}` — two
+hash slots. Redis Cluster refuses that (`CROSSSLOT`, reproduced), so the design either did not run on
+a cluster or capped the whole system at one Redis primary. D24 found this exact constraint for
+`Transfer` and missed that the core debit, the `Job` counter and every per-subject counter had it
+too. D25's central argument — the intent is written by the same atomic script that moves the balance
+— is only true once all of those share a slot.
+**Rejected**: one stream per scope (the writer cannot consume millions of streams); moving the
+outbox XADD out of the script (reopens the window D25 closed).
+**Cost**: a shard, not a scope, is the unit of placement, so one shard's scopes share a node's CPU;
+256 shards spread over ~64 primaries before that matters. A subject ceiling is evaluated within its
+charged scope — which is what every reference binding meant by it.
+
+### D30 — Subjects, and ceilings sized by the plan
+**Changed**: calls carry `Subjects` (`user`, `api_key`, `project`, `job`…); a `Limit` names the
+`Subject` whose counter it is; a call missing a configured subject is refused (`missing_subject`).
+A `limits` row may name a `max_entitlement` quota key, resolved through a `QuotaSource` port that the
+entitlement module implements. `Charge.Job` became `Subjects["job"]`. A `Balance` limit's `Max` is
+the permitted overdraft. Daily and hourly windows reset in the limit's `tz`.
+**Why**: the seed defined `user_daily` keyed by `user`, but `AdmitRequest` and `Charge` carried one
+`Scope` — there was no way to tell the engine which member a call belonged to, so the counter could
+be neither keyed nor incremented. And one `max` per realm could not express "Free 100 a day, Pro
+10 000", the first knob a customizable billing service is asked for.
+**Rejected**: a parallel `plan_limits` + `limit_overrides` system — entitlements already have
+per-plan values, a free tier, audited overrides, precedence, provenance and event-driven cache
+invalidation. Metering reuses them through a port it owns, so it still imports nothing.
+
+### D31 — Prices are rationals; the accounting unit is fine; `table` is the default pricer
+**Changed**: `rate_card_entries` carries `credits_per_block` / `block_size`; the reference accounting
+unit is 1 credit = 1 µ$ of list price; pricing is exact and rounds up **once per event**. A card
+names its pricer; every deployment registers the data-driven `table` pricer; compiled pricers are
+added to a `PricerRegistry` by name. `Pricer.Price` takes the card as an argument.
+**Why**: an integer "µ$ per unit" cannot express any price below one µ$ per unit — $0.15 per million
+tokens is 0.15 µ$ per token. The seed showed it: gpt-4o input at 2 instead of 2.5 (20 % under list),
+gpt-4o-mini input at 1 instead of 0.15 (6.7× over). Rounding each event up to a whole 1 000-µ$ credit
+then billed a ~15 µ$ call at 1 000 µ$: "never under-bill" had become "systematically over-bill small
+events". Separately, a non-Go host — the container's whole audience — could not supply a compiled
+`Pricer`, and one `Pricer` in `Deps` could not serve several realms.
+**Rejected**: floating point (constitution I); carrying a sub-credit remainder per scope (makes a
+row's delta depend on history, which kills replay).
+**Cost**: `Credits` values are large numbers; the UI shows them through `UnitLabels.scale`.
+
+### D32 — Two idempotency guards, two lifetimes, and fingerprints
+**Changed**: `credit_idem (realm, op, idem_key)` — permanent — guards everything that mints or moves
+money; `usage_idem (realm, scope, idem_key)` — daily partitions, `UsageIdemWindow` default 72 h —
+guards consumption. Every guard stores a request fingerprint; a reused key with a different request
+is `409 idempotency_conflict`. `Record` requires `OccurredAt` and refuses one older than the window.
+A replay that outlives its hot guard is caught by the writer and reversed through suspense.
+**Why**: `credit_idem` held one row per metered event forever, in one non-partitioned table — at
+10 000 events/s that is 864 M rows a day, so "narrow, hot, fully cached" could not survive. A reused
+key with a different payload returned `Applied:false`, turning a producer bug into silent
+under-billing. And a usage key and a grant key shared one space.
+**Rejected**: a time-bounded window with no stale-event refusal — a retry after the window would
+charge twice, which is a relaxation of constitution II rather than a clarification of it.
+
+### D33 — `Transfer` is two-phase through the hot tier *(supersedes D24)*
+**Changed**: phase 1 is an atomic check-and-debit of the source's **hot** pool in its own slot,
+emitting `transfer_out`; the writer books `allocation_out` and an `in_transit` record, credits the
+destination through a writer-issued hot function, and books `allocation_in`. Conservation is
+`Σ ledger + Σ in-transit`, invariant at every step.
+**Why**: D24 settled transfers in Postgres from the request tier — a request handler writing the
+ledger, which invariant 1 names explicitly as forbidden — and checked sufficiency against Postgres,
+which lags the hot balance by the undrained outbox, so it could overdraw.
+**Cost**: the destination is credited milliseconds later; the receipt says `in_transit`.
+
+### D34 — The webhook inbox: persist, acknowledge, then process
+**Changed**: ingress verifies, persists the normalized facts to `payment_events`, and answers `200`;
+a processor leases events from the table, dispatches idempotently, and retries with backoff into a
+`dead` state that pages.
+**Why**: the old flow claimed the event (atomic insert) *before* granting, and answered a conflict
+with `200`. A crash between the claim and the grant turned the provider's retry into a no-op — the
+customer paid and received nothing — and nothing swept payments.
+**Rejected**: a single transaction around claim + grant — the grant goes to Redis, not Postgres, so
+no transaction spans both.
+
+### D35 — Hosts hear about events through signed webhooks and a feed, never the bus
+**Changed**: `outbound-events.md` — signed, retried webhooks per endpoint plus `GET /v1/events`, over
+one event log. The internal bus is internal.
+**Why**: the integration guide told hosts to subscribe to `billing.*` on the bus — which by default
+is the balance Redis, where grant intents travel unsigned. Read access for a host usually means
+write access, and write access there is the ability to mint credits.
+
+### D36 — Provider accounts, and the account on the webhook route
+**Changed**: `provider_accounts` rows (secret *references*, the realms each serves, live/test);
+webhooks at `/webhooks/{provider}/{account}`; payments, customers and price mappings keyed by account;
+no `CHECK provider IN (…)`.
+**Why**: one set of provider secrets per deployment could not serve products on different provider
+accounts, the route carried no realm, and adding a provider required a migration.
+
+### D37 — Configuration is audited and signalled by the database
+**Changed**: a trigger on every configuration table writes `audit_log` (actor from `intelpay.actor`,
+or `db:<role>`) and `NOTIFY intelpay_config` in the same transaction; rate cards are insert-only by
+trigger; an admin API is the supported write path.
+**Why**: the runbook repriced with raw SQL, which bypassed the audit invariant and left every
+in-process cache stale. An invariant that holds only when people use the right tool is a convention.
+
+### D38 — A feature that is not built ships no schema; the pre-release baseline is editable
+**Changed**: the Phase 2 migration moved to `specs/002-postpaid-invoicing/draft-migrations/`, verified
+in CI on top of the baseline but never applied by `make migrate`. Migrations `0001`–`0005` were
+corrected in place, and forward-only applies from the first release tag.
+**Why**: under a forward-only policy, a table shipped before its feature exists can never be removed.
+Nothing had ever been deployed — the implementation had not started — so stacking fix-up migrations
+onto a schema no database has run would have added history without protecting anyone. The draft's
+comment also promised an invoice immutability trigger that did not exist; it exists now and is tested.
+
+### D39 — A per-scope sequence watermark; reconcile compares at equal sequence numbers *(supersedes FR-009's "compensating row")*
+**Changed**: every hot mutation advances the scope's `seq` and stamps its intent; the writer books in
+sequence order and records `applied_seq`; hot movements the books do not accept are **suspense**
+entries. Reconcile compares `hot` with `booked + open suspense` only when the sequence numbers are
+equal, heals the **hot** side by compare-and-set, and never books a ledger row. `ReconcileTolerance`
+stays 0 — now meaningfully.
+**Why**: reconcile compared the live hot balance with `SUM(ledger)` while charges sat in the outbox.
+With the default tolerance of 0 every active scope paged every run, and the heal was specified two
+contradictory ways: a compensating ledger row (which double-charges when the queued intent lands) or
+healing Redis (which forgives the queued charges). The runbook read the drift direction backwards,
+and `reconcile_runs` netted drift per shard so offsetting errors cancelled.
+**Also corrected**: invariant 7. Redis persists and replicates a function's effects as one unit, so a
+lost charge vanishes from the balance *and* the stream together — reconcile cannot see it, rather
+than "healing upward". `HotAckWait` (`WAITAOF`) narrows that window; `journal` removes it.
+
+### D40 — Recovery by shard generation: freeze, drain, bump, unfreeze
+**Changed**: `hot_shards.gen`, mirrored in `meta:{s<n>}`; every account records the generation it was
+built in; a restart or failover (detected by the node's replication id) or a sequence regression
+freezes the shard, drains it, bumps the generation, and unfreezes; accounts rebuild lazily from the
+books. Resharding is the same procedure over every shard.
+**Why**: rehydrating from the ledger while intents were still queued dropped them; a rollback reissued
+sequence numbers; and changing the shard count "orphaned queued entries" with no procedure at all.
+
+### D41 — An outage defers usage to the journal; `fail_open` means served before metered
+**Changed**: when the hot tier is unavailable, `Record` writes the event to `spend_journal` and
+returns `Deferred`; a tick replays it through the hot function on recovery.
+**Why**: `fail_open` promised "bounded overspend, healed by reconcile", but a charge that was never
+recorded anywhere cannot be reconciled. `Record` during an outage was unspecified.
+
+### D42 — Credit pools
+**Changed**: `credit_pools` with a priority and an optional resource filter; balances, lots, grants,
+refunds and transfers are per pool; `general` is implicit and drawn last.
+**Why**: "promotional credits are spent before paid ones" and "these credits only work on GPU jobs"
+are the first two requests any credit product receives, and neither is expressible by lot order.
+
+### D43 — The payment lifecycle beyond "succeeded"
+**Changed**: subscription state comes from `FetchSubscription` guarded by the provider timestamp
+(`last_event_at`); disputes are a lifecycle (opened → funds withdrawn → reinstated/closed) with a
+reversible chargeback; partial refunds revoke `ceil(granted × refunded / amount)` cumulatively; auto
+top-up charges a saved method off-session, bounded per day, fulfilled only by the webhook.
+**Why**: providers do not order deliveries, so an older event could overwrite a newer state; a won
+dispute had no path back; the refund test conflated 500 cents with 500 credits; and auto top-up is the
+feature that keeps credit products from interrupting paying customers.
+
+### D44 — A stated scale envelope, and storage that stays bounded
+**Changed**: [plan.md § Scale envelope](./plan.md#scale-envelope) states targets per Redis primary and
+per Postgres primary; `LedgerGranularity=rollup` books one row per batch with per-event detail in a
+`UsageArchive`; ledger checkpoints make partition archival safe; partitions are created ahead of
+need; the `Rater` rates per-(unit, version) aggregates rather than loading a period's events.
+**Why**: one Postgres row per event plus one permanent guard row, kept forever, is not a scaling
+story, and "highly scalable" was asserted without a number.
+
+### D45 — One home region, and a written disaster-recovery posture
+**Changed**: a deployment has one home region; DR is Postgres replication to a standby region plus a
+cold Redis rebuilt from the books; the RPO and RTO are stated in [operations.md](../../docs/operations.md#disaster-recovery-region-loss).
+**Why**: a single scope's balance needs a single writer, so active-active across regions is a
+different design (per-scope home regions), not a setting. Saying so beats leaving it implied.
+
+### D46 — Contract drift fails CI; the design verifies itself
+**Changed**: `scripts/check-spec-drift.sh` fails the build when a document describes a retired
+mechanism as current; the schema and hot-path verifications run in CI without any Go code.
+**Why**: the review found a dozen normative documents contradicting each other — list-based outbox
+commands in the runbook, a quickstart whose SQL named a column that does not exist, tasks that
+reintroduced constraints D21 had proved impossible. CI checked that links resolved, not that the
+contracts agreed.

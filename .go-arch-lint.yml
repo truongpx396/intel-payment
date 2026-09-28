@@ -17,6 +17,7 @@ components:
   metering-config:  { in: metering }
   billing:          { in: billing/** }
   entitlement:      { in: entitlement/** }
+  events:           { in: events/** }
   api:              { in: api/** }
   cmd:              { in: cmd/** }
 
@@ -28,7 +29,8 @@ deps:
   metering-driven:  { mayDependOn: [ metering-domain, metering-ports, metering-config ] }
   metering-driving: { mayDependOn: [ metering-domain, metering-ports, metering-config, api ] }
   billing:          { mayDependOn: [ metering-domain, metering-ports, api ] }
-  entitlement:      { mayDependOn: [ metering-domain, metering-ports, api ] }
+  entitlement:      { mayDependOn: [ metering-domain, metering-ports, api ] }   # also implements metering's QuotaSource
+  events:           { mayDependOn: [ metering-domain, api ] }                  # outbound delivery to hosts
   cmd:              { mayDependOn: [ metering-domain, metering-ports, metering-config,
                                      metering-app, metering-driven, metering-driving,
-                                     billing, entitlement, api ] }
+                                     billing, entitlement, events, api ] }

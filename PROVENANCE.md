@@ -78,11 +78,12 @@ so the framing changed while the substance did not:
 
 ## Design work added during the lift
 
-23 decisions are recorded in
+46 decisions are recorded in
 [design-decisions.md](specs/001-metering-billing-core/design-decisions.md). The originating design
 left **five** open decisions and all five are resolved here (D1–D3, plus D9 for tax/invoicing and
-D11 for proration); the rest are refinements. The ones that change behaviour rather than
-presentation:
+D11 for proration). D4–D23 were made during the lift; D24–D28 and D29–D46 came from two later design
+reviews in this repository, and two of those supersede lift decisions (D33 replaces D24's transfer,
+D32 splits D21's guard). The lift decisions that change behaviour rather than presentation:
 
 | # | Change | Why it mattered |
 |---|---|---|
@@ -95,6 +96,11 @@ presentation:
 | **D21** | Idempotency guard moved to its own non-partitioned table | **The inherited schema was not constructible.** See below |
 | **D22** | `Window: Job` — a cumulative budget for one unit of work | The originating design had a hard per-run cap precisely because *"the daily budget alone would still permit one task to burn a large bill"*. No original window expressed it, and `MaxCost` bounds one call rather than a run — so the worst failure mode in an agentic product had no engine ceiling |
 | **D23** | `Transfer` — the pool → allocation primitive | The originating design had a purchased parent pool with child allocations and an optional per-child cap. Leaving it to the host means two independent `Grant`s, where a crash between them destroys or mints credits and no reconcile can tell which |
+
+The second review (D29–D46) changed the **mechanism** beneath these decisions rather than the
+decisions themselves: a cluster-safe key layout, a per-scope sequence watermark, exact rational
+pricing, a webhook inbox, outbound events. It is recorded in full in
+[design-decisions.md](specs/001-metering-billing-core/design-decisions.md#decisions-from-the-second-design-review).
 
 ### D21 — a constraint that could not exist
 

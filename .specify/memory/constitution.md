@@ -1,6 +1,6 @@
 # intel-payment Constitution
 
-**Version**: 1.0.0 | **Ratified**: 2026-09-27
+**Version**: 1.1.0 | **Ratified**: 2026-09-27 | **Amended**: 2026-09-28
 
 This project moves money. A bug here is not a degraded experience — it is a customer charged
 twice, a customer charged for nothing, or revenue quietly lost. These principles exist because
@@ -24,11 +24,17 @@ never the guarantee. Retries, double-clicks, redelivered messages and replayed w
 converge on one effect, and every such path has a test that delivers the same operation twice —
 and once concurrently.
 
+A key reused for a **different** request is an error, never a silent replay. Where a durable guard
+is bounded in time (metered usage), every operation older than the bound is **refused**, so the
+guarantee holds for all accepted operations rather than for most of them. Operations that mint or
+move money are guarded without a bound.
+
 ### III. One Durable Writer
 
 Exactly one component writes the account of record. Everything else publishes intents. A second
 money-writer is not a design variation; it is the bug this principle exists to prevent, and it
-usually arrives disguised as a convenience.
+usually arrives disguised as a convenience — a transfer "settled directly for atomicity", a
+reconcile that "books a correcting row", an admin script that "just fixes the balance".
 
 ### IV. Fail Closed on Money, Fail Loud on Drift
 
@@ -96,15 +102,21 @@ secrets are server-side only.
 ## Quality Gates
 
 Before merge: `make ci` green (build, tests, conformance suites, lint, architecture graph,
-portability check, vulnerability scan); migrations apply forward on a real PostgreSQL; contracts
-updated in the same commit; the verification output pasted, not summarized.
+portability check, vulnerability scan, the reference hot path on Redis in cluster mode); the schema
+verified on a real PostgreSQL by `scripts/verify-schema.sh`; no document describing a retired
+mechanism (`scripts/check-spec-drift.sh`); contracts updated in the same commit; the verification
+output pasted, not summarized.
 
-Before release: load test against the admission latency criterion; chaos exercises (hot-store
-loss, webhook storm, injected drift, poison message); both security checklists; a rehearsed
-recovery with a measured time.
+Before release: load test against the scale envelope; chaos exercises (hot-store loss, failover to
+a lagging replica, truncated AOF, webhook storm, a processor killed mid-event, injected drift, poison
+intent); both security checklists; a rehearsed recovery with a measured time.
 
 ## Amendments
 
 A change to these principles requires a documented rationale, a version bump, and a pass over the
 contracts for anything it invalidates. Principles marked NON-NEGOTIABLE may be clarified but not
 relaxed.
+
+| Version | Change | Rationale |
+|---|---|---|
+| 1.1.0 | II clarified: key reuse with a different request is an error; a time-bounded guard requires refusing operations older than its bound. III gained examples. Quality gates gained the design verifications | A permanent per-event guard cannot scale ([D32](../../specs/001-metering-billing-core/design-decisions.md)); bounding it without refusing stale operations would have *relaxed* II, so the refusal is part of the principle. The examples in III are the three second-writer bugs the second design review found or pre-empted |

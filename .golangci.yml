@@ -29,7 +29,7 @@ linters-settings:
           - pkg: "github.com/redis/go-redis"
             desc: "no infra in the core; use the BalanceStore driven port"
           - pkg: "github.com/jackc/pgx"
-            desc: "no infra in the core; use the LedgerStore driven port"
+            desc: "no infra in the core; use the BookStore driven port"
           - pkg: "github.com/nats-io"
             desc: "no broker in the core; use the Bus driven port"
           - pkg: "google.golang.org/grpc"
@@ -48,6 +48,8 @@ linters-settings:
             desc: "metering/ must stand alone — fiat depends on it, never the reverse"
           - pkg: "github.com/truongpx396/intel-payment/entitlement"
             desc: "metering/ must stand alone"
+          - pkg: "github.com/truongpx396/intel-payment/events"
+            desc: "metering/ must stand alone — hosts hear about events through events/, which depends on metering"
           - pkg: "github.com/truongpx396/intel-payment/cmd"
             desc: "the core never imports its own wiring"
 
