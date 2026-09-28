@@ -1,169 +1,162 @@
 # Data Model
 
-**Spec**: [spec.md](./spec.md) | **Decisions**: [design-decisions.md](./design-decisions.md)
+**Spec**: [spec.md](./spec.md) | **Decisions**: [design-decisions.md](./design-decisions.md) | **Mechanism**: [hot-path-consistency.md](./contracts/hot-path-consistency.md) | **Verified by**: [`scripts/verify-schema.sh`](../../scripts/verify-schema.sh)
 
 Conventions, and the reason each one is not negotiable:
 
-- **UUID v7 primary keys** — time-sortable, so an append-only ledger clusters by insertion order.
-- **Every row is realm-scoped.** `realm TEXT NOT NULL DEFAULT 'default'` on every table, in every index, in every query predicate. A query without it is a defect (metering invariant 11).
-- **The billing subject is the opaque triple** `(realm, scope_kind, scope_id)` — never a host's tenant column. This is the single change that makes the schema reusable; see [D3](./design-decisions.md).
-- **Integer money only.** `BIGINT` minor units + `CHAR(3)` ISO-4217 for fiat; `BIGINT` signed for credits. No `NUMERIC`, no `FLOAT`, anywhere.
+- **UUID v7 primary keys** from the application — time-sortable, so an append-only table clusters by insertion order. (`gen_random_uuid()` defaults are a fallback only.)
+- **Every money row is realm-scoped.** `realm TEXT NOT NULL DEFAULT 'default'` in every table, index and predicate (metering invariant 11). The exceptions are deployment-wide infrastructure — `hot_config`, `hot_shards`, `reconcile_runs` — and `provider_accounts`, which lists the realms it serves.
+- **The billing subject is the opaque triple** `(realm, scope_kind, scope_id)` — never a host's tenant column ([D3](./design-decisions.md)).
+- **Integer money only.** `BIGINT` credits in a fine accounting unit; `BIGINT` minor units + `CHAR(3)` for fiat; prices as integer rationals. No `NUMERIC` money, no `FLOAT`, anywhere.
 - **`TIMESTAMPTZ`, UTC.**
-- **Append-only where it is a record.** `credit_ledger`, `payments`, `payment_events` and audit rows are never updated in place, except for the narrow status fields noted.
-- **Row-level security is available but not assumed.** The service authenticates callers and filters by realm in the query. A host embedding the library may add RLS on the scope triple; the schema is shaped for it.
+- **Append-only where it is a record.** `credit_ledger`, `payments`, `payment_events` and `audit_log` are never rewritten, except the narrow status fields noted; rate cards are insert-only **by trigger**.
+- **Configuration is audited by the database.** Every write to a configuration table writes an `audit_log` row and a `NOTIFY intelpay_config` in the same transaction ([D37](./design-decisions.md)).
+- **Partitions are created ahead of need** by `ensure_monthly_partitions` / `ensure_daily_partitions` (run at migration and by `billing.partitions.tick`); a DEFAULT partition catches a gap and pages if it ever holds a row.
 
-`scope_tag` is stored as a generated column (`realm || '/' || scope_kind || ':' || scope_id`) wherever a single-column index or a bus subject needs it, so the derivation lives in one place.
+---
+
+## Hot tier state (deployment-wide)
+
+### `hot_config`
+One row: `shards` — the Redis placement count. A process configured with a different count refuses to start.
+
+### `hot_shards`
+Per shard: `gen` (the authoritative generation that `meta:{s<n>}` mirrors), `frozen`, `frozen_reason`, `node_replid` (the Redis replication id last seen serving it — how a restart or failover is detected). A generation bump after freeze + drain is the one recovery procedure ([§5](./contracts/hot-path-consistency.md#5-cold-start-loss-regression-and-freeze)).
 
 ---
 
 ## Metering core
 
+### `credit_pools`
+Per realm: `name`, `priority` (lower drawn first), `applies_to TEXT[]` (resources; `NULL` = all). `general` is implicit — always present, applies to everything, drawn last — and may not be redefined.
+
 ### `account_credits`
-The durable mirror of the hot balance. The ledger is authoritative; this row exists so a cold start has somewhere to rehydrate *to* and so a report can avoid summing the ledger.
-- PK `(realm, scope_kind, scope_id)`
-- `balance BIGINT NOT NULL DEFAULT 0` — signed; negative is permitted only under `allow_debt`
-- `updated_at TIMESTAMPTZ NOT NULL`
-- Renamed from the originating `workspace_credits`: the name encoded one host's tenancy.
+**Booked** balances: the ledger's running sum per `(realm, scope_kind, scope_id, pool)`, maintained by the sole durable writer in the same transaction as every ledger row. The hot tier equals `booked + open suspense` at every sequence number.
+
+### `account_watermarks`
+Per scope: `gen`, `applied_seq` (the highest **contiguously** booked hot sequence number), `blocked`, `updated_at` (indexed — reconcile checks scopes booked since its last run, so its cost follows activity, not history).
 
 ### `credit_ledger`
-The account of record. Append-only, partitioned by `created_at` (monthly); expiry is a partition `DROP`.
-- `id` UUID v7, `realm`, `scope_kind`, `scope_id`
-- `delta BIGINT NOT NULL` — **signed** ([D1](./design-decisions.md)). Negative consumption, positive grant.
-- `operation_type TEXT NOT NULL` — open vocabulary, not an enum: host consumption types plus `purchase`, `subscription_grant`, `signup_grant`, `promo`, `refund`, `chargeback`, `expiry`, `writeoff`, `admin_adjustment`, `reconcile`, `allocation_out`, `allocation_in`. **Not a Postgres enum**, because adding a value to one is a migration and a host will invent types this schema cannot predict.
-- `counter_scope_kind` / `counter_scope_id` — set on both rows of a `Transfer` (the counterparty). A reconcile pairs `allocation_out` with `allocation_in` on a shared `idem_key` and asserts the pair sums to zero, so a half-applied allocation is detectable rather than silent ([D23](./design-decisions.md)).
-- `idem_key TEXT NOT NULL` — indexed for lookup. **Uniqueness lives in `credit_idem`, not here** — see below and [D21](./design-decisions.md).
-- `rate_card_version TEXT` — which card priced it ([D6](./design-decisions.md)). Null for non-priced rows (grants, adjustments).
-- `cost_micros BIGINT` — informational upstream cost, for usage analytics only. Never a billing input.
-- `resource TEXT`, `rate_key TEXT`, `quantities JSONB` — the immutable event, so a dispute can re-derive the price rather than trust the stored one.
-- `actor_id TEXT` — who caused it, for attribution. Opaque to the engine.
-- `ref JSONB` — trace id, call id, payment id. Audit metadata, never a cost input.
-- `occurred_at`, `created_at TIMESTAMPTZ NOT NULL`
-- Indexes: `(realm, scope_kind, scope_id, created_at DESC)` for the ledger page; `(realm, idem_key)` non-unique for lookup; `(realm, created_at)` for reconcile.
+The account of record. Append-only, partitioned by `created_at` (monthly).
+- `id`, `realm`, `scope_kind`, `scope_id`, **`pool`**
+- `delta BIGINT` — **signed** ([D1](./design-decisions.md))
+- `operation_type` — open vocabulary. Engine-reserved: `writeoff`, `expiry`, `allocation_out`, `allocation_in`, `admin_adjustment`. **There is no `reconcile` type**: reconcile heals the hot side and never books a row.
+- `counter_scope_kind` / `counter_scope_id` — the counterparty of a transfer row
+- `idem_key` — lookup only; uniqueness lives in the guards below
+- `gen`, `seq_from`, `seq_to`, `event_count` — the hot sequence numbers the row books. `event` granularity: one event per row. `rollup` granularity: one row per (scope, pool, resource, rate key, card version) per drain batch, with per-event detail in `usage_events`
+- `rate_card_version`, `cost_micros`, `resource`, `rate_key`, `quantities JSONB`, `subjects JSONB`, `actor_id`, `ref JSONB`, `occurred_at`, `created_at`
+- Old partitions are **detached and archived**, never dropped, and only once `ledger_checkpoints` covers them.
+
+### `ledger_checkpoints`
+Per (scope, pool): `through_created_at`, `balance`, `rows_counted`. The deep audit proves `booked == checkpoint + Σ ledger since`; checkpoints are what make archiving a partition safe without losing the ability to prove a balance.
 
 ### `credit_idem`
-**The idempotency guard** — the constraint every exactly-once guarantee in the system rests on (FR-003, SC-002).
-- PK `(realm, idem_key)` — realm-scoped ([D4](./design-decisions.md)), so two host products minting the same key stay independent
-- `ledger_id UUID NOT NULL`, `delta BIGINT NOT NULL`, `created_at`
-- **Why it is a separate, non-partitioned table** ([D21](./design-decisions.md)): Postgres requires a unique constraint on a partitioned table to include the partition key, so `PARTITION BY RANGE (created_at)` and a global `UNIQUE (realm, idem_key)` on `credit_ledger` are mutually exclusive — the inherited design specified both and is not constructible as written. Splitting them keeps both properties and is better than either compromise: the guard is a narrow, hot, fully-cached table, and it **outlives ledger partitions**, so dropping an aged partition cannot resurrect the ability to double-charge an old key.
-- Rules: a credit-affecting write inserts here **first**, in the same transaction as the ledger row. `INSERT … ON CONFLICT DO NOTHING` returning no row *is* the replay signal, and `delta` lets the replay report the original outcome without scanning a partition.
+**The guard for operations that mint or move money** — grants, refunds, chargebacks, transfers (both legs), expiry, corrections, admin adjustments.
+- PK `(realm, op, idem_key)` — unique per realm **and operation**: one provider payment can be granted once, for one scope, and a usage key never collides with a grant key
+- `fingerprint`, `scope_kind`, `scope_id`, `gen`, `seq` (the intent that used it — how a redelivery is told apart from a regression), `ledger_id`, `created_at`
+- **Permanent and non-partitioned**: low volume, and it must outlive ledger partitions so archiving one cannot resurrect a double grant ([D21](./design-decisions.md)).
+
+### `usage_idem`
+**The guard for metered consumption** — high volume, so **window-bounded** ([D32](./design-decisions.md)).
+- `(realm, scope_kind, scope_id, idem_key)`, `fingerprint`, `gen`, `seq`, `created_at`; partitioned **daily**, and a partition is dropped once past `UsageIdemWindow` (default 72 h)
+- Uniqueness across the window is enforced by the writer under a per-scope advisory lock, probing at most window-days + 1 partitions; the per-partition primary key is the backstop within a day
+- `Record` refuses an event whose `occurred_at` is older than the window (`422 stale_event`), so a retry that outlives its guard fails loudly instead of charging twice
+
+### `credit_suspense`
+Hot-tier movements the books do not accept — `duplicate` (a replay after its hot guard expired), `idem_conflict`, `poison`, `expiry_trueup` — with `pool`, `delta`, the opening `(gen, seq)`, `status open|closed`. Opened in the transaction that advances the watermark; closed when the writer's correction intent is booked. Reconcile compares hot against `booked + open suspense`.
+
+### `credit_transfers`
+One row per transfer: source and destination scope and pool, `amount`, `status in_transit|settled`. `Σ credit_ledger + Σ amount WHERE in_transit` is invariant across every step ([§4](./contracts/hot-path-consistency.md#4-transfer-two-phases-conserved-at-every-step)); a transfer in transit too long pages.
 
 ### `credit_outbox_dead`
-Terminal parking for intents that exhausted their retry budget. A dropped money intent is silent under-billing, so nothing is ever dropped (FR-043).
-- `id`, `realm`, `scope_kind`, `scope_id`, `payload JSONB`, `idem_key`, `attempts INT`, `last_error TEXT`, `parked_at`, `replayed_at`
-- Live outbox queues are Redis lists (`outbox:{shard}`); only the poison tail is durable here.
+Intents that exhausted their retry budget: `op`, `gen`, `seq`, `payload`, `attempts`, `last_error`. Parked, never dropped; parking opens a `poison` suspense entry so the watermark advances past it.
 
 ### `spend_journal`
-Used **only** under `SettlementDurability=journal`: the durable intent written synchronously before returning, removing the under-bill RPO window of `outbox` mode (metering invariant 7).
-- `id`, `realm`, `scope_kind`, `scope_id`, `delta BIGINT`, `idem_key` **UNIQUE per realm**, `operation_type`, `rate_card_version`, `created_at`, `settled_at`
-- Empty in `outbox` mode.
+The durable home of a usage intent that has not reached the hot tier yet — on every call under `Settlement=journal`, and during a hot-store outage in any mode. `(realm, scope, idem_key)` unique, `fingerprint`, `amount` (priced once, at `Record`), `rate_card_version`, `payload`, `status pending|settled`, retry fields. `billing.journal.tick` replays pending rows through the hot function.
+
+### `usage_events`
+Per-event detail under `LedgerGranularity=rollup` (the default `UsageArchive` adapter; a columnar store is the scale-out adapter). Daily partitions, archived on `UsageArchiveRetention`. Unused under `event` granularity, where the ledger row is the event.
 
 ### `rate_cards` / `rate_card_entries`
-Prices as immutable, versioned configuration data ([D13](./design-decisions.md)), so repricing is an operator action rather than a release.
-- `rate_cards`: `(realm, version)` PK, `micros_per_credit BIGINT NOT NULL CHECK (> 0)`, `published_at`, `retired_at`
-- `rate_card_entries`: `(realm, version, rate_key, unit)` PK, `micros_per_unit BIGINT NOT NULL`
-- Rules: **never updated in place.** A price change inserts a new `version`; old rows keep pricing old ledger entries identically. Exactly one card per realm has `retired_at IS NULL`.
+Prices as immutable, versioned data ([D13](./design-decisions.md), [D31](./design-decisions.md)).
+- `rate_cards`: `(realm, version)` PK, `pricer` (registry name, default `table`), `params JSONB`, `published_at`, `retired_at`. Exactly one active card per realm (a partial unique index).
+- `rate_card_entries`: `(realm, version, rate_key, unit)` PK, **`credits_per_block`, `block_size`** — a price is a rational, so $0.15 per million tokens is exactly `(150000, 1000000)` at 1 credit = 1 µ$ — and `cost_micros_per_block` (informational).
+- **Insert-only, enforced by trigger.** The only permitted update is retiring an active card; repricing is retire + publish.
 
 ### `limits`
-Ceilings as per-realm configuration data ([D13](./design-decisions.md)) — which is what makes "the ceiling count is data, not three hardcoded cards" true on both sides of the wire.
-- `id`, `realm`, `name`, `scope_kind` (whose counter — may differ from the charged scope), `unit`, `max BIGINT`, `window_kind` (`balance`|`daily`|`hourly`|`rolling`), `dur_seconds`, `warn_at NUMERIC(3,2)`, `deny_code`, `resource` (null = all), `sort_order`, `active`
-- `UNIQUE (realm, name)`
+Ceilings as per-realm data.
+- `name` (unique per realm), `subject_kind` (NULL = the charged scope; otherwise the subject a call must carry), `resource` (NULL = all), `unit`, `max`, **`max_entitlement`** (size the ceiling from this quota key: plan, override or free tier), `window_kind` (`balance` · `daily` · `hourly` · `rolling` · `job`), `dur_seconds`, `tz`, `warn_at`, `deny_code`, `sort_order`, `active`
+- Checks: a `balance` limit is the charged scope's and counts credits, and its `max` is the permitted overdraft; a `job` limit's subject is `job`; `rolling` and `job` need a duration.
+
+### `balance_watches`
+A low-water mark on one pool of one scope, with a `key` naming what it triggers (`auto_recharge`, or a host-defined notice). The hot function flags the intent that crosses it.
 
 ### `credit_lots`
-Present only when `CreditExpiry=lots_fifo` ([D2](./design-decisions.md)).
-- `id`, `realm`, `scope_kind`, `scope_id`, `granted BIGINT`, `remaining BIGINT`, `expires_at`, `source_idem_key`, `created_at`
-- Rules: consumption draws from the oldest unexpired lot first; an expiry sweep appends an `expiry` ledger row for each lapsed remainder, so the balance and the ledger stay equal.
+Only under `CreditExpiry=lots_fifo`: per-grant lots **per pool**, `granted`, `remaining`, `expires_at`. Maintained by the writer as it books intents in sequence order, so `remaining` is exact at the watermark; expiry is pre-applied at that upper bound and trued up.
 
 ---
 
 ## Payments (fiat)
 
+### `provider_accounts`
+One set of provider credentials: `id` (the `{account}` in `/webhooks/{provider}/{account}`), `provider` (an open vocabulary — a new provider needs no migration), `realms TEXT[]` it may serve, `mode live|test`, `secret_ref` / `webhook_secret_ref` (names of env vars or secret-manager paths — **never the secrets**).
+
 ### `plans`
-- `id`, `realm`, `code` — **`UNIQUE (realm, code)`**. `code` is the host's slug and the only plan identifier that reaches a UI.
-- `name`, `description`, `kind` (`one_time`|`subscription`)
-- `credit_allotment BIGINT` — nullable; null means custom/negotiated. **The only coupling between fiat and credits.**
-- `billing_interval` (`month`|`year`|null), `active BOOL`, `sort_order INT`, `created_at`, `updated_at`
+`realm`, `code` (**`UNIQUE (realm, code)`**, the only plan id a UI sees), `name`, `kind one_time|subscription`, `credit_allotment` (the only coupling between fiat and credits), **`pool`** (where the allotment is granted), `billing_interval`, `active`, `sort_order`.
 
 ### `plan_prices`
-Per-currency pricing ([D12](./design-decisions.md)).
-- `(plan_id, currency)` PK, `minor_units BIGINT NOT NULL`
-- Rules: a plan with no row for a requested currency is simply not offered in it — never silently converted, because an FX rate applied here would be a price nobody set.
+`(plan_id, currency)` PK, `minor_units`. A plan without a row for a currency is not offered in it — never silently converted.
 
 ### `plan_provider_prices`
-Maps one logical plan to each provider's external identifier, per currency.
-- `id`, `plan_id`, `provider`, `currency`, `provider_price_id TEXT`
-- `UNIQUE (provider, provider_price_id)`, `UNIQUE (plan_id, provider, currency)`
-- Rules: lets one catalogue entry sell through any provider. A `provider_price_id` must never leave the server.
-
-### `plan_entitlements`
-What a plan confers besides credits ([D8](./design-decisions.md)).
-- `id`, `plan_id`, `feature_key`, `value_kind` (`flag`|`quota`|`enum`), `value_bool`, `value_int BIGINT`, `value_text`
-- `UNIQUE (plan_id, feature_key)`
-- Rules: `value_int = -1` means **unlimited**, distinct from null ("unset"). The distinction is load-bearing; see entitlement invariant 6.
-
-### `realm_defaults`
-The free tier: what a scope with no subscription gets.
-- `(realm, feature_key)` PK, same value columns as `plan_entitlements`
-
-### `entitlement_overrides`
-Deliberate per-scope exceptions.
-- `id`, `realm`, `scope_kind`, `scope_id`, `feature_key`, value columns, `expires_at`
-- `reason TEXT NOT NULL`, `actor TEXT NOT NULL`, `created_at`
-- `UNIQUE (realm, scope_kind, scope_id, feature_key)`
-- Rules: `reason` and `actor` are `NOT NULL` at the schema level, because an unexplained override is indistinguishable from a bug and is usually found during a revenue investigation. Every write also inserts an audit row in the same transaction.
+`plan_id`, `provider_account`, `currency`, `provider_price_id` — `UNIQUE (provider_account, provider_price_id)`, `UNIQUE (plan_id, provider_account, currency)`. A provider price id never leaves the server.
 
 ### `billing_customers`
-- `id`, `realm`, `scope_kind`, `scope_id`, `provider`, `provider_customer_id TEXT`, `billing_email`, `created_at`, `updated_at`
-- `UNIQUE (realm, scope_kind, scope_id, provider)`, `UNIQUE (provider, provider_customer_id)`
-- Rules: the **only** sanctioned path from a verified webhook to a scope (payments invariant 4). No provider identifier lives anywhere else.
+`(realm, scope)` ↔ `(provider_account, provider_customer_id)`, unique both ways. **The only sanctioned path from a verified webhook to a scope — and so to a realm** (payments invariant 4).
 
 ### `subscriptions`
-- `id`, `realm`, `scope_kind`, `scope_id`, `plan_id`, `provider`, `provider_subscription_id TEXT`
-- `status` (`trialing`|`active`|`past_due`|`paused`|`canceled`|`incomplete`)
-- `current_period_start`, `current_period_end`, `cancel_at_period_end BOOL`
-- `grace_until TIMESTAMPTZ` — dunning window ([D10](./design-decisions.md))
-- `created_at`, `updated_at`, `canceled_at`
-- `UNIQUE (provider, provider_subscription_id)`, partial unique on one active subscription per `(realm, scope)`
-- Rules: **`status` has exactly one writer — the webhook path** (payments invariant 12). Each paid period grants `credit_allotment` through a ledger row keyed by the invoice id, so a duplicated or out-of-order delivery converges.
+`realm`, scope, `plan_id`, `provider_account`, `provider_subscription_id`, `status`, `current_period_*`, `cancel_at_period_end`, `grace_until`, **`last_event_at`** (the provider timestamp of the newest state applied — an older event never overwrites a newer state), one live subscription per scope.
 
 ### `payments`
-- `id`, `realm`, `scope_kind`, `scope_id`, `provider`, `provider_payment_id TEXT`
-- `plan_id` (nullable for ad-hoc), `kind` (`one_time`|`subscription_invoice`)
-- `amount_minor BIGINT`, `currency CHAR(3)`, `tax_minor BIGINT` (as reported by the provider; never computed here), `credits_granted BIGINT`
-- `status` (`pending`|`succeeded`|`failed`|`refunded`|`partially_refunded`|`disputed`)
-- `receipt_url`, `failure_reason`
-- `idem_key TEXT NOT NULL` — the key of the matching ledger grant row. **The reconciliation key between fiat and credits.**
-- `created_at`, `updated_at`
-- `UNIQUE (provider, provider_payment_id)`
-- Rules: a `succeeded` payment maps 1:1 to exactly one grant row via `idem_key`. Refunds append a new negative grant row and update only `status` — amounts are never mutated (payments invariant 8).
+`provider_account`, `provider_payment_id` (unique together), `kind one_time|subscription_invoice|auto_recharge`, `amount_minor`, `currency`, `tax_minor` (as reported), `credits_granted`, **`pool`**, **`refunded_minor`** and **`credits_revoked`** (cumulative — partial refunds revoke `ceil(credits_granted × refunded / amount)` in total, never more than granted), `status` (… `disputed`, `charged_back`), `dispute_id`, `dispute_status`, `idem_key` (the grant's key — the reconciliation key between fiat and credits).
 
-### `payment_events`
-Verified webhook events, for idempotent processing and replay safety.
-- `id`, `realm`, `provider`, `provider_event_id TEXT`, `event_type TEXT`
-- `payload_hash TEXT` — SHA-256 of the verified raw body. **The body itself is not stored**: it carries PII and is not needed once the facts are extracted.
-- `status` (`received`|`processed`|`ignored`|`failed`|`unverifiable`)
-- `scope_kind`, `scope_id` (nullable — resolved after parse), `received_at`, `processed_at`, `error TEXT`
-- `UNIQUE (realm, provider, provider_event_id)` — **this unique constraint is the replay guard.** Insert-on-receive after verification; a conflict short-circuits processing (payments invariant 5).
-- Rules: retained longer than the provider's replay window ([FR-027](./spec.md)); default 90 days. `unverifiable` rows are parked deliveries awaiting replay ([D17](./design-decisions.md)) — never processed optimistically.
+### `payment_events` — the webhook inbox
+- `provider_account`, `provider`, `provider_event_id` — **`UNIQUE (provider_account, provider_event_id)` is the replay guard**
+- `event_type`, `event_created_at` (the provider's clock), `payload_hash`, **`object JSONB`** (the normalized, verified facts — not the raw body)
+- `parked_body` / `parked_headers` — only while `unverifiable`, deleted when verification succeeds (a check constraint enforces it)
+- resolved `realm` and scope; `status received|processing|processed|ignored|failed|dead|unverifiable`; `attempts`, `next_attempt_at`, `lease_until`, `error`
+- Rules: persisted and acknowledged `200` before any processing; processed from the table by lease with retries ([D34](./design-decisions.md)). Retained past the provider's replay window (default 90 days).
+
+### `auto_recharge`
+Per scope: `enabled`, `pool`, `threshold`, `plan_code` (a one-time pack), `currency`, `provider_account`, `payment_method_ref` (the provider's reference — never card data), `max_per_day`, `consecutive_failures`, `disabled_reason`.
+
+---
+
+## Entitlements
+
+### `entitlement_keys`
+The realm's declared capabilities: `key`, `kind flag|quota|enum`, `enum_order` (required for enums). An undeclared key is denied.
+
+### `plan_entitlements` · `realm_defaults` · `entitlement_overrides`
+Values per plan, the free tier, and audited per-scope exceptions (`reason` and `actor` `NOT NULL`). `value_int = -1` is **unlimited**, distinct from `NULL` ("unset"). A quota here can size a metering limit through `limits.max_entitlement`.
 
 ---
 
 ## Operations
 
 ### `usage_daily`
-A rollup, refreshed on a tick, backing the burn rate, the time series and the breakdown. A materialized view or a table; either way it is derived and never a billing input.
-- `(realm, scope_kind, scope_id, day, dimension)` PK, `credits BIGINT`, `cost_micros BIGINT`, `events BIGINT`
-- Rules: the member-facing breakdown filters to the caller's own `actor_id` unless they hold the admin entitlement ([D20](./design-decisions.md)).
+A derived rollup backing the burn rate, series and breakdown; never a billing input. The member-facing breakdown filters to the caller's own `actor_id` unless they hold the admin entitlement ([D20](./design-decisions.md)).
 
-### `reconcile_runs`
-- `id`, `realm`, `shard`, `bucket`, `expected BIGINT`, `observed BIGINT`, `drift BIGINT`, `tolerance BIGINT`, `healed BOOL`, `alarmed BOOL`, `ran_at`
-- Rules: every run writes a row whether or not it healed, so drift has a history and a trend rather than only an alert.
+### `reconcile_runs` · `reconcile_findings`
+A run per shard (`incremental` or `full`) with **counts** — checked, in sync, deferred, cold, regressions, drifted — and `abs_drift` (Σ |drift|, never a net figure, so a +100 and a −100 on two scopes are two findings, not zero). A finding per scope and pool that disagreed at the **same** sequence number, with the hot and expected balances and whether it was healed and paged.
 
 ### `dead_letters`
-- `id`, `realm`, `subject`, `payload JSONB`, `attempts INT`, `last_error`, `parked_at`, `replayed_at`
+Messages that exhausted their retry budget; parked, never dropped.
 
 ### `audit_log`
-- `id`, `realm`, `actor`, `action`, `subject_kind`, `subject_id`, `before JSONB`, `after JSONB`, `reason`, `created_at`
-- Rules: written for every privileged action — a grant not originating from a verified webhook, an override, a manual reconcile or rehydrate, a rate-card publication, a plan change.
+Every privileged action and **every configuration write**, with `actor` (the API user via `intelpay.actor`, or `db:<role>` for a direct SQL write), `action`, `subject_kind`, `subject_id`, `before`, `after`, `reason`.
+
+### `event_endpoints` · `outbound_events` · `event_deliveries`
+How hosts hear what happened ([outbound-events.md](./contracts/outbound-events.md)): subscribed `https` endpoints with a signing-secret reference; the event log that also backs `GET /v1/events`; one delivery per (event, endpoint) with backoff state.
 
 ---
 
@@ -171,12 +164,12 @@ A rollup, refreshed on a tick, backing the burn rate, the time series and the br
 
 | File | Contents |
 |---|---|
-| `0001_metering_core.sql` | `account_credits`, `credit_ledger` (+ partitions), `credit_outbox_dead`, `spend_journal`, `rate_cards`, `rate_card_entries`, `limits` |
-| `0002_payments.sql` | `plans`, `plan_prices`, `plan_provider_prices`, `billing_customers`, `subscriptions`, `payments`, `payment_events` |
-| `0003_entitlements.sql` | `plan_entitlements`, `realm_defaults`, `entitlement_overrides` |
-| `0004_operations.sql` | `usage_daily`, `reconcile_runs`, `dead_letters`, `audit_log` |
-| `0005_credit_lots.sql` | `credit_lots` — applied always, used only when `CreditExpiry=lots_fifo` |
+| `0001_metering_core.sql` | partition helpers, `hot_config`, `hot_shards`, `credit_pools`, `account_credits`, `account_watermarks`, `credit_ledger` (+ partitions), `ledger_checkpoints`, `credit_idem`, `usage_idem` (+ partitions), `credit_suspense`, `credit_transfers`, `credit_outbox_dead`, `spend_journal`, `usage_events` (+ partitions), `rate_cards` / `rate_card_entries` (+ insert-only trigger), `limits`, `balance_watches` |
+| `0002_payments.sql` | `provider_accounts`, `plans`, `plan_prices`, `plan_provider_prices`, `billing_customers`, `subscriptions`, `payments`, `payment_events`, `auto_recharge` |
+| `0003_entitlements.sql` | `entitlement_keys`, `plan_entitlements`, `realm_defaults`, `entitlement_overrides` |
+| `0004_operations.sql` | `usage_daily`, `reconcile_runs`, `reconcile_findings`, `dead_letters`, `audit_log` + the configuration audit trigger, `event_endpoints`, `outbound_events`, `event_deliveries` |
+| `0005_credit_lots.sql` | `credit_lots` — applied always, used only under `lots_fifo` |
 
-Migrations travel with the module and are run by `cmd/payment-migrate`. `/readyz` fails while
-the schema is behind head ([D15](./design-decisions.md)), so a rollout cannot serve money
-against a half-migrated database.
+The Phase 2 schema is a **draft** kept with its spec ([002 draft-migrations](../002-postpaid-invoicing/draft-migrations/)), verified in CI on top of this baseline and shipped only with Phase 2's code ([D38](./design-decisions.md)).
+
+Migrations travel with the module and are run by `cmd/payment-migrate`. `/readyz` fails while the schema is behind head. They are forward-only from the first release tag ([migrations/README.md](../../migrations/README.md)).

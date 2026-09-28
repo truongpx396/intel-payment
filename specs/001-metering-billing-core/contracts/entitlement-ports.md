@@ -147,12 +147,42 @@ type EntitlementStore interface {
 	Overrides(ctx context.Context, s domain.Scope) ([]domain.Grant, error)
 	// Defaults are the realm's free tier: what a scope with no subscription gets.
 	Defaults(ctx context.Context, realm domain.Realm) ([]domain.Entitlement, error)
-	// PutOverride writes an exception. It REQUIRES a reason and an actor, and writes an audit
-	// row in the same transaction — an unexplained override is indistinguishable from a bug,
-	// and it is usually discovered during a revenue investigation.
+	// PutOverride writes an exception. It REQUIRES a reason and an actor; the database's audit
+	// trigger records it in the same transaction (metering invariant 18) — an unexplained override
+	// is indistinguishable from a bug, and is usually discovered during a revenue investigation.
 	PutOverride(ctx context.Context, g domain.Grant, actor string) error
+	// Keys are the realm's declared capabilities (entitlement_keys), with each enum's ranking.
+	Keys(ctx context.Context, realm domain.Realm) ([]KeyDecl, error)
+}
+
+type KeyDecl struct {
+	Key       domain.Key
+	Kind      domain.Kind
+	EnumOrder []string // lowest to highest; enums only
 }
 ```
+
+## Adapter: metering's `QuotaSource` — plan-sized ceilings
+
+A metering ceiling is usually a *plan* decision: Free members get 10 000 000 credits a day, Pro
+members 50 000 000, and one enterprise customer negotiated more. That is exactly what entitlements
+already model — values per plan, a free-tier default, audited per-scope overrides, a precedence
+order, provenance, and cache invalidation on change. So metering does not grow a parallel system:
+a `limits` row may name a `max_entitlement` quota key, and the entitlement module provides
+metering's `QuotaSource` port, wired in `cmd/`:
+
+```go
+// metering/ports — implemented by entitlement, never imported by metering's core.
+type QuotaSource interface {
+	// Quota returns the scope's effective value for a quota key: ok=false when no grant applies
+	// (the limit row's own max is used), -1 for unlimited (the ceiling is dropped).
+	Quota(ctx context.Context, s domain.Scope, key string) (value int64, ok bool, err error)
+}
+```
+
+An error resolving a quota is not "no ceiling": `Admit` applies `AdmitFailPolicy` (metering
+invariant 17). The resolution is cached with the entitlement cache and invalidated by the same
+`billing.entitlement.<tag>` events, so an upgrade raises the ceiling immediately.
 
 ---
 
@@ -176,7 +206,7 @@ Within one level, for the same key: a **flag** ORs (any grant enabling it wins),
 2. **Fail closed on an error.** If the store is unreachable, `Allowed` returns an error and the host denies. There is no `FailOpen` knob here, unlike `Admit`: unmetered *usage* is a bounded, recoverable cost, while an un-gated *capability* can expose another tenant's data. The two failures are not comparable, so they do not share a policy.
 3. **Entitlements are data, never plan-code branches.** No `if plan == "pro"` anywhere — in this repo or in a host. A new plan is rows, not a release.
 4. **`Consume` never stores usage.** The host owns its own counts. A second count is a second truth.
-5. **Overrides are audited.** Every `PutOverride` writes who, what, why and when, in the same transaction as the override itself.
+5. **Overrides are audited.** Every override write records who, what, why and when, in the same transaction as the override itself — written by the database's audit trigger, so it holds even for a write that bypasses the API.
 6. **`-1` means unlimited, and is handled explicitly.** Never compared numerically, never coerced to a large number, never confused with "unset".
 7. **A refusal is actionable.** Every denied `Decision` carries a human-readable `Reason` and, when one exists, an `UpgradePath`.
 8. **The UI reads the same resolution the server enforces.** `Resolve` is the single source for both. A plan card assembled from a separate source will eventually promise something the server refuses.
@@ -256,9 +286,10 @@ func EntitlerContract(t *testing.T, e ports.Entitler, fx Fixtures) {
 
 ## Adoption checklist (per host product)
 
-- [ ] **Keys declared** — every capability the host gates, with its `Kind`, registered for the realm. Undeclared keys deny.
+- [ ] **Keys declared** — every capability the host gates, with its `Kind`, as `entitlement_keys` rows for the realm. Undeclared keys deny.
+- [ ] **Plan-sized ceilings linked** — each metering limit whose size depends on the plan names its quota key in `max_entitlement`.
 - [ ] **Plan entitlements populated** — rows in `plan_entitlements` per plan, including the free tier's `Defaults`.
-- [ ] **Enum orders declared** — for every `Enum` key, the host's ranking, so "highest wins" is defined.
+- [ ] **Enum orders declared** — `entitlement_keys.enum_order` for every `Enum` key, so "highest wins" is defined.
 - [ ] **Call sites converted** — no `if plan == "…"` remains in the host; every gate goes through `Entitler`.
 - [ ] **Quota counts sourced from the host** — `Consume` is called with the host's real current count, not a cached one.
 - [ ] **Refusal UX built** — `Reason` and `UpgradePath` rendered wherever a gate can refuse.

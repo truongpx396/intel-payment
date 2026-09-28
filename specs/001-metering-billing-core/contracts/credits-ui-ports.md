@@ -73,7 +73,12 @@ export interface UnitLabels {
   readonly unit: string;            // "credits" | "seats" | "GB-months"
   readonly one: string;             // "credit"
   readonly abbr?: string;           // "cr"
-  readonly format?: (q: Quantity) => string;  // default: grouped integer
+  /** Internal units per displayed unit. The books keep a FINE unit (the reference is
+   *  1 credit = 1 µ$ of list price); a host shows dollars with scale 1_000_000 and 2 decimals,
+   *  or "credits" of $0.001 with scale 1000. Integer division plus a remainder — never a float. */
+  readonly scale?: number;
+  readonly decimals?: number;
+  readonly format?: (q: Quantity) => string;  // default: grouped integer ÷ scale, `decimals` places
 }
 
 /** One ceiling. Mirrors kernel/metering `Limit` — same shape, so the wire is a
@@ -83,16 +88,21 @@ export interface LimitView {
   readonly label: string;
   readonly used: Quantity;
   readonly cap: Quantity | null;    // null = uncapped (render as a figure, no meter)
-  /** Mirrors the kernel's Window 1:1, so the wire is a pass-through and neither side owns a
-   *  translation table. "job" is a cumulative budget for one unit of work (a long-running
-   *  task's own cap); "call" is a per-invocation ceiling that never accumulates. The two read
-   *  very differently to a person — one is a draining budget, the other is a wall — so a meter
-   *  must not render them the same way. */
+  /** How a PERSON should read the ceiling — a view vocabulary, deliberately not the kernel's
+   *  Window enum. The server maps one to the other in exactly one place (the snapshot builder):
+   *
+   *    kernel Balance → "none"   (no reset: a balance, rendered with an optional overdraft)
+   *    kernel Daily   → "day"    · kernel Hourly → "hour" · kernel Rolling → "period"
+   *    kernel Job     → "job"    (a draining budget for one unit of work)
+   *    AdmitRequest.MaxCost → "call" (a per-invocation wall; never accumulates, never a Limit row)
+   *
+   *  "job" and "call" read very differently — one drains, the other is a wall — so a meter must
+   *  not render them the same way. */
   readonly window: "period" | "day" | "hour" | "job" | "call" | "none";
   readonly resetsAt?: string;       // ISO; omitted when window === "call" | "none"
   readonly warnAtPct: number;       // from Limit.WarnAt — NOT a hardcoded 80
   readonly denyCode?: string;       // maps to the host's 402/429 ([metering-ports.md](./metering-ports.md))
-  readonly scopeHint?: string;      // "all members" | "you"
+  readonly scopeHint?: string;      // "all members" | "you" — set for a subject limit (Limit.Subject)
 }
 
 export interface BalanceView {
@@ -100,6 +110,10 @@ export interface BalanceView {
   readonly granted: Quantity;
   readonly primaryLimitKey: string; // which LimitView the hero mirrors
   readonly burnRatePerDay?: Quantity;
+  /** Per credit pool, in draw order, when the realm defines pools beyond `general` — e.g.
+   *  promotional credits that are spent first, or credits usable only on some resources. */
+  readonly pools?: ReadonlyArray<{ readonly key: string; readonly label: string;
+                                   readonly remaining: Quantity; readonly appliesTo?: string }>;
 }
 
 /** One member of a spend dimension. Colour is assigned by INDEX from the
@@ -277,7 +291,7 @@ The panel needs materially more than a balance figure, and it needs it in one sh
 
 | Snapshot field | Backing source | Note |
 |---|---|---|
-| `balance.remaining` / `granted` | `account_credits` | hot balance; the ledger is authoritative |
+| `balance.remaining` / `granted` / `pools` | the hot account, per pool | a fast copy; the ledger is the record |
 | `limits[]` | kernel `[]Limit` for the realm | pass-through, including `warnAtPct` and `denyCode` — **no translation table on either side** |
 | `balance.burnRatePerDay` | `usage_daily` rollup | drives "runs out in ~N days", the figure people actually act on |
 | `series[]` | `usage_daily` rollup | default 14 days, `?days=` configurable |

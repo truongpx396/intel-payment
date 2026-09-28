@@ -3,146 +3,156 @@
 **Spec**: [spec.md](./spec.md) | **Plan**: [plan.md](./plan.md) | **Contracts**: [contracts/](./contracts/)
 
 `[P]` = parallelizable with its siblings. Every task that implements an invariant names it, so a
-reviewer can check the test rather than the prose.
+reviewer can check the test rather than the prose. `[x]` = done **and verified** — the verification
+is named, and it runs in CI.
 
 ---
 
 ## Phase 0 — Foundation (the boundary exists before the code it guards)
 
-- [ ] **T001** `go mod init github.com/truongpx396/intel-payment`; Go 1.23+; `Makefile` targets `build test test-integration lint verify-portability up down seed migrate`.
-- [ ] **T002** `.go-arch-lint.yml` — the component graph from [metering-ports.md](./contracts/metering-ports.md). **Before** any port code: a boundary added after the fact has already been crossed.
+- [ ] **T001** `go mod init github.com/truongpx396/intel-payment`; Go 1.23+.
+- [ ] **T002** `.go-arch-lint.yml` — the component graph, including `events`. **Before** any port code.
 - [ ] **T003** `.golangci.yml` — depguard rules 1–4 (core purity, engine standalone, ports-only access, provider-SDK containment).
-- [ ] **T004** `.github/workflows/ci.yml` — build, vet, test, lint, arch-lint, `verify-portability`, `govulncheck`, migration-up-down.
-- [ ] **T005** [P] `migrations/0001_metering_core.sql` — `account_credits`, `credit_ledger` + monthly partitions, `credit_outbox_dead`, `spend_journal`, `rate_cards`, `rate_card_entries`, `limits`. `UNIQUE (realm, idem_key)` on the ledger (**FR-003**).
-- [ ] **T006** [P] `migrations/0002_payments.sql`, **T007** [P] `0003_entitlements.sql`, **T008** [P] `0004_operations.sql`, **T009** [P] `0005_credit_lots.sql`.
-- [ ] **T010** `cmd/payment-migrate` + an embedded-migration check `/readyz` can call (**FR-042**, D15).
-- [ ] **T011** `deploy/docker-compose.yml` + `Dockerfile` (distroless, non-root, multi-stage). Redis configured `noeviction` + AOF — **not** a default to be discovered later.
+- [ ] **T004** `.github/workflows/ci.yml` — build, vet, test, lint, arch-lint, `verify-portability`, `govulncheck` (the Go steps activate with `go.mod`).
+- [x] **T005** `migrations/0001`–`0005` — the baseline schema, including the guards, watermarks, suspense, transfers, pools, the webhook inbox, outbound events and the configuration audit trigger (**FR-003, FR-050**). *Verified: `scripts/verify-schema.sh`, CI job `schema`.*
+- [x] **T006** Phase 2 draft schema in `specs/002-…/draft-migrations/`, applied on top of the baseline in CI and never shipped (D38). *Verified: `scripts/verify-schema.sh`.*
+- [x] **T007** `specs/…/contracts/reference/hot_path.lua` — the reference Redis Functions (**FR-017f**). *Verified: `scripts/verify-hot-path.sh` on Redis in cluster mode, CI job `hot-path`.*
+- [x] **T008** `scripts/check-spec-drift.sh` — no retired mechanism described as current (D46). *Verified: CI job `drift`.*
+- [ ] **T010** `cmd/payment-migrate` + an embedded-migration check `/readyz` can call (**FR-042**).
+- [ ] **T011** `deploy/docker-compose.yml` + `Dockerfile` (distroless, non-root). Redis `noeviction` + AOF, with an ACL that gives hosts nothing.
 
 ## Phase 1 — Metering core
 
 ### Domain
-- [ ] **T020** [P] `metering/domain/realm.go`, `scope.go` — `Realm`, `Scope`, `Tag()` with the realm inside it (**FR-014**, D4).
-- [ ] **T021** [P] `credits.go`, `money.go` — signed `Credits int64`, `Money{MinorUnits, Currency}` (**FR-012**).
-- [ ] **T022** [P] `event.go` — `Unit`, `Quantity`, `Event`, `Price` **with `RateCardVersion`** (**FR-002**, D6).
-- [ ] **T023** [P] `limit.go` — `Window` (incl. **`Job`**), `Limit`, `AdmitRequest` **with `MaxCost`**, `Admission` **with `Headroom`** (**FR-005**, **FR-017a**, D5, D22).
-- [ ] **T024** [P] `receipt.go` — `Charge` (with its optional `Job` scope), `Grant`, `Transfer`, `Receipt`, `TransferReceipt` (**FR-017b**, D23).
-- [ ] **T025** [P] `policy.go` — `SettlementDurability`, `NegativeBalancePolicy`, `CreditExpiry`, `AdmitFailPolicy`, `PlanChangePolicy`, `TaxMode` (D7, D2, D11, D9).
-- [ ] **T026** `metering/config.go` — `Config` + `withDefaults` + `Validate`. No `os.Getenv` in any core package.
+- [ ] **T020** [P] `realm.go`, `scope.go`, `subjects.go`, `pool.go` — `Tag()` as identity; `Subjects`; `GeneralPool` (**FR-014, FR-017c, FR-017d**).
+- [ ] **T021** [P] `credits.go`, `money.go` — signed `Credits int64`; `Money{MinorUnits, Currency}` (**FR-012**).
+- [ ] **T022** [P] `event.go`, `ratecard.go` — `Event` with required `OccurredAt`; `Price` with `RateCardVersion`; `RateCard`/`RateEntry` rationals (**FR-001, FR-002**, D31).
+- [ ] **T023** [P] `limit.go` — `Window` incl. `Job`; `Limit` with `Subject`, `Resource`, `TZ`; `AdmitRequest` with `Resource`, `Subjects`, `MaxCost`; `Admission` with `Headroom`, `Blocked` (**FR-004…006, FR-017a, FR-017c**).
+- [ ] **T024** [P] `receipt.go` — `Charge`, `Grant` (pool), `Transfer` (pools), `Receipt` (`Seq`, `Deferred`), `TransferReceipt` (`Status`).
+- [ ] **T025** [P] `policy.go`, `errors.go` — every policy enum; typed errors (`ErrIdemConflict`, `ErrStaleEvent`, `ErrMissingSubject`, …).
+- [ ] **T026** `metering/config.go` — `Config` + `withDefaults` + `Validate`, exactly as in the contract.
 
 ### Ports & conformance suites (before adapters — the suites are the specification)
-- [ ] **T030** `metering/ports/driven.go` — `Pricer`, `BalanceStore`, `LedgerStore`, `LimitStore`, `RateCardStore`, `Bus` (with `Pending` and `Trim`), `Clock`, `IDSource`, `Metrics`.
-- [ ] **T031** `metering/ports/driving.go` — `Meter`, `LedgerWriter`.
-- [ ] **T032** `PricerContract` — determinism, attributes-never-price, empty-is-free, fail-closed on unknown key/unit, round-up, monotonicity, **rate-card version reported**.
-- [ ] **T033** `LedgerContract` — debit idempotent, admit gates without reserving, exhausted refusal carries the code, grant idempotent, **`MaxCost` bounds overshoot**, **idem keys do not collide across realms**, **`clamp_to_zero` writes a `writeoff` row**, **a job budget halts without touching a calendar ceiling**, **a transfer applies both sides or neither and refuses rather than overdrawing** (D5, D4, D7, D22, D23).
-- [ ] **T034** `LedgerWriterContract` — drain exactly-once under redelivery, reconcile heals *and* alarms past tolerance, rehydrate rebuilds under a per-scope lock.
+- [ ] **T030** `ports/driven.go` — `Pricer`, `PricerRegistry`, `BalanceStore`, `BookStore`, `LimitStore`, `PoolStore`, `RateCardStore`, `QuotaSource`, `JournalStore`, `UsageArchive`, `Bus`, `IntentStream`, `Clock`, `IDSource`, `Metrics`.
+- [ ] **T031** `ports/driving.go` — `Meter` (Admit, Record, Grant, Transfer), `LedgerWriter` (Drain, Reconcile, Rehydrate, Recover, Audit).
+- [ ] **T032** `PricerContract` — determinism, attributes/subjects never price, fail-closed, **sub-credit prices exact**, **rounds once per event**, monotonicity, card version, overflow refused (**FR-001**, D31).
+- [ ] **T033** `LedgerContract` — idempotent debit; **idempotency conflict**; admit without reserving; `MaxCost` + headroom; **pool draw order**; realm-independent keys; clamp with writeoff and no forgiven debt; job budget via subjects; **missing subject refused**; transfer refuses, then applies both sides once (**FR-003…005, FR-015, FR-017a…d**).
+- [ ] **T034** `LedgerWriterContract` — in-order booking; redelivery vs gap vs regression; batching; suspense opened and closed; reconcile at equal seq heals hot only and never books.
+- [ ] **T034a** `ConsistencyContract` — [hot-path-consistency.md §9](./contracts/hot-path-consistency.md#9-verification) against Testcontainers Redis **in cluster mode** + Postgres, including a Redis restart from a truncated AOF and a failover to a lagging replica mid-traffic: no double charge, the shard freezes and rebuilds, deferred usage lands (**SC-002, SC-008**).
 
 ### App
-- [ ] **T040** `app/admit.go` — resolve realm limits from `LimitStore`, merge caller limits, evaluate windows, apply `MaxCost`, compute `Headroom`, emit warn/blocked, honour `AdmitFailPolicy` (**FR-004…006**).
-- [ ] **T041** `app/record.go` — price via `Pricer`, then **one atomic step** writing the usage record and enqueueing the debit (**FR-008**, invariant 8).
-- [ ] **T042** `app/grant.go` — signed grants, idempotent, `NegativeBalancePolicy` **with the compensating `writeoff` row** (**FR-015**, invariant 12).
-- [ ] **T042a** `app/transfer.go` — atomic pool→allocation: one Lua script over both scopes' keys, paired `allocation_out`/`allocation_in` under one idem key; refuse on insufficient pool, cross-realm destination, or `MaxDestBalance` breach. Reconcile asserts the pair sums to zero (**FR-017b**, invariant 14, D23).
-- [ ] **T042b** `Window: Job` counters — keyed on an ephemeral scope with a TTL; a counter, not a granted balance, so no ledger rows accrue per job (**FR-017a**, D22).
-- [ ] **T043** `app/writer.go` — drain; at-least-once + `credit_idem (realm, idem_key)` collapses retries (**FR-007**).
-- [ ] **T044** `app/reconcile.go` — expected vs observed, heal row, **alarm past tolerance**, `reconcile_runs` row every run (**FR-009**).
-- [ ] **T045** `app/rehydrate.go` — rebuild from ledger under a per-scope lock before serving (**FR-010**).
-- [ ] **T046** `app/expiry.go` — FIFO lot consumption + expiry sweep, active only under `lots_fifo` (**FR-016**, D2).
-- [ ] **T047** `app/new.go` — `Deps`, validation, return `ports.Meter`.
+- [ ] **T040** `app/admit.go` — resolve realm limits for the resource, size `max_entitlement` limits via `QuotaSource` (error → `AdmitFailPolicy`), merge caller limits (tighten only), refuse a missing subject, one `ip_admit` read, evaluate (**FR-004…006, FR-017, FR-017c**).
+- [ ] **T041** `app/record.go` — refuse stale `OccurredAt`; price under the active card via the registry; fingerprint; `ip_debit`; on `FROZEN`/`COLD_SHARD`/unavailable/`BACKPRESSURE`, journal and return `Deferred` (**FR-008, FR-017e**).
+- [ ] **T042** `app/grant.go` — `ip_grant` per pool with `NegativeBalancePolicy` (**FR-015**).
+- [ ] **T042a** `app/transfer.go` — phase 1 via `ip_transfer_out` with the `MaxDestBalance` pre-check (**FR-017b**, D33).
+- [ ] **T042b** Window counters — daily/hourly in `Limit.TZ`, rolling as sub-buckets, job TTL; keyed under the charged scope's shard (**FR-017a**).
+- [ ] **T043** `app/writer.go` — shard ownership (advisory lock), `XAUTOCLAIM` on takeover, per-scope in-order batches, the watermark cases, the op table, suspense and corrections, transfer phases 2–4, `lw` → `billing.balance.low` (**FR-007**).
+- [ ] **T044** `app/reconcile.go` — incremental + full; outcomes; findings per scope and pool; `ip_heal` compare-and-set; never books (**FR-009**).
+- [ ] **T045** `app/rehydrate.go` — lazy on `COLD_SCOPE` under a per-scope lock; eager for recently active scopes after a bump (**FR-010**).
+- [ ] **T045a** `app/recover.go` — replication-id watch; freeze → drain → bump → unfreeze; resharding (**FR-010**, D40).
+- [ ] **T045b** `app/audit.go` — deep audit and checkpoints; partition detach eligibility (**FR-050**).
+- [ ] **T046** `app/expiry.go` — FIFO lots per pool; expiry pre-applied at the watermark's remainder, trued up by the writer (**FR-016**).
+- [ ] **T047** `app/journal.go` — the replay tick through `ip_debit`; settle on booking (**FR-017e**, D41).
+- [ ] **T048** `app/new.go` — `Deps`, validation, return `ports.Meter`.
 
 ### Driven adapters
-- [ ] **T050** `adapters/driven/redis` — one Lua script per operation: `DECRBY` + **`XADD outbox:{shard}`** + `SET NX applied`, all-or-nothing. Window counters (incl. `Job`). Locks.
-- [ ] **T051** `adapters/driven/postgres` — ledger store, limit store, rate-card store (+ in-process cache), reconcile queries, journal mode.
-- [ ] **T052** [P] `adapters/driven/redisstreams` — **the default `Bus`**. `XADD` inline in the hot-path Lua script; `XREADGROUP` + `XACK` to drain; `XAUTOCLAIM` past `AckWait` to reclaim a dead consumer; `XPENDING` for `Pending()`; explicit `Trim` (**FR-046**, **FR-047**).
-- [ ] **T052a** [P] `adapters/driven/natsjetstream` — the optional `Bus`. Same subjects, same handlers.
-- [ ] **T052b** `BusContract` run against **both** adapters — including a killed consumer's in-flight entry being redelivered, and `Trim` refusing to remove an un-acked entry (**SC-014**).
-- [ ] **T053** [P] `adapters/driven/otel` — `Metrics`, every name from the observability contract (**FR-041**).
-- [ ] **T054** [P] `pricing/llmtoken` — the reference pricer, pure, fails closed, rounds up, reports its card version.
-- [ ] **T055** [P] `pricing/seat`, **T056** [P] `pricing/storagebyte` — **the reuse proof.** Same `PricerContract`, disjoint unit spaces (**SC-004**).
-- [ ] **T057** Wire T032 against all three pricers and T033/T034 against the real adapters via Testcontainers.
+- [ ] **T050** `adapters/driven/redis` — load `reference/hot_path.lua` **unchanged**; the key layout; `HotAckWait` via `WAITAOF`; the shard lifecycle (**FR-017f**, D29).
+- [ ] **T051** `adapters/driven/postgres` — books, watermarks, suspense, both guards (window probe under the per-scope lock), transfers, journal, limits, pools, cards (+ cache invalidated by `LISTEN intelpay_config`).
+- [ ] **T052** [P] `adapters/driven/redisstreams` — the default `Bus` + `IntentStream` (**FR-046, FR-047**).
+- [ ] **T052a** [P] `adapters/driven/natsjetstream` — the optional `Bus`, with the outbox relay.
+- [ ] **T052b** `BusContract` against **both** adapters (**SC-014**).
+- [ ] **T053** [P] `adapters/driven/otel` — every metric of the observability contract (**FR-041**).
+- [ ] **T054** [P] `pricing/table` — the default pricer, exact, rounds once (**FR-001**, D31).
+- [ ] **T055** [P] `pricing/llmtoken`, `seat`, `storagebyte` — unit validation, then `table`.
+- [ ] **T056** [P] `archive/postgres` — `UsageArchive` over `usage_events` for `rollup` granularity (**FR-050**).
+- [ ] **T057** Wire T032 against `table` over three cards and a registered pricer; T033/T034/T034a against the real adapters (**SC-004**).
 
 ## Phase 2 — Transports
 
-- [ ] **T060** `api/meteringv1` proto per [grpc-surface.md](./contracts/grpc-surface.md) — realm on `Scope`, `max_cost`, `headroom`, `rate_card_version`.
-- [ ] **T061** `adapters/driving/grpcserver`; fixed status mapping (`RESOURCE_EXHAUSTED`, `FAILED_PRECONDITION`, `PERMISSION_DENIED`, `UNAVAILABLE`).
-- [ ] **T062** `adapters/driving/grpcclient` — **wrapped to satisfy `ports.Meter`**. This wrapper is what makes library↔service a wiring change (**FR-044**).
-- [ ] **T063** `adapters/driving/resthandler` — every `/v1/*` route from [rest-api.md](./contracts/rest-api.md); one error shape; `Idempotency-Key` required on mutations.
-- [ ] **T064** `GET /v1/credits` returning the whole `CreditsSnapshot` in one round trip (**FR-036**).
-- [ ] **T065** Caller auth middleware — mTLS/bearer, **realm binding**, `Grant` privilege separation (**FR-040**, invariants 11 and 13).
-- [ ] **T066** `/healthz`, `/readyz` (**fails behind head**), `/metrics`.
-- [ ] **T067** `cmd/paymentd`, **T068** `cmd/payment-worker` (sole durable writer + every tick).
-- [ ] **T069** **Equivalence test**: one integration suite run twice — against the in-process meter and against the client stub — passing identically. This *is* FR-044.
+- [ ] **T060** `api/meteringv1` proto per [metering-ports.md § Service surface](./contracts/metering-ports.md#service-surface-meteringservice-grpc-contract-locked).
+- [ ] **T061** `grpcserver` with the fixed status mapping of [grpc-surface.md](./contracts/grpc-surface.md).
+- [ ] **T062** `grpcclient` — **wrapped to satisfy `ports.Meter`** (**FR-044**).
+- [ ] **T063** `resthandler` — every `/v1/*` route of [rest-api.md](./contracts/rest-api.md); `Idempotency-Key` is the key.
+- [ ] **T063a** Admin API — configuration writes with `intelpay.actor`/`intelpay.reason`, card publication validated by a test pricing (**FR-049**).
+- [ ] **T063b** `api/openapi/v1.yaml` + a CI check that handlers and document agree; generated TypeScript and Python clients.
+- [ ] **T064** `GET /v1/credits` — the whole `CreditsSnapshot`, pools included (**FR-036**).
+- [ ] **T065** Caller auth — mTLS/bearer, realm binding, `record`/`grant`/`admin` privileges (**FR-040**).
+- [ ] **T066** `/healthz`, `/readyz` (schema head + shard count), `/metrics`.
+- [ ] **T067** `cmd/paymentd`, **T068** `cmd/payment-worker`.
+- [ ] **T069** **Equivalence test**: one suite, run in-process and through the client stub (**FR-044**).
 
 ## Phase 3 — Payments
 
-- [ ] **T080** `billing/domain` — `Plan`, `Customer`, `Sub` **with `GraceUntil`**, `Payment`, `Event`, **normalized `EventObject`**, `EventType` **including `Ignored`** (D10, D17, D18).
-- [ ] **T081** `billing/ports` — `PaymentProvider`, `Catalog`, `TaxStrategy`, `Customers`, `Events`, `Payments`, `Subs`.
-- [ ] **T082** `ProviderContract` — tampered / unsigned / stale-signed rejected; good body verified and normalized; unknown type is `Ignored`; **checkout never grants** (**FR-018, FR-019**).
-- [ ] **T083** `IngressContract` — duplicate grants once; **8-way concurrent grants once**; metadata cannot redirect the scope; unknown customer ignored; refund appends without mutating; failed payment sets grace (**FR-020…023, FR-025**).
-- [ ] **T084** `billing/app/webhook.go` — verify → claim → resolve → dispatch → mark, exactly the flow in the contract. **Every money branch goes through `Meter.Grant`** (**FR-022**).
-- [ ] **T085** `billing/app/checkout.go` — catalogue resolve, customer upsert, provider checkout. Returns a URL and grants nothing.
-- [ ] **T086** `adapters/driven/stripe` — `Stripe-Signature` HMAC, constant-time, timestamp tolerance; **key grants on payment/invoice id, never the session** (the double-grant trap).
-- [ ] **T087** [P] `adapters/driven/polar`, **T088** [P] `adapters/driven/paypal` (remote verification: deadline, retry budget, **park unverifiable — never fail open**, payments invariant 14).
-- [ ] **T089** `TaxStrategy` impls: `provider_managed`, `external_hook`, `none` (**FR-028**, D9).
-- [ ] **T090** `PlanChangePolicy` in `ChangePlan` (**FR-029**, D11).
-- [ ] **T091** Catalogue store — plans, per-currency prices, provider price mapping (D12).
+- [ ] **T080** `billing/domain` — provider accounts, `Sub.LastEventAt`, payments with cumulative refunds and dispute state, normalized `EventObject`, `Ignored`.
+- [ ] **T081** `billing/ports` — `PaymentProvider` (incl. `ChargeSaved`, setup mode), `Catalog.PlanForPrice`, `Inbox`, `Payments`, `Subs.ApplyIfNewer`, `TaxStrategy`.
+- [ ] **T082** `ProviderContract` — tampered/unsigned/stale/wrong-account rejected; normalization incl. cumulative refunds; `Ignored`; checkout never grants (**FR-018, FR-019**).
+- [ ] **T083** `IngressContract` + `ProcessorContract` — persist-before-ack; **crash after ack still grants once**; concurrent processors grant once; metadata cannot redirect; partial refunds exact; won dispute reverses; out-of-order subscription events; grace; cross-realm ignored (**FR-020…026, SC-016, SC-017**).
+- [ ] **T084** `billing/app/ingress.go` + `processor.go` — stage 1 and stage 2 exactly as in the contract; the `billing.webhook.tick` sweep and unverifiable-retry.
+- [ ] **T085** `billing/app/checkout.go` — payment, subscription and setup modes. Grants nothing.
+- [ ] **T086** `adapters/driven/stripe` — HMAC, tolerance, per-account secrets; key grants on payment/invoice id; refunds and dispute events.
+- [ ] **T087** [P] `adapters/driven/polar`, **T088** [P] `adapters/driven/paypal` (remote verification, **park unverifiable with the raw body**).
+- [ ] **T089** `TaxStrategy` impls (**FR-028**). **T090** `PlanChangePolicy` (**FR-029**). **T091** Catalogue store per account and currency.
 - [ ] **T092** Run T082 against **every** adapter (**SC-004**).
+- [ ] **T093** Auto top-up — balance watch, `billing.balance.low` handler, bounded idempotent `ChargeSaved`, disable after failures (**FR-030a**).
 
 ## Phase 4 — Entitlements
 
-- [ ] **T100** `entitlement/domain` — `Key`, `Kind`, `Value` (**`-1` = unlimited, distinct from unset**), `Grant`, `Source`.
-- [ ] **T101** `entitlement/ports` + `EntitlerContract` — unknown key denies, store outage denies, override beats subscription, grace keeps / past-grace lapses, refusal is actionable, unlimited handled, **upgrade visible without waiting a TTL**, provenance present, realms do not leak (**FR-031…035**).
-- [ ] **T102** `entitlement/app/resolve.go` — precedence `override > subscription > default`; within a level: flag ORs, quota maxes, enum ranks.
-- [ ] **T103** Cache + **event-driven invalidation** on `billing.entitlement.<tag>` (**FR-035**, invariant 9).
-- [ ] **T104** `PutOverride` — reason and actor required, audit row in the same transaction (**FR-034**).
+- [ ] **T100** `entitlement/domain` — `Key`, `Kind`, `Value` (`-1` = unlimited), `Grant`, `Source`, `KeyDecl`.
+- [ ] **T101** `EntitlerContract` — as before, plus declared keys and enum order from `entitlement_keys`.
+- [ ] **T102** Resolver with precedence `override > subscription > default`.
+- [ ] **T103** Cache + invalidation on `billing.entitlement.<tag>` and `billing.config.<realm>` (**FR-035**).
+- [ ] **T104** The `QuotaSource` adapter for plan-sized limits (**FR-017**, D30).
 - [ ] **T105** REST + gRPC endpoints; batch `Check`.
 
 ## Phase 5 — Operational surface
 
-- [ ] **T110** Tick handlers: `reconcile`, `expiry`, `dunning`, **`subdrift`** (D16), `events.purge`, `dlq.sweep`, **`trim`** (stream retention — without it a `noeviction` Redis fills and the hot path stops) — each an idempotent atomic claim so a duplicate tick is a no-op.
-- [ ] **T111** DLQ: park at the cap into `dead_letters`, alert, **never re-drive again, never drop** (**FR-043**).
-- [ ] **T112** Admin endpoints: force reconcile, rehydrate, drift; every one audited.
-- [ ] **T113** `usage_daily` rollup + the member-scoped breakdown (**FR-039**, D20).
-- [ ] **T114** [docs/operations.md](../../docs/operations.md) — one runbook entry per alert, each naming the metric that fires it.
+- [ ] **T110** Tick handlers — reconcile, audit, transfer, journal, webhook, outbound, expiry, dunning, subdrift, partitions, idem purge, events purge, trim — each an idempotent claim.
+- [ ] **T111** DLQ: park at the cap, alert, never re-drive again, never drop (**FR-043**).
+- [ ] **T112** Admin operations endpoints: reconcile, recover, rehydrate, unblock, adjustments, replay — each audited.
+- [ ] **T113** `usage_daily` rollup + member-scoped breakdown (**FR-039**).
+- [ ] **T114** [docs/operations.md](../../docs/operations.md) — one runbook entry per alert.
+- [ ] **T115** `events/` — outbound log, signed delivery with backoff, SSRF guard, feed (**FR-048**).
 
 ## Phase 6 — UI package
 
-- [ ] **T120** [P] `ui/credits-ui/src/ports.ts` — framework-free (D19).
-- [ ] **T121** [P] `model.ts` — pure derivation; fill from `used/cap` **never** a precomputed percentage; threshold state from `warnAtPct`.
-- [ ] **T122** Components: `BalanceHero` (with "runs out in ~N days"), `LimitMeter` (`role="progressbar"`, `aria-valuetext` in host units), `SpendChart`, `Breakdown`, `LedgerTable` (registry-driven columns), `PlanCatalog` (blocked offers expose no action; non-purchasers see inert controls).
-- [ ] **T123** `CreditsPanel` composition root; `BillingSlots`/`BillingAnchor` optional.
-- [ ] **T124** [P] `ui/examples/llm-credits` — the reference binding: labels, columns, source.
+- [ ] **T120** [P] `ports.ts` — framework-free, with `UnitLabels.scale` and pools.
+- [ ] **T121** [P] `model.ts` — pure derivation; the kernel-window → view-window mapping lives server-side.
+- [ ] **T122** Components: `BalanceHero` (per pool), `LimitMeter`, `SpendChart`, `Breakdown`, `LedgerTable`, `PlanCatalog`.
+- [ ] **T123** `CreditsPanel` composition root.
+- [ ] **T124** [P] `ui/examples/llm-credits` — the reference binding.
 - [ ] **T125** ESLint `no-restricted-paths` + a scan asserting the string `credit` never appears inside `credits-ui/**`.
 - [ ] **T126** Portability check: `npm pack`, install into an unrelated app, build clean (**SC-012**).
-- [ ] **T127** Fixture-driven render tests for 1 / 3 / 5 ceilings and a non-credit unit.
+- [ ] **T127** Fixture-driven render tests for 1 / 3 / 5 ceilings, pools and a non-credit unit.
 
 ## Phase 7 — Hardening
 
-- [ ] **T130** Load test `Admit` against **SC-001** (p99 ≤ 5 ms co-located, ≤ 1 ms embedded). A miss here is a design finding, not a tuning task.
-- [ ] **T131** Chaos: kill Redis mid-traffic (fail policy holds, rehydrate restores); inject drift (alarm fires); replay webhooks at volume (one grant); poison an outbox entry (parks, alerts).
-- [ ] **T132** Security review against both checklists ([metering](./contracts/metering-ports.md), [payments](./contracts/payment-provider-ports.md)); `gitleaks` + `govulncheck` in CI.
-- [ ] **T133** Recovery rehearsal: restore a ledger copy, `Rehydrate`, measure against the RTO (**SC-008**).
-- [ ] **T134** Two full adoption walkthroughs from [docs/integration-guide.md](../../docs/integration-guide.md) — one embedded, one containerized, different `Pricer`s — and fix whatever the second one reveals about the first.
+- [ ] **T130** Load test against the [scale envelope](./plan.md#scale-envelope) and **SC-001**. A miss is a design finding.
+- [ ] **T131** Chaos: kill Redis; fail it over to a lagging replica; restart it from a truncated AOF; replay webhooks at volume; kill a processor mid-event; inject drift; poison an intent. Each ends with no double charge and a page where the contract says so.
+- [ ] **T132** Security review against the checklists; `gitleaks` + `govulncheck` in CI; Redis ACLs verified from a host's credentials.
+- [ ] **T133** Recovery rehearsals: shard recover under traffic; region failover per the DR runbook; both timed against the RTO (**SC-008**).
+- [ ] **T134** Two full adoption walkthroughs — one embedded, one containerized from a non-Go host with only a rate card — and fix whatever the second reveals.
 
 ---
 
 ## Dependencies
 
 ```text
-T001→T004  ──▶  T005→T011  ──▶  Phase 1 domain (T020…T026)
-                                     ▼
-                              ports + suites (T030…T034)   ← written BEFORE app
-                                     ▼
-                              app (T040…T047)  ──▶  adapters (T050…T057)
-                                     ▼
-                              Phase 2 transports (T060…T069)
-                                     ├──▶ Phase 3 payments (T080…T092) ──▶ Phase 4 (T100…T105)
-                                     └──▶ Phase 6 UI (T120…T127)   [independent]
-                              Phase 5 (T110…T114) after Phase 3
-                              Phase 7 last
+T001→T004  ──▶  Phase 1 domain (T020…T026)        [T005–T008 done and verified]
+                     ▼
+              ports + suites (T030…T034a)   ← written BEFORE app
+                     ▼
+              app (T040…T048)  ──▶  adapters (T050…T057)
+                     ▼
+              Phase 2 transports (T060…T069)
+                     ├──▶ Phase 3 payments (T080…T093) ──▶ Phase 4 (T100…T105)
+                     └──▶ Phase 6 UI (T120…T127)   [independent]
+              Phase 5 (T110…T115) after Phase 3
+              Phase 7 last
 ```
 
 ## Definition of done (every task)
 
 1. The behaviour has a test named for the invariant or requirement it implements.
-2. `make test lint verify-portability` passes, and the output is pasted in the PR — not summarized.
-3. No `os.Getenv` outside `cmd/`; no float near money; no provider SDK outside its adapter.
-4. Any contract change lands in `specs/001-metering-billing-core/contracts/` **in the same commit** as the code.
+2. `make ci` passes, and the output is pasted in the PR — not summarized.
+3. No `os.Getenv` outside `cmd/`; no float near money; no provider SDK outside its adapter; no host access to Redis.
+4. Any contract change lands in `specs/001-metering-billing-core/contracts/` **in the same commit** as the code, and `check-spec-drift.sh` still passes.
