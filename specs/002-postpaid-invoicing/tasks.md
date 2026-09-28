@@ -5,8 +5,8 @@
 > **Gate**: do not start this until [001](../001-metering-billing-core/tasks.md) Phases 0–3 are implemented and passing. Post-paid rates the ledger 001 produces; building it first means rating a schema that does not exist yet.
 
 ## Phase A — Schema & settlement model
-- [ ] **T201** `migrations/0006_postpaid_invoicing.sql` + `.down.sql` — every table in [data-model.md](./data-model.md).
-- [ ] **T202** The finalize-immutability trigger on `invoices`/`invoice_lines`. Enforced in the database, not the application: invariant 3 is the artifact's only real property and application code is not where you defend it.
+- [ ] **T201** Move [`draft-migrations/0101_postpaid_invoicing.sql`](./draft-migrations/0101_postpaid_invoicing.sql) into `migrations/` as the next number **in the same change as the Phase 2 code** — never before (D38). Forward-only: there is no down migration.
+- [x] **T202** The finalize-immutability triggers on `invoices`/`invoice_lines` and on credit notes. Enforced in the database, not the application. *In the draft; verified by `scripts/schema-assertions-002.sql` in CI.*
 - [ ] **T203** `invoice_numbers` allocation under `FOR UPDATE` inside the finalize transaction — **not** a Postgres `SEQUENCE`, which gaps on rollback (invariant 8).
 - [ ] **T204** `scope_settlement`; `limits.window_kind` gains `period_to_date`; `deny_code = 'credit_limit_reached'`.
 - [ ] **T205** Admission honours the post-paid spend cap and skips `NegativeBalancePolicy` for post-paid scopes (**FR-102**, **FR-103**, invariant 12).
@@ -22,7 +22,7 @@
 
 ## Phase C — Periods & close
 - [ ] **T220** `Periods` — `ClaimClose` as an atomic conditional `UPDATE`; resumable `closing` (**FR-105**).
-- [ ] **T221** `billing.period.close.tick` handler: claim → gather events → rate → discount → draft → finalize → collect. Idempotent end to end.
+- [ ] **T221** `billing.period.close.tick` handler: claim → aggregate the period's usage per (unit, schedule version) in SQL → rate → discount → draft → finalize → collect. Idempotent end to end, and never loads a period's events into memory.
 - [ ] **T222** Concurrency test: 8 simultaneous closes on one period produce exactly **one** invoice (**SC-105**).
 - [ ] **T223** `LateEventPolicy` — `next_period` (default) | `reopen` (draft only) | `reject`, with a `late_events` row every time (**FR-111**).
 - [ ] **T224** Period anchoring: calendar month and subscription anniversary.

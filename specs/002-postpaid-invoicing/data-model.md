@@ -4,7 +4,7 @@
 
 Same conventions: realm-scoped rows, the opaque `(realm, scope_kind, scope_id)` triple, integer minor units, `TIMESTAMPTZ` UTC, append-only where it is a record.
 
-Migration: `0006_postpaid_invoicing.sql` (with a matching `.down.sql`).
+Migration: a **draft**, [`draft-migrations/0101_postpaid_invoicing.sql`](./draft-migrations/0101_postpaid_invoicing.sql) — verified in CI on top of 001's baseline, shipped into `migrations/` only with the Phase 2 code, and forward-only ([D38](../001-metering-billing-core/design-decisions.md)).
 
 ## Settlement model
 
@@ -92,4 +92,4 @@ Migration: `0006_postpaid_invoicing.sql` (with a matching `.down.sql`).
 | `subscriptions` | gains `quantity INT NOT NULL DEFAULT 1` and `trial_end TIMESTAMPTZ` (FR-121, FR-122) |
 | `plans` | gains `trial_days INT` |
 
-Nothing is dropped and nothing is re-keyed, so 001 deployments migrate forward without touching money tables.
+Nothing is dropped and nothing is re-keyed, so 001 deployments migrate forward without touching money tables. The one non-additive statement widens two `limits` CHECK constraints, which rejects no existing row.

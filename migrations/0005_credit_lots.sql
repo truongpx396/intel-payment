@@ -3,6 +3,10 @@
 -- Applied always, USED only when CreditExpiry=lots_fifo. Off by default because expiry is the
 -- surprising behaviour: a system that silently destroys something a customer paid for should
 -- have been asked for explicitly.
+--
+-- Lots are maintained by the sole durable writer as it books intents in sequence order, so a lot's
+-- `remaining` is exact at the watermark. Expiry is pre-applied on the hot tier at that figure (an
+-- upper bound) and trued up by the writer — see hot-path-consistency.md §3.
 BEGIN;
 
 CREATE TABLE credit_lots (
@@ -10,6 +14,7 @@ CREATE TABLE credit_lots (
     realm           TEXT        NOT NULL DEFAULT 'default',
     scope_kind      TEXT        NOT NULL,
     scope_id        TEXT        NOT NULL,
+    pool            TEXT        NOT NULL DEFAULT 'general',
     granted         BIGINT      NOT NULL CHECK (granted > 0),
     remaining       BIGINT      NOT NULL CHECK (remaining >= 0),
     expires_at      TIMESTAMPTZ,
@@ -19,9 +24,9 @@ CREATE TABLE credit_lots (
     CHECK (remaining <= granted)
 );
 
--- FIFO consumption: the oldest unexpired lot with a remainder is drawn first.
+-- FIFO consumption within a pool: the oldest unexpired lot with a remainder is drawn first.
 CREATE INDEX credit_lots_fifo_idx
-    ON credit_lots (realm, scope_kind, scope_id, created_at)
+    ON credit_lots (realm, scope_kind, scope_id, pool, created_at)
     WHERE remaining > 0 AND expired_at IS NULL;
 
 CREATE INDEX credit_lots_expiry_idx
