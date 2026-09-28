@@ -3,8 +3,8 @@ COMPOSE := docker compose -f deploy/docker-compose.yml
 MODULE  := github.com/truongpx396/intel-payment
 
 .DEFAULT_GOAL := help
-.PHONY: help build test test-integration lint arch-lint verify-portability \
-        up up-jetstream down down-volumes logs migrate migrate-down seed proto fmt vuln secrets ci clean
+.PHONY: help build test test-integration lint arch-lint verify-portability verify-schema verify-hot-path \
+        up up-jetstream down down-volumes logs migrate seed proto fmt vuln secrets ci clean
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
@@ -31,9 +31,9 @@ arch-lint: ## Enforce the hexagonal dependency graph
 	go-arch-lint check --project-path .
 
 verify-portability: ## Assert metering/ stands alone (SC-006)
-	@echo "==> metering/ must not depend on billing/, entitlement/ or cmd/"
+	@echo "==> metering/ must not depend on billing/, entitlement/, events/ or cmd/"
 	@if go list -deps ./metering/... 2>/dev/null | \
-	    grep -E '^$(MODULE)/(billing|entitlement|cmd)(/|$$)'; then \
+	    grep -E '^$(MODULE)/(billing|entitlement|events|cmd)(/|$$)'; then \
 	  echo "FAIL: metering/ reached outside itself — the engine is no longer portable"; exit 1; \
 	fi
 	@echo "OK"
@@ -44,7 +44,15 @@ vuln: ## govulncheck
 secrets: ## gitleaks
 	gitleaks detect --no-banner
 
-ci: build test lint verify-portability vuln ## Everything CI runs
+## ---- the design's own verifications (run without any Go code) ----------
+PSQL ?= psql $(or $(PAYMENT_LEDGER_DSN),postgres://payment:payment@localhost:5432/payment)
+verify-schema: ## Apply migrations + seed + the Phase 2 draft to an EMPTY Postgres and assert behaviour
+	PSQL='$(PSQL)' scripts/verify-schema.sh
+
+verify-hot-path: ## Run the reference Redis Functions against Redis in cluster mode (needs Docker)
+	scripts/verify-hot-path.sh
+
+ci: build test lint verify-portability vuln verify-hot-path ## Everything CI runs (verify-schema needs an empty DB)
 
 ## ---- run ------------------------------------------------------------------
 up: ## Start the stack (postgres + redis + migrate + paymentd + worker)
@@ -68,12 +76,12 @@ logs: ## Tail service logs
 migrate: ## Run migrations to head
 	$(COMPOSE) run --rm migrate
 
-migrate-down: ## Roll back the last migration (TO=0001 rolls back to that version)
-	$(COMPOSE) run --rm --entrypoint /usr/local/bin/payment-migrate migrate down $(TO)
+# There is deliberately no down-migration target: migrations are forward-only (D27). In development,
+# `make down-volumes && make up` rebuilds the schema from scratch.
 
 ## ---- data -----------------------------------------------------------------
 REALM ?= default
-seed: ## Seed a realm: rate card, limits, plans, free tier (REALM=my-product)
+seed: ## Seed a realm: pools, rate card, limits, plans, entitlements, free tier (REALM=my-product)
 	$(COMPOSE) exec -T postgres psql -U payment -d payment \
 	  -v realm='$(REALM)' -f /dev/stdin < scripts/seed.sql
 
