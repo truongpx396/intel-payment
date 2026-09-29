@@ -291,6 +291,14 @@ func (s *subscription) handle(m goredis.XMessage, attempts int) error {
 	if !matches(s.pattern, subject) {
 		return s.ack(m.ID) // not this subscription's: another group reads it
 	}
+	// A message already delivered more often than it may be — its consumers kept dying on it — goes to
+	// the DLQ without another attempt.
+	if attempts > s.b.o.MaxAttempts {
+		if derr := s.deadLetter(subject, m.ID, payload, attempts, errors.New("delivered more often than MaxAttempts without an outcome")); derr != nil {
+			return derr
+		}
+		return s.ack(m.ID)
+	}
 	err := s.call(ports.Message{Subject: subject, ID: m.ID, Payload: []byte(payload), Attempts: attempts})
 	if err == nil {
 		return s.ack(m.ID)

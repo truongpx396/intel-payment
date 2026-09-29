@@ -198,3 +198,61 @@ func TestTheOutboxIsTrimmedOnlyPastEveryGroupAndTheFloor(t *testing.T) {
 		})
 	}
 }
+
+// A message whose consumers keep dying on it is never silently retried for ever: once it has been
+// delivered more often than MaxAttempts it goes to the DLQ without another attempt.
+func TestAMessageDeliveredTooOftenIsDeadLetteredWithoutAnotherAttempt(t *testing.T) {
+	t.Parallel()
+	for mode := range servers {
+		t.Run(string(mode), func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			o := contracts.BusOptions{Prefix: fmt.Sprintf("dead%d", seq.Add(1)), AckWait: 100 * time.Millisecond, MaxAttempts: 3, Backoff: 10 * time.Millisecond}
+			bus, rdb := newBus(t, mode, o, "c1")
+			subj := o.Prefix + ".payment.a"
+			if err := bus.Publish(ctx, subj, []byte("crashy")); err != nil {
+				t.Fatal(err)
+			}
+			// Consumers that took it and died: four deliveries, none acknowledged.
+			key, group := o.Prefix+":events", "g|"+subj
+			if err := rdb.XGroupCreateMkStream(ctx, key, group, "0").Err(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := rdb.XReadGroup(ctx, &goredis.XReadGroupArgs{Group: group, Consumer: "dead-1", Streams: []string{key, ">"}, Count: 1, Block: -1}).Result(); err != nil {
+				t.Fatal(err)
+			}
+			for i := 2; i <= 4; i++ {
+				time.Sleep(20 * time.Millisecond)
+				if err := rdb.Do(ctx, "XCLAIM", key, group, fmt.Sprintf("dead-%d", i), 0, mustPendingID(t, rdb, key, group)).Err(); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			var calls atomic.Int64
+			var dead blocker
+			s1, err := bus.Subscribe(ctx, subj, "g", func(context.Context, ports.Message) error { calls.Add(1); return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = s1.Close() })
+			s2, err := bus.Subscribe(ctx, o.Prefix+".dlq.>", "dlq", dead.handle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = s2.Close() })
+			waitUntil(t, "the dead letter", func() bool { return dead.count() == 1 })
+			if calls.Load() != 0 {
+				t.Fatalf("the handler was called %d times for a message past its attempts", calls.Load())
+			}
+		})
+	}
+}
+
+func mustPendingID(t *testing.T, rdb goredis.UniversalClient, key, group string) string {
+	t.Helper()
+	p, err := rdb.XPendingExt(context.Background(), &goredis.XPendingExtArgs{Stream: key, Group: group, Start: "-", End: "+", Count: 1}).Result()
+	if err != nil || len(p) != 1 {
+		t.Fatalf("pending: %v %v", p, err)
+	}
+	return p[0].ID
+}
