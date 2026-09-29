@@ -527,6 +527,22 @@ type LedgerWriter interface {
 	Audit(ctx context.Context, shard Shard) (AuditReport, error)
 }
 
+// Three idempotent sweeps complete work an effect could not, and run on their own ticks rather than
+// through the port: RedriveTransfers (billing.transfer.tick — the credit leg of a transfer in transit
+// longer than TransferRedrive), ReissueCorrections (the hot-side reversal of a suspense entry whose
+// first attempt did not land; never past HotIdemTTL) and the Expirer (billing.expiry.tick — see FR-016).
+// Every hot mutation they issue is keyed, so a repeat is a REPLAY, never a second effect.
+
+// The writer reads the outbox through the narrow IntentStream port (redisstreams), not a Bus:
+//
+//   Read(ctx, shard, count, minIdle) — entries a dead consumer left un-acked past minIdle first, oldest
+//     first (XAUTOCLAIM), then new ones; each carries its delivery count, so an entry is parked after
+//     MaxAttempts even across a restart, and an entry that cannot be parsed arrives with ParseErr
+//     (it is parked whole, never dropped, FR-043). A consumer group lost with a rollback is created
+//     again from the start.
+//   Ack(ctx, shard, ids...)          — never deletes; retention is explicit (Trim, once acked AND old).
+//   Stats(ctx, shard)                — length, pending, undelivered and the age of the oldest of each.
+
 // Shard is fnv1a64(Scope.Tag()) mod Shards — the unit of Redis Cluster placement and of writer
 // ownership. The count is recorded in hot_config and changed only by a reshard.
 type Shard int
@@ -872,8 +888,9 @@ func LedgerContract(t *testing.T, newLedger func(t *testing.T, opts ...Opt) (por
 //   func TestTablePricer_Seats(t *testing.T)     { PricerContract(t, table.Pricer{}, seatCard(), seatFx) }
 //   func TestTablePricer_Bytes(t *testing.T)     { PricerContract(t, table.Pricer{}, byteCard(), byteFx) }
 //   func TestLLMTokenPricer_Registry(t *testing.T){ PricerContract(t, registry()["llmtoken"], tokenCard(), tokenFx) }
-//   func TestRedisLedger_Contract(t *testing.T)   { LedgerContract(t, newRedisLedgerWithWriter) }
-//   func TestConsistency_Contract(t *testing.T)   { ConsistencyContract(t, newRedisLedgerWithWriter) } // hot-path-consistency.md §9
+//   func TestRedisLedger_Contract(t *testing.T)   { LedgerContract(t, newRedisLedgerWithWriter) }     // integration/writer_test.go
+//   func TestWriter_Contract(t *testing.T)        { LedgerWriterContract(t, newWriterHarness) }        // in-order booking, gaps, suspense, reconcile, expiry
+//   func TestConsistency_Contract(t *testing.T)   { ConsistencyContract(t, newRollbackHarness) }       // hot-path-consistency.md §9: truncated AOF; lagging replica
 ```
 
 ---
