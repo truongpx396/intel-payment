@@ -35,6 +35,10 @@ var (
 	// ErrQuotaUnavailable is a limit sized by an entitlement that could not be resolved: 503
 	// under fail_closed. It is never treated as "unlimited" (invariant 17).
 	ErrQuotaUnavailable = errors.New("entitlement quota unavailable")
+	// ErrQuotaNotGranted is what a QuotaSource returns when no plan, override or default grants the
+	// key: the limit falls back to its own configured Max. Any other QuotaSource error means the
+	// quota could not be resolved and applies AdmitFailPolicy.
+	ErrQuotaNotGranted = errors.New("no entitlement grants this quota")
 	// ErrUncountableLimit is a caller-supplied non-job window limit that names no configured limit: 400.
 	ErrUncountableLimit = errors.New("caller-supplied limit cannot be counted")
 

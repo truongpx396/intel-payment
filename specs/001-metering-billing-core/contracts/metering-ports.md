@@ -139,7 +139,11 @@ type Event struct {
 	// usage dedup window is refused (ErrStaleEvent, 422) rather than risk a second charge once
 	// its durable guard has expired (hot-path-consistency.md §6).
 	OccurredAt time.Time
-	Attributes map[string]string // trace_id, feature, provider — usage-log/audit ONLY, never a cost input
+	// Attributes are usage-log/audit ONLY, never a cost input and never part of the request
+	// fingerprint (a retry legitimately carries a new trace id). One key is read: "operation_type"
+	// becomes the ledger row's operation_type ("query", "ingest", "agent_step"…); without it the
+	// Resource is used. It is not copied into the row's ref.
+	Attributes map[string]string // trace_id, feature, provider, operation_type
 }
 
 // Price is the output of pricing an Event.
@@ -441,6 +445,17 @@ which counters to increment without being told the limits (a `Charge` carries no
 - **A caller can therefore tighten a configured limit and pass a job budget, but nothing else.** A
   caller-supplied `daily`/`hourly`/`rolling` limit whose `Name` is not configured could never be
   counted, so it would silently never bind — `ErrUncountableLimit`, not a no-op (invariant 17).
+
+### When the hot tier cannot answer `Admit`
+
+`AdmitFail` decides. Under `fail_closed` the caller gets `ErrHotStoreUnavailable` (503). Under
+`fail_open` it is admitted with `Headroom = MaxOperationAmount` — *unknown, not zero*, because a
+caller sizing its work by headroom must not be told it can afford nothing during an outage it is
+being served through — and `metering_admit_failopen_total` counts it. Two things are NOT governed by
+`AdmitFail`: a realm whose limits cannot be read fails closed regardless (serving without the
+ceilings is serving unbounded), and a limit sized by an entitlement that cannot be resolved follows
+`AdmitFail` only for that limit (`ErrQuotaUnavailable` under `fail_closed`; `domain.ErrQuotaNotGranted`
+means nothing grants it, and the limit keeps its row's own `max`).
 
 ### Retries across a price change
 
@@ -1399,8 +1414,9 @@ type Deps struct {
 	Bus       ports.Bus            // redisstreams by default
 	Quotas    ports.QuotaSource    // optional: sizes limits that name a max_entitlement
 	Archive   ports.UsageArchive   // required when LedgerGranularity=rollup
-	Clock     ports.Clock          // default: system clock. Injected so window math is testable
-	IDs       ports.IDSource       // uuid v7
+	Clock     ports.Clock          // REQUIRED: the core reads no wall clock (a core that does is not replayable);
+	                                //   `system.Clock{}` from metering/adapters/driven/system in the reference wiring
+	IDs       ports.IDSource       // uuid v7 (`&system.IDs{}`); required by the writer, unused by the Meter
 	Metrics   ports.Metrics        // default: no-op. Invariant 15 needs a real one in production
 }
 
@@ -1408,6 +1424,9 @@ type Deps struct {
 func New(cfg metering.Config, d Deps) (ports.Meter, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("metering config: %w", err)
+	}
+	if d.Clock == nil {
+		return nil, errors.New("metering: a Clock is required — the core reads no wall clock")
 	}
 	if d.Balance == nil || d.Books == nil || d.Bus == nil || d.Journal == nil {
 		return nil, errors.New("metering: Balance, Books, Bus and Journal are required")

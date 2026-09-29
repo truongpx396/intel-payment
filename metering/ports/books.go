@@ -217,6 +217,9 @@ type BookStore interface {
 	BumpGen(ctx context.Context, sh domain.Shard) (int64, error)
 	SetNodeReplID(ctx context.Context, sh domain.Shard, id string) error
 
+	// Transfer reads a transfer by key; found=false if no writer has booked its first leg yet.
+	Transfer(ctx context.Context, realm domain.Realm, idemKey string) (TransferRecord, bool, error)
+
 	// Booked reads a scope's watermark, booked balances and open suspense as one snapshot — what a
 	// rehydrate installs and what reconcile compares against.
 	Booked(ctx context.Context, scope domain.Scope) (BookedState, error)
