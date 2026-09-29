@@ -10,7 +10,7 @@ is named, and it runs in CI.
 
 ## Phase 0 — Foundation (the boundary exists before the code it guards)
 
-- [x] **T001** `go mod init github.com/truongpx396/intel-payment`; Go 1.23+. *Verified: `go build ./...` under the `go 1.23.0` directive; CI job `go` (setup-go reads `go.mod`).*
+- [x] **T001** `go mod init github.com/truongpx396/intel-payment`; Go 1.26+ (the floor follows the dependencies: pgx ≥ 5.9.2 fixes GO-2026-5856 and needs 1.25; the current x/text, x/net and gRPC need 1.26). *Verified: `go build ./...`; `govulncheck` in CI; CI job `go` (setup-go reads `go.mod`).*
 - [x] **T002** `.go-arch-lint.yml` — the component graph, including `events`. **Before** any port code. *Verified: `scripts/verify-boundary.sh` plants a violation per edge and expects rejection; CI job `go`.*
 - [x] **T003** `.golangci.yml` — depguard rules 1–4 (core purity, engine standalone, ports-only access, provider-SDK containment), plus `paralleltest`/`tparallel`. *Verified: `scripts/verify-boundary.sh`; CI job `go`.*
 - [x] **T004** `.github/workflows/ci.yml` — build, vet, test (`-race -shuffle`), integration (Testcontainers), lint, arch-lint, `verify-boundary`, `verify-portability`, `govulncheck`, `deploy`, and Playwright `e2e` (runs once `cmd/paymentd` exists). *Verified: this workflow is the verification.*

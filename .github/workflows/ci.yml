@@ -12,7 +12,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version-file: go.mod, cache: true }
+        # '1.26' resolves to the latest 1.26.x patch. go-version-file would pin go.mod's `go 1.26.0`
+        # — the OLDEST 1.26, whose standard library can carry vulnerabilities govulncheck reports.
+        with: { go-version: '1.26', cache: true }
 
       - name: Build
         run: go build ./...
@@ -28,7 +30,7 @@ jobs:
 
       - name: golangci-lint (incl. depguard boundary rules)
         uses: golangci/golangci-lint-action@v8
-        with: { version: v2.5 }
+        with: { version: v2.14 }   # must be built with a Go >= the module's `go` line
 
       - name: Architecture graph
         run: |
