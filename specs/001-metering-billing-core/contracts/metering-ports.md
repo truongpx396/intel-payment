@@ -184,6 +184,11 @@ type Limit struct {
 	TZ       string        // IANA zone for Daily/Hourly resets; default "UTC"
 	WarnAt   float64       // 0..1 near-limit fraction; default 0.8, operator-configurable
 	DenyCode string        // "payment_required" (402) | "limit_reached" (409)
+
+	// MaxEntitlement names the entitlement key whose quota sizes Max for a scope (-1 there means
+	// unlimited). It is configuration: the Meter resolves it through the QuotaSource BEFORE the
+	// ledger sees the limit, so the ledger only ever evaluates a concrete Max.
+	MaxEntitlement string
 }
 
 // AdmitRequest is the admission-gate input.
@@ -222,6 +227,13 @@ type Charge struct {
 	Subjects   Subjects   // increments subject counters, including a job budget
 	Quantities []Quantity // for counters measured in a metered Unit
 	Ref        map[string]string
+
+	// The event, carried so the intent is a complete usage record (invariant 8) and so the request
+	// fingerprint covers what identifies the operation. None is a cost input to the ledger.
+	RateKey         string
+	RateCardVersion string
+	CostMicros      int64
+	OccurredAt      time.Time
 }
 
 // Grant adds or removes credits in one pool (payments, refunds, chargebacks, promos, admin).
@@ -264,6 +276,9 @@ type Receipt struct {
 	Delta    Credits // the signed delta this call applied (0 on replay)
 	Balance  Credits // resulting hot balance across pools (eventual; informational)
 	Seq      int64   // the scope's sequence number for this operation (0 when deferred)
+
+	RateCardVersion string  // the card that priced a Record (the wire receipt's rate_card_version)
+	Writeoff        Credits // a negative grant's floored shortfall, booked by the writer as its own row
 }
 ```
 
@@ -271,7 +286,12 @@ type Receipt struct {
 reused with a different request), `ErrStaleEvent` (422 — older than the dedup window),
 `ErrMissingSubject` (400), `ErrUnpriceable` (422, fail closed), `ErrAmountOutOfRange` (422 —
 above `MaxOperationAmount`), `ErrInsufficient` (409 — a transfer that would overdraw),
-`ErrCrossRealm` (403), `ErrHotStoreUnavailable` (503 — `Admit` under `fail_closed`).
+`ErrCrossRealm` (403), `ErrHotStoreUnavailable` (503 — `Admit` under `fail_closed`),
+`ErrQuotaUnavailable` (503 — a limit sized by an entitlement that could not be resolved, under
+`fail_closed`), `ErrUncountableLimit` (400 — see [Window counters](#window-counters)) and `ErrInvalid`
+(400 — a malformed request). The hot tier's refusals — `ErrColdScope`, `ErrColdShard`,
+`ErrShardFrozen`, `ErrBackpressure` — are typed too: the Meter rehydrates on the first and defers
+usage to the journal on the others, so none of them reaches a `Record` caller.
 
 ---
 
@@ -357,6 +377,12 @@ prices through the `table` pricer or a pricer compiled into its build of `paymen
 
 ## Port: `Ledger` — the hot tier (request-serving)
 
+> **In code** the hot-tier adapter is `ports.BalanceStore`: it embeds this `Ledger` and adds what only
+> the writer, reconcile and recovery need — `ApplyDelta` (transfer_in, correction, expiry),
+> `Snapshot`, `Rehydrate`, `Heal`, and the shard lifecycle (`OpenShard`/`BumpShard`/`FreezeShard`/
+> `UnfreezeShard`/`NodeID`). The Meter depends only on `Ledger`. `Ledger.Admit` receives the FINAL,
+> merged limit set; the adapter needs the realm's pools to resolve a resource's eligible pools.
+
 ```go
 // Ledger is the hot tier. It runs INSIDE request-serving tiers and NEVER waits on the durable
 // store: every mutation is ONE Redis Function in the scope's shard slot that applies the change,
@@ -397,6 +423,32 @@ type TransferReceipt struct {
 	Status      string  // "in_transit" | "settled"
 }
 ```
+
+### Window counters
+
+A window limit is a counter, not a balance, and the hot function that settles a charge must know
+which counters to increment without being told the limits (a `Charge` carries none):
+
+- **Configured limits** (`daily`, `hourly`, `rolling`, and `job` limits in the realm's rows) are
+  counted for every charge they govern — by resource and by subject — keyed
+  `ctr:{s<n>}:<tag>:<limit name>:<subject id>:<bucket>`. Daily and hourly buckets are the calendar
+  day/hour in `Limit.TZ` (the hourly key carries the zone offset, so the repeated hour when clocks
+  fall back is two counters); rolling is 12 sub-buckets, so its error is at most `Dur/12`.
+- **A job budget is counted whenever the call carries `Subjects["job"]`**, in credits and in each
+  metered unit of the charge, keyed `…:job.<unit>:<job id>:-`. Its counter lives 24 h from the first
+  charge (`DefaultJobTTL`): the limit that names its `Dur` is passed at `Admit`, which is not seen at
+  settlement, so an abandoned job leaks one TTL'd key.
+- **A caller can therefore tighten a configured limit and pass a job budget, but nothing else.** A
+  caller-supplied `daily`/`hourly`/`rolling` limit whose `Name` is not configured could never be
+  counted, so it would silently never bind — `ErrUncountableLimit`, not a no-op (invariant 17).
+
+### Retries across a price change
+
+The fingerprint of a usage charge includes its amount. A retry of one event after a new rate card
+was published in between therefore prices differently and is `ErrIdemConflict` — loud, never a
+double charge, and the first price stands. Producers retry with the same `OccurredAt`; a card
+change inside one retry horizon is rare, and refusing it is the alternative to silently choosing
+which price the customer was charged.
 
 ## Port: `Meter` — orchestration callers actually use
 
@@ -960,6 +1012,9 @@ github.com/truongpx396/intel-payment
         grpcserver/ meteringv1 server over app                (service mode)
         grpcclient/ meteringv1 client, satisfies ports.Meter  (service mode caller)
         resthandler/ REST + admin + webhook ingress
+    contracts/                     #   the conformance suites (PricerContract, LedgerContract, …): an
+                                   #   ordinary package so an adapter's tests can import it and hand
+                                   #   it a constructor; it imports no adapter
     config.go                      #   metering.Config — no os.Getenv in the core
 
   billing/                         # THE FIAT BOUNDARY — see payment-provider-ports.md
@@ -1212,6 +1267,11 @@ type Config struct {
 	// Money policies.
 	NegativeBalance NegativeBalancePolicy // default ClampToZero
 	CreditExpiry    CreditExpiry          // default ExpiryOff
+
+	// The writer's stream (hot-path-consistency.md §2–3).
+	BusMaxLen   int64         // outbox length at which the hot functions refuse with BACKPRESSURE; default 1,000,000
+	AckWait     time.Duration // an un-acked entry idle this long is reclaimed; default 30s
+	MaxAttempts int           // deliveries before an intent is parked; default 5
 }
 
 func (c *Config) withDefaults() {
@@ -1265,6 +1325,13 @@ func (c *Config) withDefaults() {
 	}
 	if c.CreditExpiry == "" {
 		c.CreditExpiry = ExpiryOff
+	}
+	def(&c.AckWait, 30*time.Second)
+	if c.BusMaxLen == 0 {
+		c.BusMaxLen = 1_000_000
+	}
+	if c.MaxAttempts == 0 {
+		c.MaxAttempts = 5
 	}
 }
 

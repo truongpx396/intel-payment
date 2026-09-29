@@ -15,8 +15,8 @@ the build is aimed at, and the constraints it holds to.
 | Concern | Choice | Why |
 |---|---|---|
 | Language | Go 1.26+ | The hot path is a sub-millisecond admission check; the durable writer is a long-lived worker. Both want a compiled language with cheap concurrency, and the ports were designed in Go |
-| Hot store | Redis 7+ (single primary or **Cluster**), **`noeviction` + AOF**, Redis Functions | One function per operation, every key in the scope's **shard slot** — account, guard, counters and the outbox stream ([hot-path-consistency.md](./contracts/hot-path-consistency.md)). The eviction policy is correctness, not tuning |
-| Durable store | PostgreSQL 15+ | The idempotency guards, the watermarks and the books; partitioned ledger and dedup; database-enforced insert-only prices and configuration audit |
+| Hot store | Redis 7.2+ (single primary or **Cluster**), **`noeviction` + AOF**, Redis Functions | One function per operation, every key in the scope's **shard slot** — account, guard, counters and the outbox stream ([hot-path-consistency.md](./contracts/hot-path-consistency.md)). The eviction policy is correctness, not tuning |
+| Durable store | PostgreSQL 16+ | The idempotency guards, the watermarks and the books; partitioned ledger and dedup; database-enforced insert-only prices and configuration audit |
 | Bus | **Redis Streams (default)**, NATS JetStream optional, behind a `Bus` port | The outbox *is* a stream in the account's slot, written by the same function that moves the balance. JetStream sits behind it via a relay for downstream replication |
 | Transports | gRPC (hot path) + REST (everything else) + signed outbound webhooks | gRPC for typed, deadline-bounded `Admit`; REST for non-Go hosts, configuration and operations; webhooks so hosts never touch internals |
 | Client libraries | Go (wraps gRPC, satisfies `ports.Meter`); TypeScript and Python generated from `api/openapi/v1.yaml` and the protos | A non-Go host should not hand-write a client for a money API |

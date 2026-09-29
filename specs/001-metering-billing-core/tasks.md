@@ -24,18 +24,18 @@ is named, and it runs in CI.
 ## Phase 1 — Metering core
 
 ### Domain
-- [ ] **T020** [P] `realm.go`, `scope.go`, `subjects.go`, `pool.go` — `Tag()` as identity; `Subjects`; `GeneralPool` (**FR-014, FR-017c, FR-017d**).
-- [ ] **T021** [P] `credits.go`, `money.go` — signed `Credits int64`; `Money{MinorUnits, Currency}` (**FR-012**).
-- [ ] **T022** [P] `event.go`, `ratecard.go` — `Event` with required `OccurredAt`; `Price` with `RateCardVersion`; `RateCard`/`RateEntry` rationals (**FR-001, FR-002**, D31).
-- [ ] **T023** [P] `limit.go` — `Window` incl. `Job`; `Limit` with `Subject`, `Resource`, `TZ`; `AdmitRequest` with `Resource`, `Subjects`, `MaxCost`; `Admission` with `Headroom`, `Blocked` (**FR-004…006, FR-017a, FR-017c**).
-- [ ] **T024** [P] `receipt.go` — `Charge`, `Grant` (pool), `Transfer` (pools), `Receipt` (`Seq`, `Deferred`), `TransferReceipt` (`Status`).
-- [ ] **T025** [P] `policy.go`, `errors.go` — every policy enum; typed errors (`ErrIdemConflict`, `ErrStaleEvent`, `ErrMissingSubject`, …).
-- [ ] **T026** `metering/config.go` — `Config` + `withDefaults` + `Validate`, exactly as in the contract.
+- [x] **T020** [P] `realm.go`, `scope.go`, `subjects.go`, `pool.go` — `Tag()` as identity; `Subjects`; `GeneralPool` (**FR-014, FR-017c, FR-017d**). *Verified: `metering/domain` unit tests — tag ambiguity refused, shard = fnv1a64 cross-checked against an independent implementation, pool draw order.*
+- [x] **T021** [P] `credits.go`, `money.go` — signed `Credits int64`; `Money{MinorUnits, Currency}` (**FR-012**). *Verified: `metering/domain` unit tests — overflow refused, no mixed currencies.*
+- [x] **T022** [P] `event.go`, `ratecard.go` — `Event` with required `OccurredAt`; `Price` with `RateCardVersion`; `RateCard`/`RateEntry` rationals (**FR-001, FR-002**, D31). *Verified: `metering/domain` unit tests; `PricerContract`.*
+- [x] **T023** [P] `limit.go` — `Window` incl. `Job`; `Limit` with `Subject`, `Resource`, `TZ`; `AdmitRequest` with `Resource`, `Subjects`, `MaxCost`; `Admission` with `Headroom`, `Blocked` (**FR-004…006, FR-017a, FR-017c**). *Verified: `metering/domain` unit tests — `Evaluate`, `MergeLimits`, window buckets across DST.*
+- [x] **T024** [P] `receipt.go` — `Charge`, `Grant` (pool), `Transfer` (pools), `Receipt` (`Seq`, `Deferred`), `TransferReceipt` (`Status`). *Verified: `metering/domain` unit tests — validation and canonical fingerprints.*
+- [x] **T025** [P] `policy.go`, `errors.go` — every policy enum; typed errors (`ErrIdemConflict`, `ErrStaleEvent`, `ErrMissingSubject`, …). *Verified: `metering/domain` unit tests.*
+- [x] **T026** `metering/config.go` — `Config` + `withDefaults` + `Validate`, exactly as in the contract. *Verified: `metering` config tests — defaults applied to a copy, every refusal, all problems reported at once.*
 
 ### Ports & conformance suites (before adapters — the suites are the specification)
-- [ ] **T030** `ports/driven.go` — `Pricer`, `PricerRegistry`, `BalanceStore`, `BookStore`, `LimitStore`, `PoolStore`, `RateCardStore`, `QuotaSource`, `JournalStore`, `UsageArchive`, `Bus`, `IntentStream`, `Clock`, `IDSource`, `Metrics`.
-- [ ] **T031** `ports/driving.go` — `Meter` (Admit, Record, Grant, Transfer), `LedgerWriter` (Drain, Reconcile, Rehydrate, Recover, Audit).
-- [ ] **T032** `PricerContract` — determinism, attributes/subjects never price, fail-closed, **sub-credit prices exact**, **rounds once per event**, monotonicity, card version, overflow refused (**FR-001**, D31).
+- [ ] **T030** *(in progress: everything but `BookStore`, `UsageArchive` and `IntentStream`, which arrive with T051, T056 and T052.)* `ports/driven.go` — `Pricer`, `PricerRegistry`, `BalanceStore`, `BookStore`, `LimitStore`, `PoolStore`, `RateCardStore`, `QuotaSource`, `JournalStore`, `UsageArchive`, `Bus`, `IntentStream`, `Clock`, `IDSource`, `Metrics`.
+- [x] **T031** `ports/driving.go` — `Meter` (Admit, Record, Grant, Transfer), `LedgerWriter` (Drain, Reconcile, Rehydrate, Recover, Audit). *Verified: compiles against `app` in the next PR; `ports.Meter` and `ports.LedgerWriter` as in the contract.*
+- [x] **T032** `PricerContract` — determinism, attributes/subjects never price, fail-closed, **sub-credit prices exact**, **rounds once per event**, monotonicity, card version, overflow refused (**FR-001**, D31). *Verified: `metering/contracts.PricerContract` over the `table` pricer on three disjoint cards **and** over `llmtoken`, `seat` and `storagebyte` through the registry (SC-004).*
 - [ ] **T033** `LedgerContract` — idempotent debit; **idempotency conflict**; admit without reserving; `MaxCost` + headroom; **pool draw order**; realm-independent keys; clamp with writeoff and no forgiven debt; job budget via subjects; **missing subject refused**; transfer refuses, then applies both sides once (**FR-003…005, FR-015, FR-017a…d**).
 - [ ] **T034** `LedgerWriterContract` — in-order booking; redelivery vs gap vs regression; batching; suspense opened and closed; reconcile at equal seq heals hot only and never books.
 - [ ] **T034a** `ConsistencyContract` — [hot-path-consistency.md §9](./contracts/hot-path-consistency.md#9-verification) against Testcontainers Redis **in cluster mode** + Postgres, including a Redis restart from a truncated AOF and a failover to a lagging replica mid-traffic: no double charge, the shard freezes and rebuilds, deferred usage lands (**SC-002, SC-008**).
@@ -62,8 +62,8 @@ is named, and it runs in CI.
 - [ ] **T052a** [P] `adapters/driven/natsjetstream` — the optional `Bus`, with the outbox relay.
 - [ ] **T052b** `BusContract` against **both** adapters (**SC-014**).
 - [ ] **T053** [P] `adapters/driven/otel` — every metric of the observability contract (**FR-041**).
-- [ ] **T054** [P] `pricing/table` — the default pricer, exact, rounds once (**FR-001**, D31).
-- [ ] **T055** [P] `pricing/llmtoken`, `seat`, `storagebyte` — unit validation, then `table`.
+- [x] **T054** [P] `pricing/table` — the default pricer, exact, rounds once (**FR-001**, D31). *Verified: `table_test.go` — the contract worked examples, indexed and hand-built cards.*
+- [x] **T055** [P] `pricing/llmtoken`, `seat`, `storagebyte` — unit validation, then `table`. *Verified: `table_test.go` — the same suite through the registry; a foreign unit fails closed.*
 - [ ] **T056** [P] `archive/postgres` — `UsageArchive` over `usage_events` for `rollup` granularity (**FR-050**).
 - [ ] **T057** Wire T032 against `table` over three cards and a registered pricer; T033/T034/T034a against the real adapters (**SC-004**).
 
