@@ -22,7 +22,7 @@ the build is aimed at, and the constraints it holds to.
 | Client libraries | Go (wraps gRPC, satisfies `ports.Meter`); TypeScript and Python generated from `api/openapi/v1.yaml` and the protos | A non-Go host should not hand-write a client for a money API |
 | UI package | TypeScript, framework-free ports + React reference components | `ports.ts`/`model.ts` carry no framework |
 | Providers | Stripe, Polar, PayPal adapters, several accounts each | Each SDK confined to its own package by a lint rule |
-| Testing | table-driven units; conformance suites per port; Testcontainers; the design-level verifications (`verify-schema`, `verify-hot-path`, `check-spec-drift`) | The suites are the reuse proof; the verifications keep the design honest before code exists |
+| Testing | table-driven units, **all `t.Parallel()`** (the `paralleltest`/`tparallel` linters enforce it) and run with `-race -shuffle=on`; **`goleak`** in `TestMain` of every package that starts a goroutine or holds a connection; conformance suites per port; Testcontainers; **Playwright** end-to-end against the running stack ([`e2e/`](../../e2e/README.md)); the design-level verifications (`verify-schema`, `verify-hot-path`, `verify-boundary`, `verify-deploy`, `check-spec-drift`) | The suites are the reuse proof; the verifications keep the design honest; parallel + shuffle make hidden shared state fail early; goleak catches a connection or lock that outlives its caller; e2e proves the deployed pieces work together |
 | Boundary | `go-arch-lint` + `depguard` | The portability guarantee is a CI gate, not a convention |
 
 ## Scale envelope

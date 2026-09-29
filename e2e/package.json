@@ -1,0 +1,18 @@
+{
+  "name": "intel-payment-e2e",
+  "private": true,
+  "description": "End-to-end tests against a running stack (make up). Playwright drives the REST surface today and the credits-ui package from Phase 6.",
+  "scripts": {
+    "test": "playwright test",
+    "test:list": "playwright test --list",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2"
+  }
+}

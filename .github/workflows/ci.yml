@@ -9,49 +9,85 @@ jobs:
   go:
     name: build · test · boundary
     runs-on: ubuntu-latest
-    # The repo currently carries the design; Go steps activate with go.mod.
     steps:
       - uses: actions/checkout@v4
-      - id: gomod
-        run: echo "present=$([ -f go.mod ] && echo yes || echo no)" >> "$GITHUB_OUTPUT"
-
       - uses: actions/setup-go@v5
-        if: steps.gomod.outputs.present == 'yes'
-        with: { go-version: '1.23', cache: true }
+        with: { go-version-file: go.mod, cache: true }
 
       - name: Build
-        if: steps.gomod.outputs.present == 'yes'
         run: go build ./...
 
+      # -shuffle: a test that depends on another's side effects fails here, not in a rebase.
+      # Tests are t.Parallel (the paralleltest linter enforces it); goleak guards TestMain.
       - name: Test (units + conformance suites)
-        if: steps.gomod.outputs.present == 'yes'
-        run: go test -race -count=1 ./...
+        run: go test -race -count=1 -shuffle=on ./...
 
+      # Testcontainers: a real PostgreSQL, so the migrator is tested against what it migrates.
       - name: Integration (Testcontainers)
-        if: steps.gomod.outputs.present == 'yes'
-        run: go test -race -count=1 -tags=integration ./...
+        run: go test -race -count=1 -shuffle=on -tags=integration ./...
 
       - name: golangci-lint (incl. depguard boundary rules)
-        if: steps.gomod.outputs.present == 'yes'
-        uses: golangci/golangci-lint-action@v6
-        with: { version: latest }
+        uses: golangci/golangci-lint-action@v8
+        with: { version: v2.5 }
 
       - name: Architecture graph
-        if: steps.gomod.outputs.present == 'yes'
         run: |
           go install github.com/fe3dback/go-arch-lint@latest
           go-arch-lint check --project-path .
 
+      # The gates must FAIL when crossed: plant a violation per rule and expect rejection.
+      - name: Boundary gates reject violations
+        run: scripts/verify-boundary.sh
+
       # SC-006: the engine must never depend on the fiat or entitlement layers.
       - name: Verify portability
-        if: steps.gomod.outputs.present == 'yes'
         run: make verify-portability
 
       - name: govulncheck
-        if: steps.gomod.outputs.present == 'yes'
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
+
+  deploy:
+    name: image · migrate · redis ACL
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Builds the distroless/non-root image, brings an EMPTY Postgres to head with payment-migrate
+      # (and asserts `check` agrees), and proves the Redis ACL by attempting what it forbids.
+      - name: Verify the deployment
+        run: scripts/verify-deploy.sh
+
+  e2e:
+    name: e2e (Playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: svc
+        run: echo "present=$([ -d cmd/paymentd ] && echo yes || echo no)" >> "$GITHUB_OUTPUT"
+      # The suite drives the REAL stack, so it activates with cmd/paymentd (Phase 1). Until then
+      # the job still type-checks and lists the tests, so the suite cannot rot unseen.
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: e2e/package-lock.json }
+      - run: npm ci
+        working-directory: e2e
+      - run: npx tsc --noEmit && npx playwright test --list
+        working-directory: e2e
+      - name: Start the stack
+        if: steps.svc.outputs.present == 'yes'
+        run: make up && for i in $(seq 1 60); do curl -sf localhost:8080/readyz && break; sleep 2; done
+      - name: Run e2e
+        if: steps.svc.outputs.present == 'yes'
+        working-directory: e2e
+        env: { CI: 'true', E2E_BASE_URL: 'http://localhost:8080' }
+        run: npx playwright test
+      - name: Upload report
+        if: always() && steps.svc.outputs.present == 'yes'
+        uses: actions/upload-artifact@v4
+        with: { name: playwright-report, path: e2e/playwright-report, if-no-files-found: ignore }
+      - name: Stack logs on failure
+        if: failure() && steps.svc.outputs.present == 'yes'
+        run: docker compose -f deploy/docker-compose.yml logs --tail 200 || true
 
   migrations:
     name: schema (apply · seed · assert · phase-2 draft)

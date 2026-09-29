@@ -4,7 +4,7 @@ name: intel-payment
 
 x-env: &env
   PAYMENT_REALM:             ${PAYMENT_REALM:-default}
-  PAYMENT_BALANCE_REDIS_URL: redis://redis:6379/0
+  PAYMENT_BALANCE_REDIS_URL: redis://payment:dev-payment@redis:6379/0
   PAYMENT_LEDGER_DSN:        postgres://payment:payment@postgres:5432/payment?sslmode=disable
   PAYMENT_SHARDS:            ${PAYMENT_SHARDS:-256}
   PAYMENT_BUS:               ${PAYMENT_BUS:-redis_streams}
@@ -37,7 +37,7 @@ services:
       POSTGRES_PASSWORD: payment
       POSTGRES_DB: payment
     volumes: ["pgdata:/var/lib/postgresql/data"]
-    ports: ["5432:5432"]
+    ports: ["${PAYMENT_POSTGRES_PORT:-5432}:5432"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U payment"]
       interval: 5s
@@ -49,13 +49,17 @@ services:
     # write access to it is the ability to mint credits. An LRU policy here turns a cache eviction
     # into a billing incident. The port is published for local development only: in production no
     # principal but paymentd and payment-worker may reach it (docs/security.md).
+    # The ACL leaves `default` OFF: hosts have no credential (deploy/redis/users.acl).
     command: >
       redis-server --appendonly yes --appendfsync everysec
                    --maxmemory-policy noeviction
-    volumes: ["redisdata:/data"]
-    ports: ["6379:6379"]
+                   --aclfile /etc/redis/users.acl
+    volumes:
+      - redisdata:/data
+      - ./redis/users.acl:/etc/redis/users.acl:ro
+    ports: ["${PAYMENT_REDIS_PORT:-6379}:6379"]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "--user", "healthcheck", "--pass", "dev-health", "--no-auth-warning", "ping"]
       interval: 5s
       retries: 10
 
