@@ -47,7 +47,7 @@ Switching is a `cmd/` wiring change. No subject, payload, handler or invariant d
 
 ## Subjects
 
-`<tag>` is `Scope.Tag()` = `<realm>/<kind>:<id>`. The realm is inside the token, so a subject can never be consumed as another product's. `SubjectPrefix` (default `billing`) is configurable.
+`<tag>` is `Scope.SubjectToken()`: the scope's `Tag()` = `<realm>/<kind>:<id>` with the characters a subject reserves — `.`, `*`, `>`, whitespace and `%` itself — percent-encoded, so a scope id with a dot or a space in it can never split into two tokens or read as a wildcard. The realm is inside the token, so a subject can never be consumed as another product's. `SubjectPrefix` (default `billing`) is configurable.
 
 | Subject | Publisher | Consumer | Payload (key fields) |
 |---|---|---|---|
@@ -117,7 +117,20 @@ type Message struct {
 }
 ```
 
-The writer reads intents through a narrower port of the same adapter — `IntentStream.Read(shard, count, minIdle)` (entries un-acked past `minIdle` are reclaimed first, oldest first, then new ones) / `Ack(shard, ids)` / `Stats(shard)` — because it needs per-shard ownership and in-order batches, not a generic subscription.
+**Semantics both adapters share** (`BusContract` asserts each one):
+
+- **Patterns** are NATS': tokens separated by `.`, `*` for exactly one token, `>` — last token only — for one or more. Publishing to a wildcard is refused.
+- **A group is per (name, pattern).** Consumers that share both compete for the work, each message going to one of them; a different pattern under the same name is a different subscription, and a different name is another group that sees everything. (On Redis Streams all events share one stream, so a group keyed by name alone would hand a message to a consumer of another pattern, which would skip it.)
+- **A message published before anyone subscribed is delivered** — a group starts at the beginning of the stream.
+- **Redelivery.** A handler that returns an error or panics gets the message again after a backoff (`BackoffBase`, doubling, never longer than `AckWait`); a consumer that stalls without acknowledging has its message taken over by another in the group after `AckWait`. `Message.Attempts` is the delivery count.
+- **Dead letters.** After `MaxAttempts` deliveries the message goes to `<prefix>.dlq.<subject>` as `{"subject", "id", "attempts", "error", "payload"}` (`payload` base64, the original bytes) and is acknowledged — it is **never dropped**, and never redelivered again.
+- **`Pending`** is what the group has not finished with — delivered and un-acked, plus not yet delivered — and the age of the oldest of either. A group nobody has joined has none.
+- **`Trim`** removes an entry only when every group has acknowledged it and it is older than `MinAge`; `MaxLen` is a length to trim *toward*. A stream no group has read is not trimmed. `IntentStream.Trim` does the same for an outbox.
+- **Ordering** is per subject, in publish order, for a single consumer.
+
+**Redis Streams layout.** Events go to `<prefix>:events` and ticks (a subject ending `.tick`) to `<prefix>:ticks`; each entry carries its `subject` and `payload`. Each group is `<name>|<pattern>`. Dead letters of a tick are events.
+
+The writer reads intents through a narrower port of the same adapter — `IntentStream.Read(shard, count, minIdle)` (entries un-acked past `minIdle` are reclaimed first, oldest first, then new ones) / `Ack(shard, ids)` / `Stats(shard)` / `Trim(shard, keep)` — because it needs per-shard ownership and in-order batches, not a generic subscription.
 
 ## Rules
 

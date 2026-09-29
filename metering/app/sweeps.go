@@ -60,7 +60,7 @@ func (w *Writer) ReissueCorrections(ctx context.Context, minAge time.Duration, l
 	var firstErr error
 	for _, s := range open {
 		if now.Sub(s.CreatedAt) >= w.cfg.HotIdemTTL {
-			w.met.Count("metering_correction_stale_total", 1, ports.Labels{"realm": string(s.Scope.Realm)})
+			w.met.Count(ports.MetricCorrectionStale, 1, ports.Labels{"realm": string(s.Scope.Realm)})
 			continue
 		}
 		if s.Delta == 0 {

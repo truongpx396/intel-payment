@@ -78,7 +78,7 @@ func (w *Writer) bookRun(ctx context.Context, shard domain.Shard, ds []ports.Del
 	}
 	for _, e := range effects {
 		if err := e.run(ctx); err != nil {
-			w.met.Count("metering_effect_failed_total", 1, ports.Labels{"kind": e.kind}) // a sweep will finish it
+			w.met.Count(ports.MetricEffectFailed, 1, ports.Labels{"kind": e.kind}) // a sweep will finish it
 		}
 	}
 	if res.regressed {
@@ -580,7 +580,7 @@ func (b *booking) correctionIntent(ctx context.Context, in domain.Intent) (outco
 			return 0, err
 		}
 		if !closed {
-			b.w.met.Count("metering_correction_orphan_total", 1, ports.Labels{"realm": string(b.scope.Realm)})
+			b.w.met.Count(ports.MetricCorrectionOrphan, 1, ports.Labels{"realm": string(b.scope.Realm)})
 		}
 	}
 	// A correction books NOTHING: it only closes the entry whose hot effect it just reversed.
@@ -604,6 +604,6 @@ func (w *Writer) issueCorrection(ctx context.Context, scope domain.Scope, pool d
 func (b *booking) lowWaterEffect(in domain.Intent) effect {
 	return effect{kind: "balance_low", run: func(ctx context.Context) error {
 		body := fmt.Sprintf(`{"realm":%q,"scope":%q,"watch":%q,"seq":%d}`, string(b.scope.Realm), b.scope.Tag(), in.LowWater, in.Seq)
-		return b.w.d.Bus.Publish(ctx, b.w.cfg.SubjectPrefix+".balance.low."+b.scope.Tag(), []byte(body))
+		return b.w.d.Bus.Publish(ctx, b.w.cfg.SubjectPrefix+".balance.low."+b.scope.SubjectToken(), []byte(body))
 	}}
 }

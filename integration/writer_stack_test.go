@@ -244,6 +244,10 @@ func (s *scopedStream) Ack(ctx context.Context, sh domain.Shard, ids ...string) 
 	return s.inner.Ack(ctx, sh, ids...)
 }
 
+func (s *scopedStream) Trim(ctx context.Context, sh domain.Shard, keep ports.RetentionPolicy) (int64, error) {
+	return s.inner.Trim(ctx, sh, keep)
+}
+
 func (s *scopedStream) Stats(ctx context.Context, sh domain.Shard) (ports.StreamStats, error) {
 	return s.inner.Stats(ctx, sh)
 }

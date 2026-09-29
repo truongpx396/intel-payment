@@ -203,5 +203,5 @@ func (m *meter) publish(ctx context.Context, kind string, s domain.Scope, body m
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 100*time.Millisecond)
 	defer cancel()
-	_ = m.d.Bus.Publish(ctx, m.cfg.SubjectPrefix+"."+kind+"."+s.Tag(), b)
+	_ = m.d.Bus.Publish(ctx, m.cfg.SubjectPrefix+"."+kind+"."+s.SubjectToken(), b)
 }
