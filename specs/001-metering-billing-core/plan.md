@@ -14,7 +14,7 @@ the build is aimed at, and the constraints it holds to.
 
 | Concern | Choice | Why |
 |---|---|---|
-| Language | Go 1.23+ | The hot path is a sub-millisecond admission check; the durable writer is a long-lived worker. Both want a compiled language with cheap concurrency, and the ports were designed in Go |
+| Language | Go 1.26+ | The hot path is a sub-millisecond admission check; the durable writer is a long-lived worker. Both want a compiled language with cheap concurrency, and the ports were designed in Go |
 | Hot store | Redis 7+ (single primary or **Cluster**), **`noeviction` + AOF**, Redis Functions | One function per operation, every key in the scope's **shard slot** — account, guard, counters and the outbox stream ([hot-path-consistency.md](./contracts/hot-path-consistency.md)). The eviction policy is correctness, not tuning |
 | Durable store | PostgreSQL 15+ | The idempotency guards, the watermarks and the books; partitioned ledger and dedup; database-enforced insert-only prices and configuration audit |
 | Bus | **Redis Streams (default)**, NATS JetStream optional, behind a `Bus` port | The outbox *is* a stream in the account's slot, written by the same function that moves the balance. JetStream sits behind it via a relay for downstream replication |
@@ -22,7 +22,7 @@ the build is aimed at, and the constraints it holds to.
 | Client libraries | Go (wraps gRPC, satisfies `ports.Meter`); TypeScript and Python generated from `api/openapi/v1.yaml` and the protos | A non-Go host should not hand-write a client for a money API |
 | UI package | TypeScript, framework-free ports + React reference components | `ports.ts`/`model.ts` carry no framework |
 | Providers | Stripe, Polar, PayPal adapters, several accounts each | Each SDK confined to its own package by a lint rule |
-| Testing | table-driven units; conformance suites per port; Testcontainers; the design-level verifications (`verify-schema`, `verify-hot-path`, `check-spec-drift`) | The suites are the reuse proof; the verifications keep the design honest before code exists |
+| Testing | table-driven units, **all `t.Parallel()`** (the `paralleltest`/`tparallel` linters enforce it) and run with `-race -shuffle=on`; **`goleak`** in `TestMain` of every package that starts a goroutine or holds a connection; conformance suites per port; Testcontainers; **Playwright** end-to-end against the running stack ([`e2e/`](../../e2e/README.md)); the design-level verifications (`verify-schema`, `verify-hot-path`, `verify-boundary`, `verify-deploy`, `check-spec-drift`) | The suites are the reuse proof; the verifications keep the design honest; parallel + shuffle make hidden shared state fail early; goleak catches a connection or lock that outlives its caller; e2e proves the deployed pieces work together |
 | Boundary | `go-arch-lint` + `depguard` | The portability guarantee is a CI gate, not a convention |
 
 ## Scale envelope

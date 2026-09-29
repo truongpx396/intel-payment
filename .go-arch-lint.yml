@@ -19,10 +19,14 @@ components:
   entitlement:      { in: entitlement/** }
   events:           { in: events/** }
   api:              { in: api/** }
+  migrate:          { in: migrate }
+  migrations:       { in: migrations }
   cmd:              { in: cmd/** }
 
 deps:
-  metering-domain:  { mayDependOn: [] }
+  # metering-domain and migrations are deliberately ABSENT from deps: a component with no entry may
+  # depend on no other component. metering-domain depends on NOTHING — portable by construction.
+  migrate:          { mayDependOn: [ migrations ] }
   metering-ports:   { mayDependOn: [ metering-domain ] }
   metering-config:  { mayDependOn: [ metering-domain ] }
   metering-app:     { mayDependOn: [ metering-domain, metering-ports, metering-config ] }
@@ -33,4 +37,5 @@ deps:
   events:           { mayDependOn: [ metering-domain, api ] }                  # outbound delivery to hosts
   cmd:              { mayDependOn: [ metering-domain, metering-ports, metering-config,
                                      metering-app, metering-driven, metering-driving,
-                                     billing, entitlement, events, api ] }
+                                     billing, entitlement, events, api,
+                                     migrate, migrations ] }

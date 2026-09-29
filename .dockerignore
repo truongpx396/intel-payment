@@ -1,0 +1,11 @@
+.git
+.github
+.specify
+specs
+docs
+design-system
+e2e
+node_modules
+bin
+dist
+*.md

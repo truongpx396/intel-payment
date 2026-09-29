@@ -3,22 +3,25 @@ COMPOSE := docker compose -f deploy/docker-compose.yml
 MODULE  := github.com/truongpx396/intel-payment
 
 .DEFAULT_GOAL := help
-.PHONY: help build test test-integration lint arch-lint verify-portability verify-schema verify-hot-path \
-        up up-jetstream down down-volumes logs migrate seed proto fmt vuln secrets ci clean
+.PHONY: help build test test-integration lint arch-lint verify-portability verify-boundary verify-schema verify-hot-path \
+        verify-deploy e2e e2e-install up up-jetstream down down-volumes logs migrate seed proto fmt vuln secrets ci clean
 
 help: ## Show this help
-	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
+	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) | \
 	  awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-22s\033[0m %s\n",$$1,$$2}'
 
 ## ---- build & test ---------------------------------------------------------
 build: ## Build all binaries
 	go build -trimpath ./...
 
-test: ## Unit tests + every conformance suite
-	go test -race -count=1 ./...
+# Tests are parallel (t.Parallel — enforced by the paralleltest linter) and shuffled, so a test that
+# depends on another's side effects fails here rather than in a rebase. goleak guards packages that
+# start goroutines (TestMain).
+test: ## Unit tests + every conformance suite (parallel, shuffled, race detector)
+	go test -race -count=1 -shuffle=on ./...
 
-test-integration: ## Integration tests (Testcontainers: real Redis + Postgres)
-	go test -race -count=1 -tags=integration ./...
+test-integration: ## Integration tests (Testcontainers: real Redis + Postgres; needs Docker)
+	go test -race -count=1 -shuffle=on -tags=integration ./...
 
 fmt: ## Format
 	gofmt -l -w . && go mod tidy
@@ -38,6 +41,9 @@ verify-portability: ## Assert metering/ stands alone (SC-006)
 	fi
 	@echo "OK"
 
+verify-boundary: ## Plant one violation per boundary rule and assert the gates reject it
+	scripts/verify-boundary.sh
+
 vuln: ## govulncheck
 	govulncheck ./...
 
@@ -52,7 +58,17 @@ verify-schema: ## Apply migrations + seed + the Phase 2 draft to an EMPTY Postgr
 verify-hot-path: ## Run the reference Redis Functions against Redis in cluster mode (needs Docker)
 	scripts/verify-hot-path.sh
 
-ci: build test lint verify-portability vuln verify-hot-path ## Everything CI runs (verify-schema needs an empty DB)
+verify-deploy: ## Build the image; migrate an empty Postgres; prove the Redis ACL (needs Docker)
+	scripts/verify-deploy.sh
+
+## ---- end-to-end (Playwright against a running stack) -----------------------
+e2e-install: ## Install the e2e dependencies
+	cd e2e && npm ci
+
+e2e: ## Run the e2e suite against E2E_BASE_URL (default: the local `make up` stack)
+	cd e2e && E2E_BASE_URL=$${E2E_BASE_URL:-http://localhost:8080} npx playwright test
+
+ci: build test test-integration lint verify-portability verify-boundary vuln verify-hot-path verify-deploy ## Everything CI runs (verify-schema needs an empty DB)
 
 ## ---- run ------------------------------------------------------------------
 up: ## Start the stack (postgres + redis + migrate + paymentd + worker)

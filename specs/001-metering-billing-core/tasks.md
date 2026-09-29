@@ -10,16 +10,16 @@ is named, and it runs in CI.
 
 ## Phase 0 — Foundation (the boundary exists before the code it guards)
 
-- [ ] **T001** `go mod init github.com/truongpx396/intel-payment`; Go 1.23+.
-- [ ] **T002** `.go-arch-lint.yml` — the component graph, including `events`. **Before** any port code.
-- [ ] **T003** `.golangci.yml` — depguard rules 1–4 (core purity, engine standalone, ports-only access, provider-SDK containment).
-- [ ] **T004** `.github/workflows/ci.yml` — build, vet, test, lint, arch-lint, `verify-portability`, `govulncheck` (the Go steps activate with `go.mod`).
+- [x] **T001** `go mod init github.com/truongpx396/intel-payment`; Go 1.26+ (the floor follows the dependencies: pgx ≥ 5.9.2 fixes GO-2026-5856 and needs 1.25; the current x/text, x/net and gRPC need 1.26). *Verified: `go build ./...`; `govulncheck` in CI; CI job `go` (setup-go reads `go.mod`).*
+- [x] **T002** `.go-arch-lint.yml` — the component graph, including `events`. **Before** any port code. *Verified: `scripts/verify-boundary.sh` plants a violation per edge and expects rejection; CI job `go`.*
+- [x] **T003** `.golangci.yml` — depguard rules 1–4 (core purity, engine standalone, ports-only access, provider-SDK containment), plus `paralleltest`/`tparallel`. *Verified: `scripts/verify-boundary.sh`; CI job `go`.*
+- [x] **T004** `.github/workflows/ci.yml` — build, vet, test (`-race -shuffle`), integration (Testcontainers), lint, arch-lint, `verify-boundary`, `verify-portability`, `govulncheck`, `deploy`, and Playwright `e2e` (runs once `cmd/paymentd` exists). *Verified: this workflow is the verification.*
 - [x] **T005** `migrations/0001`–`0005` — the baseline schema, including the guards, watermarks, suspense, transfers, pools, the webhook inbox, outbound events and the configuration audit trigger (**FR-003, FR-050**). *Verified: `scripts/verify-schema.sh`, CI job `schema`.*
 - [x] **T006** Phase 2 draft schema in `specs/002-…/draft-migrations/`, applied on top of the baseline in CI and never shipped (D38). *Verified: `scripts/verify-schema.sh`.*
 - [x] **T007** `specs/…/contracts/reference/hot_path.lua` — the reference Redis Functions (**FR-017f**). *Verified: `scripts/verify-hot-path.sh` on Redis in cluster mode, CI job `hot-path`.*
 - [x] **T008** `scripts/check-spec-drift.sh` — no retired mechanism described as current (D46). *Verified: CI job `drift`.*
-- [ ] **T010** `cmd/payment-migrate` + an embedded-migration check `/readyz` can call (**FR-042**).
-- [ ] **T011** `deploy/docker-compose.yml` + `Dockerfile` (distroless, non-root). Redis `noeviction` + AOF, with an ACL that gives hosts nothing.
+- [x] **T010** `cmd/payment-migrate` + an embedded-migration check `/readyz` can call (**FR-042**): `migrate.Check` / `migrate.Ready`. *Verified: `migrate` unit tests and Testcontainers tests (idempotent, 4 concurrent migrators apply each file once, an edited migration is refused, a failed migration rolls back); `scripts/verify-deploy.sh`.* The shard-count half of `/readyz` lands with the Redis adapter (T050).
+- [x] **T011** `deploy/docker-compose.yml` + `Dockerfile` (distroless, non-root). Redis `noeviction` + AOF, with an ACL that gives hosts nothing. *Verified: `scripts/verify-deploy.sh`, CI job `deploy` — builds the image, migrates an empty Postgres, and attempts every forbidden Redis command.* `paymentd`/`payment-worker` start when Phase 1 lands their `cmd/`.
 
 ## Phase 1 — Metering core
 
