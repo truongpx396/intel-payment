@@ -24,6 +24,7 @@ components:
   events:           { in: events/** }
   api:              { in: api/** }
   migrate:          { in: migrate }
+  testsupport:      { in: internal/** }   # containers for tests; imports migrations so tests run against the real schema
   migrations:       { in: migrations }
   cmd:              { in: cmd/** }
 
@@ -31,6 +32,7 @@ deps:
   # metering-domain and migrations are deliberately ABSENT from deps: a component with no entry may
   # depend on no other component. metering-domain depends on NOTHING — portable by construction.
   migrate:          { mayDependOn: [ migrations ] }
+  testsupport:      { mayDependOn: [ migrate, migrations ] }
   metering-ports:   { mayDependOn: [ metering-domain ] }
   metering-config:  { mayDependOn: [ metering-domain ] }
   metering-contracts: { mayDependOn: [ metering-domain, metering-ports, metering-config ] }
