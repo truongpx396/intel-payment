@@ -573,7 +573,7 @@ Two settings select the durability/latency trade for `Record`, without changing 
 | `HotAckWait` (outbox only) | Mechanism | Added latency | Window |
 |---|---|---|---|
 | `none` (default) | — | — | ≤ 1 s on a crash (AOF `everysec`), plus replication lag on a failover |
-| `aof_local` | `WAITAOF 1 0` after the function | one group-committed local fsync | a crash loses nothing acknowledged; a failover still loses the replication lag |
+| `aof_local` | `WAITAOF 1 0` after the function | one local fsync — group-committed under `appendfsync always`; **up to ~1 s under `everysec`** (the wait ends at the next fsync tick) | a crash loses nothing acknowledged; a failover still loses the replication lag |
 | `aof_replica` | `WAITAOF 0 1` | a replica round trip + its fsync | an acknowledged intent survives losing the primary |
 
 Every mode satisfies invariants 1, 2 and 8; they differ only in *when* an intent becomes crash-safe.

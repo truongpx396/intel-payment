@@ -36,7 +36,7 @@ is named, and it runs in CI.
 - [ ] **T030** *(in progress: everything but `BookStore`, `UsageArchive` and `IntentStream`, which arrive with T051, T056 and T052.)* `ports/driven.go` — `Pricer`, `PricerRegistry`, `BalanceStore`, `BookStore`, `LimitStore`, `PoolStore`, `RateCardStore`, `QuotaSource`, `JournalStore`, `UsageArchive`, `Bus`, `IntentStream`, `Clock`, `IDSource`, `Metrics`.
 - [x] **T031** `ports/driving.go` — `Meter` (Admit, Record, Grant, Transfer), `LedgerWriter` (Drain, Reconcile, Rehydrate, Recover, Audit). *Verified: compiles against `app` in the next PR; `ports.Meter` and `ports.LedgerWriter` as in the contract.*
 - [x] **T032** `PricerContract` — determinism, attributes/subjects never price, fail-closed, **sub-credit prices exact**, **rounds once per event**, monotonicity, card version, overflow refused (**FR-001**, D31). *Verified: `metering/contracts.PricerContract` over the `table` pricer on three disjoint cards **and** over `llmtoken`, `seat` and `storagebyte` through the registry (SC-004).*
-- [ ] **T033** `LedgerContract` — idempotent debit; **idempotency conflict**; admit without reserving; `MaxCost` + headroom; **pool draw order**; realm-independent keys; clamp with writeoff and no forgiven debt; job budget via subjects; **missing subject refused**; transfer refuses, then applies both sides once (**FR-003…005, FR-015, FR-017a…d**).
+- [ ] **T033** *(hot-tier half done and green on Redis standalone + cluster; the book-side subtests are written and skip by name until the writer exists, T043.)* `LedgerContract` — idempotent debit; **idempotency conflict**; admit without reserving; `MaxCost` + headroom; **pool draw order**; realm-independent keys; clamp with writeoff and no forgiven debt; job budget via subjects; **missing subject refused**; transfer refuses, then applies both sides once (**FR-003…005, FR-015, FR-017a…d**).
 - [ ] **T034** `LedgerWriterContract` — in-order booking; redelivery vs gap vs regression; batching; suspense opened and closed; reconcile at equal seq heals hot only and never books.
 - [ ] **T034a** `ConsistencyContract` — [hot-path-consistency.md §9](./contracts/hot-path-consistency.md#9-verification) against Testcontainers Redis **in cluster mode** + Postgres, including a Redis restart from a truncated AOF and a failover to a lagging replica mid-traffic: no double charge, the shard freezes and rebuilds, deferred usage lands (**SC-002, SC-008**).
 
@@ -45,7 +45,7 @@ is named, and it runs in CI.
 - [ ] **T041** `app/record.go` — refuse stale `OccurredAt`; price under the active card via the registry; fingerprint; `ip_debit`; on `FROZEN`/`COLD_SHARD`/unavailable/`BACKPRESSURE`, journal and return `Deferred` (**FR-008, FR-017e**).
 - [ ] **T042** `app/grant.go` — `ip_grant` per pool with `NegativeBalancePolicy` (**FR-015**).
 - [ ] **T042a** `app/transfer.go` — phase 1 via `ip_transfer_out` with the `MaxDestBalance` pre-check (**FR-017b**, D33).
-- [ ] **T042b** Window counters — daily/hourly in `Limit.TZ`, rolling as sub-buckets, job TTL; keyed under the charged scope's shard (**FR-017a**).
+- [x] **T042b** Window counters — daily/hourly in `Limit.TZ`, rolling as sub-buckets, job TTL; keyed under the charged scope's shard (**FR-017a**). *Verified: `LedgerContract` on real Redis — per-subject daily ceilings, a daily reset at local midnight in `Asia/Ho_Chi_Minh`, a sliding rolling window, a job budget, a metered-unit counter; all on cluster mode.*
 - [ ] **T043** `app/writer.go` — shard ownership (advisory lock), `XAUTOCLAIM` on takeover, per-scope in-order batches, the watermark cases, the op table, suspense and corrections, transfer phases 2–4, `lw` → `billing.balance.low` (**FR-007**).
 - [ ] **T044** `app/reconcile.go` — incremental + full; outcomes; findings per scope and pool; `ip_heal` compare-and-set; never books (**FR-009**).
 - [ ] **T045** `app/rehydrate.go` — lazy on `COLD_SCOPE` under a per-scope lock; eager for recently active scopes after a bump (**FR-010**).
@@ -56,7 +56,7 @@ is named, and it runs in CI.
 - [ ] **T048** `app/new.go` — `Deps`, validation, return `ports.Meter`.
 
 ### Driven adapters
-- [ ] **T050** `adapters/driven/redis` — load `reference/hot_path.lua` **unchanged**; the key layout; `HotAckWait` via `WAITAOF`; the shard lifecycle (**FR-017f**, D29).
+- [x] **T050** `adapters/driven/redis` — load `reference/hot_path.lua` **unchanged**; the key layout; `HotAckWait` via `WAITAOF`; the shard lifecycle (**FR-017f**, D29). *Verified: `redis` adapter unit tests (every key of a scope shares one slot — CRC16 reimplemented independently; the embedded library is byte-identical to the contract's reference file) and integration tests on Redis standalone **and cluster mode**: `LedgerContract` (hot half), shard lifecycle, heal as a compare-and-set, backpressure, `WAITAOF`, and the adapter running as the service role of the deploy ACL. `payment-migrate functions` installs it; `scripts/verify-deploy.sh`.*
 - [ ] **T051** `adapters/driven/postgres` — books, watermarks, suspense, both guards (window probe under the per-scope lock), transfers, journal, limits, pools, cards (+ cache invalidated by `LISTEN intelpay_config`).
 - [ ] **T052** [P] `adapters/driven/redisstreams` — the default `Bus` + `IntentStream` (**FR-046, FR-047**).
 - [ ] **T052a** [P] `adapters/driven/natsjetstream` — the optional `Bus`, with the outbox relay.

@@ -18,10 +18,11 @@ func TestRunUsage(t *testing.T) {
 		env  map[string]string
 		want string
 	}{
-		"no args":         {nil, nil, "usage:"},
-		"two args":        {[]string{"up", "down"}, nil, "usage:"},
-		"unknown command": {[]string{"down"}, map[string]string{"PAYMENT_LEDGER_DSN": "x"}, "unknown command"},
-		"missing dsn":     {[]string{"up"}, nil, "PAYMENT_LEDGER_DSN is required"},
+		"no args":                        {nil, nil, "usage:"},
+		"two args":                       {[]string{"up", "down"}, nil, "usage:"},
+		"unknown command":                {[]string{"down"}, map[string]string{"PAYMENT_LEDGER_DSN": "x"}, "unknown command"},
+		"missing dsn":                    {[]string{"up"}, nil, "PAYMENT_LEDGER_DSN is required"},
+		"functions need the deploy role": {[]string{"functions"}, map[string]string{"PAYMENT_BALANCE_REDIS_URL": "redis://x"}, "PAYMENT_BALANCE_REDIS_DEPLOY_URL is required"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

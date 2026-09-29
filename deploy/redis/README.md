@@ -8,7 +8,7 @@ Redis is the ability to mint credits, so the *shape* matters more than the secre
 | User | Can | Cannot |
 |---|---|---|
 | `default` | nothing — **OFF**. A host has no credential at all | — |
-| `payment` (`paymentd`, `payment-worker`) | `FCALL`/`FCALL_RO` the hot-path functions; read/write the outbox streams; read | `FUNCTION LOAD`, `CONFIG`, `FLUSH*`, `ACL`, `KEYS`, anything `@dangerous` |
+| `payment` (`paymentd`, `payment-worker`) | `FCALL`/`FCALL_RO`; **exactly the commands the hot-path functions call on its behalf** (an ACL applies *inside* a function to the caller: `HGET/HMGET/HGETALL/HSET/HINCRBY`, `GET/SET/INCRBY/PEXPIRE/DEL`, `XLEN/XADD`); the writer's stream commands (`XGROUP/XREADGROUP/XACK/XAUTOCLAIM/XPENDING/XRANGE/XINFO/XTRIM`); `WAITAOF`; `INFO` (the replication id, to notice a failover) | `FUNCTION LOAD`, `CONFIG`, `FLUSH*`, `ACL`, `KEYS`, `SCAN`, `EVAL`, and every command not listed |
 | `deploy` | `FUNCTION LOAD` | touch any data |
 | `healthcheck` | `PING` | anything else |
 

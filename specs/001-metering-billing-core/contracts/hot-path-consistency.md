@@ -228,8 +228,13 @@ or the replication lag — not "healed upward by reconcile". Three ways to shrin
 | `HotAckWait` | Mechanism | Cost | Loss window |
 |---|---|---|---|
 | `none` (default) | — | — | ≤ 1 s of acknowledged intents on a crash, plus replication lag on a failover |
-| `aof_local` | `WAITAOF 1 0` after the function | one local fsync (group-committed) per acknowledged call | a crash loses nothing acknowledged; a failover still loses the replication lag |
+| `aof_local` | `WAITAOF 1 0` after the function | one local fsync per acknowledged call: group-committed under `appendfsync always`, **but up to ~1 s under `everysec`** (measured: the wait ends at the next fsync tick) | a crash loses nothing acknowledged; a failover still loses the replication lag |
 | `aof_replica` | `WAITAOF 0 1` | one replica round trip + fsync | an acknowledged intent survives the loss of the primary |
+
+An unconfirmed wait (timeout, or no replica for `aof_replica`) does **not** roll the write back: the
+function has applied. The call returns `ErrHotStoreUnavailable`, so the Meter journals the charge and its
+replay through the hot guard is a `REPLAY` — never a second charge. The record timeout must therefore
+exceed the fsync interval, or every acknowledgement is refused.
 
 `Settlement=journal` removes the window entirely by making Postgres, not Redis, the first durable
 home of every intent.

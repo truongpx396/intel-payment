@@ -20,6 +20,9 @@ var (
 	ErrAmountOutOfRange = errors.New("amount out of range")
 	// ErrInsufficient is a transfer that would overdraw its source: 409.
 	ErrInsufficient = errors.New("insufficient balance")
+	// ErrDestBalanceCap is a transfer that would leave its destination holding more than
+	// Transfer.MaxDestBalance: 422. It guards against an errant admin action, not a race.
+	ErrDestBalanceCap = errors.New("transfer would exceed the destination's balance cap")
 	// ErrCrossRealm is a transfer between two realms — a mint and a burn, never a transfer: 403.
 	ErrCrossRealm = errors.New("transfer across realms")
 	// ErrHotStoreUnavailable is the hot tier unreachable, frozen or cold: 503. Admit under

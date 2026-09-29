@@ -172,6 +172,21 @@ type BalanceStore interface {
 	Ping(ctx context.Context) error
 }
 
+// BalanceWatch is a low-water mark on one pool of one scope (balance_watches). The hot function
+// flags the intent that crosses it downward, and the writer publishes billing.balance.low.<tag>.
+type BalanceWatch struct {
+	Pool      domain.Pool
+	Threshold int64
+	Key       string // "auto_recharge" | a host-defined name
+}
+
+// WatchSource serves a scope's balance watches to the hot path. It MUST be cheap and cached: it is
+// consulted on every debit, so it can never be a Postgres round trip. It is optional — with none,
+// no mutation is flagged and no low-balance event is produced. An error is treated as "no watch".
+type WatchSource interface {
+	Watches(ctx context.Context, s domain.Scope) ([]BalanceWatch, error)
+}
+
 // ---------------------------------------------------------------- journal --
 
 // JournalEntry is a usage charge that has not reached the hot tier yet.

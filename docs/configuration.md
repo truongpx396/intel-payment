@@ -25,7 +25,8 @@ Every variable maps 1:1 to a `Config` field. The last column is what happens if 
 
 | Variable | Default | Failure mode if wrong |
 |---|---|---|
-| `PAYMENT_BALANCE_REDIS_URL` | — (required) | a single primary or a cluster; the key layout is cluster-safe either way |
+| `PAYMENT_BALANCE_REDIS_URL` | — (required) | a single primary (`redis://user:pass@host:6379/0`) or a cluster (`redis+cluster://user:pass@host:6379?addr=host2:6379&addr=host3:6379`); the key layout is cluster-safe either way. The service role's credential — it cannot `FUNCTION LOAD` |
+| `PAYMENT_BALANCE_REDIS_DEPLOY_URL` | — | the **deploy role's** credential, used only by `payment-migrate` to install the hot-path functions (`FUNCTION LOAD REPLACE`). Never given to `paymentd` or `payment-worker` |
 | `PAYMENT_LEDGER_DSN` | — (required) | — |
 
 > **The balance Redis MUST be `noeviction` with AOF on, MUST NOT be shared with a cache, and MUST
@@ -56,7 +57,7 @@ Every variable maps 1:1 to a `Config` field. The last column is what happens if 
 | Variable | Values | Default | Decides |
 |---|---|---|---|
 | `PAYMENT_SETTLEMENT` | `outbox` · `journal` | `outbox` | Whether an intent's first durable home is Redis (sub-ms) or Postgres (+1 synchronous insert) |
-| `PAYMENT_HOT_ACK_WAIT` | `none` · `aof_local` · `aof_replica` | `none` | Outbox only: wait for `WAITAOF` before acknowledging |
+| `PAYMENT_HOT_ACK_WAIT` | `none` · `aof_local` · `aof_replica` | `none` | Outbox only: wait for `WAITAOF` before acknowledging. **Latency depends on `appendfsync`**: under `always` it is one group-committed fsync; under `everysec` a call waits for the next fsync tick — **up to ~1 s, measured** — so `PAYMENT_RECORD_TIMEOUT` must exceed it or every acknowledgement is refused (and the charge journaled). Prefer `appendfsync always` with `aof_local`/`aof_replica`, or `Settlement=journal` |
 | `PAYMENT_LEDGER_GRANULARITY` | `event` · `rollup` | `event` | One ledger row per event, or per batch with per-event detail archived — see the [scale envelope](../specs/001-metering-billing-core/plan.md#scale-envelope) |
 | `PAYMENT_DRAIN_BATCH` | | `500` | Intents booked per writer transaction |
 
