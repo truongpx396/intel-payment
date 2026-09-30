@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"regexp"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -30,6 +31,25 @@ const maxScopeIDLen = 256
 // share a balance, an intent or an idempotency guard.
 func (s Scope) Tag() string {
 	return string(s.Realm.Or()) + "/" + s.Kind + ":" + s.ID
+}
+
+// SubjectToken is Tag made safe to sit inside a bus subject: the characters a subject reserves (its
+// token separator, its wildcards, whitespace) and the escape itself are percent-encoded, so a scope id
+// with a dot or a space in it can never split into two tokens or be read as a wildcard. It is what
+// subjects such as billing.warn.<token> are built from; the Tag stays the scope's identity.
+func (s Scope) SubjectToken() string {
+	tag := s.Tag()
+	var b strings.Builder
+	b.Grow(len(tag))
+	for i := 0; i < len(tag); i++ {
+		switch c := tag[i]; c {
+		case '.', '*', '>', '%', ' ', '\t', '\n', '\r':
+			fmt.Fprintf(&b, "%%%02X", c)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }
 
 // Normalized returns s with the realm defaulted.

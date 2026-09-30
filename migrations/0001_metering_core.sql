@@ -115,11 +115,15 @@ CREATE TABLE account_watermarks (
     gen          BIGINT      NOT NULL DEFAULT 1,
     applied_seq  BIGINT      NOT NULL DEFAULT 0 CHECK (applied_seq >= 0),
     blocked      BOOLEAN     NOT NULL DEFAULT false,   -- block_and_flag, until an operator clears it
+    -- fnv1a64(tag) mod Shards, stored by the writer (which knows the count) so that per-shard work —
+    -- reconcile, audit — is an index range scan rather than a scan of every shard's scopes.
+    shard        INT         NOT NULL CHECK (shard >= 0),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (realm, scope_kind, scope_id)
 );
--- Reconcile checks scopes booked since its last run, so its cost follows activity, not history.
-CREATE INDEX account_watermarks_updated_idx ON account_watermarks (updated_at);
+-- Reconcile checks scopes booked since its last run, so its cost follows activity, not history —
+-- and only THIS shard's activity.
+CREATE INDEX account_watermarks_shard_updated_idx ON account_watermarks (shard, updated_at);
 
 -- ------------------------------------------------------------------ ledger --
 -- The ACCOUNT OF RECORD. Append-only, partitioned by month. Old partitions are detached and
@@ -164,7 +168,11 @@ CREATE TABLE credit_ledger (
     actor_id           TEXT,
     ref                JSONB,                    -- trace/call/payment ids; audit only
     occurred_at        TIMESTAMPTZ,
-    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- clock_timestamp(), NOT now(): now() is the instant the transaction BEGAN, and two writers
+    -- serialised on one scope's lock can begin in one order and commit in the other. The deep audit
+    -- advances a checkpoint through the newest row's created_at, which is only sound if created_at
+    -- order is commit order for a scope — and inserting under that scope's lock makes it so.
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (id, created_at),
     CHECK (seq_to >= seq_from)
 ) PARTITION BY RANGE (created_at);

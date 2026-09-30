@@ -76,12 +76,12 @@ type healing struct {
 func (h healing) ensure(ctx context.Context, scopes ...domain.Scope) error {
 	for _, s := range scopes {
 		sh := s.Normalized().Shard(h.cfg.Shards)
-		st, err := h.Store.ShardState(ctx, sh)
+		st, err := h.ShardState(ctx, sh)
 		if err != nil {
 			return err
 		}
 		if !st.Open {
-			if err := h.Store.OpenShard(ctx, sh, 1); err != nil {
+			if err := h.OpenShard(ctx, sh, 1); err != nil {
 				return err
 			}
 		}
@@ -95,7 +95,7 @@ func (h healing) retry(ctx context.Context, s domain.Scope, op func() error) err
 	}
 	err := op()
 	if errors.Is(err, domain.ErrColdScope) {
-		if _, rerr := h.Store.Rehydrate(ctx, s, ports.RehydrateState{ShardGen: 1}); rerr != nil {
+		if _, rerr := h.Rehydrate(ctx, s, ports.RehydrateState{ShardGen: 1}); rerr != nil {
 			return rerr
 		}
 		err = op()

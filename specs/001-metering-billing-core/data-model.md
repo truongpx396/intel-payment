@@ -34,7 +34,7 @@ Per realm: `name`, `priority` (lower drawn first), `applies_to TEXT[]` (resource
 **Booked** balances: the ledger's running sum per `(realm, scope_kind, scope_id, pool)`, maintained by the sole durable writer in the same transaction as every ledger row. The hot tier equals `booked + open suspense` at every sequence number.
 
 ### `account_watermarks`
-Per scope: `gen`, `applied_seq` (the highest **contiguously** booked hot sequence number), `blocked`, `updated_at` (indexed — reconcile checks scopes booked since its last run, so its cost follows activity, not history).
+Per scope: `gen`, `applied_seq` (the highest **contiguously** booked hot sequence number), `blocked`, `shard` (`fnv1a64(tag) mod Shards`, stored by the writer), `updated_at`. Indexed on `(shard, updated_at)` — reconcile checks one shard's scopes booked since its last run, so its cost follows that shard's activity, not history and not the other shards'.
 
 ### `credit_ledger`
 The account of record. Append-only, partitioned by `created_at` (monthly).
@@ -45,6 +45,7 @@ The account of record. Append-only, partitioned by `created_at` (monthly).
 - `idem_key` — lookup only; uniqueness lives in the guards below
 - `gen`, `seq_from`, `seq_to`, `event_count` — the hot sequence numbers the row books. `event` granularity: one event per row. `rollup` granularity: one row per (scope, pool, resource, rate key, card version) per drain batch, with per-event detail in `usage_events`
 - `rate_card_version`, `cost_micros`, `resource`, `rate_key`, `quantities JSONB`, `subjects JSONB`, `actor_id`, `ref JSONB`, `occurred_at`, `created_at`
+- `created_at` is `clock_timestamp()`, **not** `now()`: `now()` is the instant a transaction *began*, and two writers overlapping on one scope commit in an order that disagrees with it — which would let a checkpoint's `through_created_at` split the ledger wrongly and make the audit report a phantom mismatch
 - Old partitions are **detached and archived**, never dropped, and only once `ledger_checkpoints` covers them.
 
 ### `ledger_checkpoints`
