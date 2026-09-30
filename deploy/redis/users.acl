@@ -1,4 +1,4 @@
 user default off
-user payment on #cf6937036eb3960ab75be4d79ec761b8d88cdade98c0efbd8c90f53a1624f68a ~* &* -@all +fcall +fcall_ro +function|list +function|stats +@stream +@read +ping +hello +client|setname +client|setinfo -@dangerous
+user payment on #cf6937036eb3960ab75be4d79ec761b8d88cdade98c0efbd8c90f53a1624f68a ~* &* -@all +fcall +fcall_ro +function|list +function|stats +hget +hmget +hgetall +hset +hincrby +get +set +incrby +pexpire +del +xlen +xadd +xgroup +xreadgroup +xack +xautoclaim +xpending +xrange +xrevrange +xinfo +xtrim +ping +hello +client|setname +client|setinfo +waitaof +info +time
 user deploy on #125d669eaca465a3975d70e9df436acfc4abdb15cb4103e404227f5f6078923f ~* &* -@all +function|load +function|list +ping +hello +client|setname +client|setinfo
 user healthcheck on #76d2db0870429845fc2fa01d03344ed75144fe2d82389579a90cc80918ddf36c ~* &* -@all +ping

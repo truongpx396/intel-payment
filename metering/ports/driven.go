@@ -56,8 +56,9 @@ type PoolStore interface {
 const Unlimited int64 = -1
 
 // QuotaSource sizes a limit whose row names a max_entitlement. The entitlement module provides it
-// (wired in cmd/); metering never imports that module. An error means the quota could not be
-// resolved, and the Meter applies AdmitFailPolicy — it never treats the failure as unlimited.
+// (wired in cmd/); metering never imports that module. domain.ErrQuotaNotGranted means nothing
+// grants the key, so the limit keeps its own configured Max; any other error means the quota could
+// not be resolved, and the Meter applies AdmitFailPolicy — it never treats the failure as unlimited.
 type QuotaSource interface {
 	Quota(ctx context.Context, s domain.Scope, key string) (int64, error)
 }
@@ -170,6 +171,21 @@ type BalanceStore interface {
 	NodeID(ctx context.Context, sh domain.Shard) (string, error)
 	// Ping reports whether the hot tier is reachable (for /readyz).
 	Ping(ctx context.Context) error
+}
+
+// BalanceWatch is a low-water mark on one pool of one scope (balance_watches). The hot function
+// flags the intent that crosses it downward, and the writer publishes billing.balance.low.<tag>.
+type BalanceWatch struct {
+	Pool      domain.Pool
+	Threshold int64
+	Key       string // "auto_recharge" | a host-defined name
+}
+
+// WatchSource serves a scope's balance watches to the hot path. It MUST be cheap and cached: it is
+// consulted on every debit, so it can never be a Postgres round trip. It is optional — with none,
+// no mutation is flagged and no low-balance event is produced. An error is treated as "no watch".
+type WatchSource interface {
+	Watches(ctx context.Context, s domain.Scope) ([]BalanceWatch, error)
 }
 
 // ---------------------------------------------------------------- journal --
