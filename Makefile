@@ -31,7 +31,7 @@ fuzz: ## Search every fuzz target beyond its seeds (FUZZTIME=20s each); commit a
 mutation: ## Mutation-test every target against its thresholds — do the tests fail when the code is wrong? (minutes)
 	scripts/mutation.sh
 
-mutation-diff: ## Mutation-test only the lines this branch committed (REF=origin/main) — what a pull request is held to
+mutation-diff: ## Mutation-test only the lines changed since REF, committed or not (REF=origin/main) — what a pull request is held to
 	scripts/mutation.sh --diff $(or $(REF),origin/main)
 
 verify-red-green: ## Prove the branch was test-driven: a failing tests-only commit precedes the change (REF=origin/main)

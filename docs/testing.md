@@ -103,9 +103,21 @@ make mutation          # every target, against its thresholds — nightly, and b
 Reading a survivor:
 
 - **Equivalent mutant** — `a > b` → `a >= b` where `a == b` cannot change the result. No test can
-  kill it; the thresholds leave room for these. Say so in the PR rather than forcing a test.
+  kill it, so do not force one. List it in [`.mutation-equivalents`](../.mutation-equivalents) with a
+  reason: the entry names the file, the operator, the column and the *exact text of the line*, so
+  editing the line lapses the excuse, and an excuse for one operator never covers another's on the same
+  line. An entry with no reason stops the run. Excused mutants are set aside from the efficacy figure
+  and counted in the output (`excused 13 as equivalent`); a whole-package run notes any entry that no
+  longer matches a survivor. The list is reviewed like code — each entry is a claim that no test could
+  tell the code from its mutant, and a wrong claim hides a missing test.
 - **Anything else is a missing test.** Write the test that passes on the real code and fails on the
-  mutant (usually the exact boundary value, on both sides).
+  mutant (usually the exact boundary value, on both sides). A pull request has **no tolerance** here:
+  on the lines it changed, `make mutation-diff` fails on any survivor that is not excused, however high
+  the percentage around it. Whole-package runs keep a percentage floor, so the equivalents nobody has
+  listed yet do not fail the nightly run.
+
+Reaching more code exposes more mutants, so a run after adding tests can show survivors that were not
+there before: that is the tool working, not the tests getting worse.
 
 Limits, stated so the numbers are not over-read:
 
@@ -113,12 +125,15 @@ Limits, stated so the numbers are not over-read:
   coverage profile has no block for a case condition.
 - `metering/app` is measured at the unit tier only. Booking, reconcile, recover and the writer are
   verified by the integration tier, which a unit-tier run cannot see, so its mutant coverage is low and
-  is reported as such rather than claimed.
+  is reported as such rather than claimed. A mutation run over that tier is task T135.
 - A `TIMED OUT` mutant is never counted as killed, and a run where more than 5% time out fails —
   gremlins sizes the timeout from one cached coverage run, and a short one makes everything "time out"
   and leaves a flattering denominator (`.gremlins.yaml`).
 
 Thresholds live in `scripts/mutation.sh`. Raise them as the suite improves; never lower one to go green.
+`scripts/verify-tdd-gates.sh` proves the gate refuses what it should — a planted survivor, a survivor
+one line touched, an excuse that outlives an edit to its line, one aimed at a neighbouring operator, one
+with no reason — and accepts an exact one.
 
 ## What CI holds, and where
 

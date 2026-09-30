@@ -23,7 +23,7 @@ section with one line, which CI reads: `TDD-Exempt: <reason>`.
 
 - [ ] An invariant over arithmetic, an encoding or time has a **property / fuzz target** (seeds include the boundary cases)
 - [ ] Failure paths are tested, not just the happy one: replay, concurrency, outage, tampering, refund past spend
-- [ ] `scripts/mutation.sh --diff origin/main` output pasted; each survivor is fixed with a test or named an **equivalent mutant**
+- [ ] `scripts/mutation.sh --diff origin/main` output pasted; each survivor is fixed with a test, or is an **equivalent mutant** listed with a reason in `.mutation-equivalents`
 
 ```text
 <paste>

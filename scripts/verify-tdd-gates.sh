@@ -7,6 +7,8 @@
 #               before it is refused; so are a "red" commit that already passes, test and code squeezed
 #               into one commit, and a tip that never turns green; an exemption needs a reason;
 #               a build failure counts as red but says so
+#   status      ROADMAP.md must state each spec's task count as its tasks.md has it: a task ticked without
+#               the roadmap, and a "not started" claim that came back, are each refused
 #   mutation    a planted survivor (the boundary tests of the pricer deleted) is refused, by name
 #
 #   scripts/verify-tdd-gates.sh [--no-mutation]     # mutation needs gremlins and ~30 s
@@ -112,6 +114,19 @@ expect "red by build failure passes, and says to stub the symbol" 0 "build faile
 branch i; write_test '1 << 51'; git add "$testfile"; git commit -qm "test(red): the ceiling is 2^51"; echo "// tweak" >>metering/domain/credits.go; git commit -qam "fix(green): forgot the change"
 expect "a red commit whose tip never turns green is refused" 1 "does not pass the tests" "$vrg" base
 
+# ---------------------------------------------------------------- status drift
+# The scratch copy of the script is the one that runs: it judges the repository it lives in.
+drift=scripts/check-spec-drift.sh
+tasks=specs/001-metering-billing-core/tasks.md
+branch j
+expect "the docs as shipped pass the status check" 0 "task count as its tasks.md has it" "$drift"
+
+branch k; perl -pi -e 's/^- \[ \] \*\*R060\*\*/- [x] **R060**/' "$tasks"; git commit -qam "tick a task"
+expect "a task ticked without the roadmap is refused, with the line to write" 1 "expected the line: Tasks: [0-9]+ of [0-9]+ done" "$drift"
+
+branch l; printf '\n> Status: design complete, **implementation not started**\n' >>README.md; git commit -qam "the old claim returns"
+expect "a 'not started' claim that came back is refused" 1 "README\.md:[0-9]+:.*implementation not started" "$drift"
+
 # ---------------------------------------------------------------- mutation
 if [ "$with_mutation" -eq 1 ]; then
   cd "$root"
@@ -133,6 +148,46 @@ if [ "$with_mutation" -eq 1 ]; then
   perl -pi -e 's/^(\t\tif q\.Amount < 0 \{)$/$1 \/\/ a negative count is refused/' "$guard"
   git commit --quiet -am "touch the guarded line"
   expect "diff mode holds a branch to the lines it touched" 1 "LIVED .*table\.go:36" scripts/mutation.sh --diff base "$pricer"
+
+  # A pull request has no tolerance on the lines it changed: a survivor is refused however high the
+  # percentage around it. (The pricer's floor is lowered in this scratch copy only, so that one survivor
+  # in two mutants would pass a percentage rule.)
+  perl -pi -e 's/^(\.\/metering\/adapters\/driven\/pricing\/table)\|90\|90$/$1|50|0/' scripts/mutation.sh
+  expect "diff mode refuses a survivor however high the percentage around it" 1 "LIVED .*table\.go:36" scripts/mutation.sh --diff base "$pricer"
+  git checkout --quiet -- scripts/mutation.sh
+
+  # An EQUIVALENT mutant — one no test can tell from the code — is excused in .mutation-equivalents, by
+  # file, operator, column and the exact text of the line, with a reason. The excuse has to be exact: it
+  # must not survive an edit to its line, must not cover a neighbouring mutant, and needs a reason.
+  refusal=$(scripts/mutation.sh --diff base "$pricer" 2>&1 || true)
+  cat >"$tmp/excuses.py" <<'PY'
+import re, sys
+why, shift = sys.argv[1], int(sys.argv[2])
+for l in sys.stdin.read().splitlines():
+    m = re.match(r"\s*LIVED (\w+) at (.+):(\d+):(\d+)$", l)
+    if not m:
+        continue
+    kind, path, line, col = m.group(1), m.group(2), int(m.group(3)), int(m.group(4))
+    text = open(path).read().split("\n")[line - 1]
+    lead = len(text) - len(text.lstrip())
+    print(f'[[equivalent]]\nfile = "{path}"\nmutator = "{kind}"\ncol = {col - lead + shift}\nline = \'{text.strip()}\'\nwhy = "{why}"\n')
+PY
+  excuses() { python3 "$tmp/excuses.py" "$1" "$2" <<<"$refusal"; } # <why> <column shift>: an entry per named survivor
+  base_commit=$(git rev-parse HEAD)
+
+  excuses "planted by the gate test: pretend no test could tell" 0 >.mutation-equivalents
+  expect "an equivalent mutant named with a reason is excused, and counted" 0 "excused [0-9]+ as equivalent" scripts/mutation.sh --diff base "$pricer"
+
+  perl -pi -e 's/(a negative count is refused)$/$1, always/' "$guard"; git commit --quiet -am "reword the guarded line"
+  expect "an excuse does not survive an edit to its line" 1 "LIVED .*table\.go:36" scripts/mutation.sh --diff base "$pricer"
+  git reset --quiet --hard "$base_commit"
+
+  excuses "planted by the gate test" 1 >.mutation-equivalents
+  expect "an excuse for the neighbouring operator does not excuse this one" 1 "LIVED .*table\.go:36" scripts/mutation.sh --diff base "$pricer"
+
+  excuses "" 0 >.mutation-equivalents
+  expect "an excuse with no reason is refused" 2 "needs a reason" scripts/mutation.sh --diff base "$pricer"
+  rm -f .mutation-equivalents
 fi
 
 echo
