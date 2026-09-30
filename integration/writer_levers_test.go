@@ -12,6 +12,8 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/truongpx396/intel-payment/metering"
+	"github.com/truongpx396/intel-payment/metering/adapters/driven/natsjetstream"
 	hotredis "github.com/truongpx396/intel-payment/metering/adapters/driven/redis"
 	"github.com/truongpx396/intel-payment/metering/adapters/driven/redisstreams"
 	"github.com/truongpx396/intel-payment/metering/app"
@@ -35,16 +37,47 @@ func (f *faultBalance) ApplyDelta(ctx context.Context, d ports.HotDelta) (domain
 	return f.BalanceStore.ApplyDelta(ctx, d)
 }
 
+// relayedWriter is a writer with the relay running beside it, as it does in a JetStream deployment: an
+// intent the hot functions have written reaches JetStream before the writer looks for it. A test
+// that calls Drain directly, without the harness's drain, therefore sees what a live system would.
+type relayedWriter struct {
+	*app.Writer
+	relay *natsjetstream.Relay
+}
+
+func (w relayedWriter) Drain(ctx context.Context, sh domain.Shard) (int, error) {
+	if err := w.relay.Drain(ctx, sh); err != nil {
+		return 0, err
+	}
+	return w.Writer.Drain(ctx, sh)
+}
+
+// front is the writer a suite drives.
+func (s *wstack) front(w *app.Writer) ports.LedgerWriter {
+	if s.relay == nil {
+		return w
+	}
+	return relayedWriter{Writer: w, relay: s.relay}
+}
+
 // newWriter builds a further writer over the same books and the same consumer group.
-func (s *wstack) newWriter(consumer string) *app.Writer {
+func (s *wstack) newWriter(consumer string) ports.LedgerWriter {
 	s.t.Helper()
-	c := s.client()
-	s.t.Cleanup(func() { _ = c.Close() })
-	inner, err := redisstreams.NewStream(c, redisstreams.IntentOptions{Consumer: consumer, Group: s.group, Clock: s.clock})
-	must(s.t, err)
+	var inner ports.IntentStream
+	if s.relay != nil {
+		in, err := natsjetstream.NewIntents(context.Background(), s.natsConn(), s.jsOpts)
+		must(s.t, err)
+		inner = in.WithRelay(s.relay)
+	} else {
+		c := s.client()
+		s.t.Cleanup(func() { _ = c.Close() })
+		in, err := redisstreams.NewStream(c, redisstreams.IntentOptions{Consumer: consumer, Group: s.group, Clock: s.clock})
+		must(s.t, err)
+		inner = in
+	}
 	w, err := app.NewWriter(s.cfg, s.deps(&scopedStream{inner: inner, mine: s.owns, injected: s.stream.injected, mu: s.stream.mu}))
 	must(s.t, err)
-	return w
+	return s.front(w)
 }
 
 // ---------------------------------------------------------------- hot side --
@@ -237,22 +270,36 @@ func (s *wstack) archived(sc domain.Scope) int {
 
 func writerHarness(t *testing.T, o contracts.WriterOptions) contracts.WriterHarness {
 	t.Helper()
-	w := wopts{LedgerOptions: o.LedgerOptions, dedicated: o.Dedicated}
-	w.cfg.ReconcileTolerance, w.cfg.MaxAttempts = o.Tolerance, o.MaxAttempts
+	return writerHarnessOn(false)(t, o)
+}
+
+// writerHarnessOn builds the harness with intents delivered through Redis Streams or, with jetstream,
+// through the optional bus: a Relay forwarding the outbox to JetStream, the writer reading that.
+func writerHarnessOn(jetstream bool) func(t *testing.T, o contracts.WriterOptions) contracts.WriterHarness {
+	return func(t *testing.T, o contracts.WriterOptions) contracts.WriterHarness {
+		t.Helper()
+		return newWriterStack(t, wopts{jetstream: jetstream, LedgerOptions: o.LedgerOptions, dedicated: o.Dedicated,
+			cfg: writerConfig(o)}).writerHarness()
+	}
+}
+
+func writerConfig(o contracts.WriterOptions) metering.Config {
+	var cfg metering.Config
+	cfg.ReconcileTolerance, cfg.MaxAttempts = o.Tolerance, o.MaxAttempts
 	if o.Rollup {
-		w.cfg.LedgerGranularity = "rollup"
+		cfg.LedgerGranularity = "rollup"
 	}
 	if o.Lots {
-		w.cfg.CreditExpiry = "lots_fifo"
+		cfg.CreditExpiry = "lots_fifo"
 	}
-	return newWriterStack(t, w).writerHarness()
+	return cfg
 }
 
 func (s *wstack) writerHarness() contracts.WriterHarness {
 	ctx := context.Background()
 	return contracts.WriterHarness{
 		LedgerHarness: s.ledgerHarness(),
-		Writer:        s.writer,
+		Writer:        s.front(s.writer),
 		Second:        func(t *testing.T) ports.LedgerWriter { t.Helper(); return s.newWriter("w2") },
 
 		Expire: func(t *testing.T) int {
@@ -304,4 +351,11 @@ func (s *wstack) writerHarness() contracts.WriterHarness {
 func TestLedgerWriterContract(t *testing.T) {
 	t.Parallel()
 	contracts.LedgerWriterContract(t, writerHarness)
+}
+
+// The same 25 subtests with the intents travelling by the optional bus: swapping it in is a wiring
+// change and nothing the writer guarantees moves with it.
+func TestLedgerWriterContract_OverJetStream(t *testing.T) {
+	t.Parallel()
+	contracts.LedgerWriterContract(t, writerHarnessOn(true))
 }

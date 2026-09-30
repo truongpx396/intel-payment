@@ -21,6 +21,7 @@ import (
 	"github.com/truongpx396/intel-payment/internal/chaos"
 	"github.com/truongpx396/intel-payment/internal/pgtest"
 	"github.com/truongpx396/intel-payment/metering"
+	"github.com/truongpx396/intel-payment/metering/adapters/driven/natsjetstream/natstest"
 	pgadapter "github.com/truongpx396/intel-payment/metering/adapters/driven/postgres"
 	pricingtable "github.com/truongpx396/intel-payment/metering/adapters/driven/pricing/table"
 	hotredis "github.com/truongpx396/intel-payment/metering/adapters/driven/redis"
@@ -32,8 +33,9 @@ import (
 )
 
 var (
-	pg    *pgtest.Postgres
-	redis *redistest.Redis
+	pg      *pgtest.Postgres
+	redis   *redistest.Redis
+	natsSrv *natstest.Server
 )
 
 func TestMain(m *testing.M) {
@@ -48,6 +50,12 @@ func TestMain(m *testing.M) {
 		_ = pg.Terminate(ctx)
 		os.Exit(1)
 	}
+	if natsSrv, err = natstest.Run(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		_ = redis.Terminate(ctx)
+		_ = pg.Terminate(ctx)
+		os.Exit(1)
+	}
 	rdb := redis.Client()
 	if _, err := hotredis.EnsureInstalled(ctx, rdb); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -55,6 +63,7 @@ func TestMain(m *testing.M) {
 	}
 	_ = rdb.Close()
 	code := m.Run()
+	_ = natsSrv.Terminate(ctx)
 	_ = redis.Terminate(ctx)
 	_ = pg.Terminate(ctx)
 	if code == 0 {
