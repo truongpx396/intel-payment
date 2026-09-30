@@ -24,7 +24,12 @@ const (
 
 func shardTag(sh domain.Shard) string { return "{s" + strconv.Itoa(int(sh)) + "}" }
 
-func metaKey(sh domain.Shard) string   { return "meta:" + shardTag(sh) }
+func metaKey(sh domain.Shard) string { return "meta:" + shardTag(sh) }
+
+// OutboxKey is the shard's intent stream. It is written ONLY by the hot functions, in the same call
+// that moves the balance; the durable writer reads it through redisstreams.
+func OutboxKey(sh domain.Shard) string { return outboxKey(sh) }
+
 func outboxKey(sh domain.Shard) string { return "billing:outbox:" + shardTag(sh) }
 
 func acctKey(sh domain.Shard, s domain.Scope) string {
@@ -56,3 +61,12 @@ func idemClass(op domain.IntentOp) string {
 		return idemUsage
 	}
 }
+
+// UsageIdemKey and AcctKey expose the layout to tests and tooling that must reach behind the API —
+// to expire a hot guard the way HotIdemTTL does, or to tamper with a balance to prove reconcile
+// notices. They are not for application code.
+func UsageIdemKey(sh domain.Shard, s domain.Scope, key string) string {
+	return idemKey(sh, s.Normalized(), idemUsage, key)
+}
+
+func AcctKey(sh domain.Shard, s domain.Scope) string { return acctKey(sh, s.Normalized()) }

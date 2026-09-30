@@ -342,6 +342,23 @@ mode**, loads [`reference/hot_path.lua`](./reference/hot_path.lua), and asserts,
 - `clamp_to_zero` floors the pool and reports the writeoff; `block_and_flag` also blocks the account.
 
 The Postgres half — watermark cases, suspense, window-bounded usage dedup, transfer conservation — is
-the `ConsistencyContract` suite ([tasks.md](../tasks.md) T034a), which runs against real Redis and
-Postgres via Testcontainers, including a forced rollback (a Redis restart from a truncated AOF)
-mid-traffic.
+two suites in [`metering/contracts`](../../../metering/contracts), both run against real Redis and real
+Postgres by `integration/` (Testcontainers):
+
+- **`LedgerWriterContract`** — booking in sequence order; a redelivery, a gap and a regression told
+  apart; a late replay and a reused key suspended, reversed on the hot side and closed; a poison
+  intent parked after its retry budget; reconcile deferring lag, healing drift on the hot side only
+  (per scope *and* pool, within tolerance, never booking a row); block-and-flag; rollup with its
+  archive; transfers re-driven; expiry trued up through suspense; the deep audit; two writers racing
+  on one shard.
+- **`ConsistencyContract`** — the hot tier goes back in time, twice: **Redis restarts from an AOF
+  truncated at a known boundary** (`appendfsync always`, so the file is exactly what was
+  acknowledged), and **traffic fails over to a replica that stopped receiving at a checkpoint**
+  (real replication, real promotion, behind a proxy that is retargeted). In both: the writer notices
+  by the node's replication id before any sequence number shows it, freezes, drains, bumps and
+  rebuilds; every retry converges with no operation charged twice; what the rollback took before the
+  writer saw it costs exactly the loss window, and is consistent between the two stores; a transfer
+  caught between its legs is completed by the redrive and the realm stays conserved.
+
+Both were mutation-checked: a writer that stops recognising redeliveries, skips a gap, books on
+reconcile, or ignores a changed replication id fails them.

@@ -168,7 +168,11 @@ CREATE TABLE credit_ledger (
     actor_id           TEXT,
     ref                JSONB,                    -- trace/call/payment ids; audit only
     occurred_at        TIMESTAMPTZ,
-    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- clock_timestamp(), NOT now(): now() is the instant the transaction BEGAN, and two writers
+    -- serialised on one scope's lock can begin in one order and commit in the other. The deep audit
+    -- advances a checkpoint through the newest row's created_at, which is only sound if created_at
+    -- order is commit order for a scope — and inserting under that scope's lock makes it so.
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (id, created_at),
     CHECK (seq_to >= seq_from)
 ) PARTITION BY RANGE (created_at);

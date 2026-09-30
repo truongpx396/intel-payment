@@ -24,7 +24,7 @@ components:
   events:           { in: events/** }
   api:              { in: api/** }
   migrate:          { in: migrate }
-  testsupport:      { in: internal/** }   # containers for tests; imports migrations so tests run against the real schema
+  testsupport:      { in: internal/** }   # containers and fault injection for tests; imports migrations so tests run against the real schema
   migrations:       { in: migrations }
   cmd:              { in: cmd/** }
 

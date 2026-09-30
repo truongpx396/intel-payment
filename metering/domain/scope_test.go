@@ -2,6 +2,7 @@ package domain_test
 
 import (
 	"errors"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -143,5 +144,26 @@ func TestMoneyAndCreditsAreDistinctAndChecked(t *testing.T) {
 	}
 	if err := (domain.Money{Currency: "usd"}).Validate(); err == nil {
 		t.Fatal("currency must be an upper-case ISO-4217 code")
+	}
+}
+
+func TestSubjectTokenCannotSplitOrBecomeAWildcard(t *testing.T) {
+	t.Parallel()
+	for _, id := range []string{"plain", "a.b", "a*b", "a>b", "a b", "a\tb", "100%", "%2E", "x.y.*.>"} {
+		s := domain.Scope{Realm: "prod", Kind: "workspace", ID: id}
+		tok := s.SubjectToken()
+		if strings.ContainsAny(tok, ".*> \t\n\r") {
+			t.Errorf("%q → %q still holds a reserved character", id, tok)
+		}
+		back, err := url.PathUnescape(tok)
+		if err != nil || back != s.Tag() {
+			t.Errorf("%q → %q does not decode back to its tag: %q %v", id, tok, back, err)
+		}
+	}
+	// Distinct scopes never share a token, or a subject could be consumed as another scope's.
+	a := domain.Scope{Realm: "prod", Kind: "workspace", ID: "a.b"}.SubjectToken()
+	b := domain.Scope{Realm: "prod", Kind: "workspace", ID: "a%2Eb"}.SubjectToken()
+	if a == b {
+		t.Fatalf("%q and %q collide", a, b)
 	}
 }

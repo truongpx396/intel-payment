@@ -196,3 +196,25 @@ func (l *shardLease) Release(ctx context.Context) error {
 	}
 	return nil
 }
+
+// Transfer reads a transfer by key.
+func (b *Books) Transfer(ctx context.Context, realm domain.Realm, idemKey string) (ports.TransferRecord, bool, error) {
+	realm = realm.Or()
+	tr := ports.TransferRecord{Realm: realm, IdemKey: idemKey}
+	var fk, fi, fp, tk, ti, tp string
+	var amt int64
+	err := b.pool.QueryRow(ctx, `
+		SELECT from_kind, from_id, from_pool, to_kind, to_id, to_pool, amount, status, created_at, settled_at
+		FROM credit_transfers WHERE realm = $1 AND idem_key = $2`, string(realm), idemKey).
+		Scan(&fk, &fi, &fp, &tk, &ti, &tp, &amt, &tr.Status, &tr.CreatedAt, &tr.SettledAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ports.TransferRecord{}, false, nil
+	}
+	if err != nil {
+		return ports.TransferRecord{}, false, fmt.Errorf("postgres: read transfer: %w", err)
+	}
+	tr.Amount = domain.Credits(amt)
+	tr.From, tr.To = domain.Scope{Realm: realm, Kind: fk, ID: fi}, domain.Scope{Realm: realm, Kind: tk, ID: ti}
+	tr.FromPool, tr.ToPool = domain.Pool(fp), domain.Pool(tp)
+	return tr, true, nil
+}
