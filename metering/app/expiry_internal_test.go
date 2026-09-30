@@ -23,14 +23,17 @@ func (dueBooks) Booked(context.Context, domain.Scope) (ports.BookedState, error)
 	return ports.BookedState{}, nil
 }
 
-// coldOnce answers the first expiry as a cold account, and every later one as applied.
+// coldOnce answers the first expiry as a cold account, and every later one as applied. It keeps every
+// delta it was asked to apply.
 type coldOnce struct {
 	ports.BalanceStore
 	applied int
+	deltas  []ports.HotDelta
 }
 
-func (b *coldOnce) ApplyDelta(context.Context, ports.HotDelta) (domain.Receipt, error) {
+func (b *coldOnce) ApplyDelta(_ context.Context, d ports.HotDelta) (domain.Receipt, error) {
 	b.applied++
+	b.deltas = append(b.deltas, d)
 	if b.applied == 1 {
 		return domain.Receipt{}, domain.ErrColdScope
 	}
@@ -60,5 +63,34 @@ func TestTheExpirerReportsThroughTheMetricsItWasGiven(t *testing.T) {
 	}
 	if got := rec.counts[ports.MetricRehydrate]; got != 1 {
 		t.Fatalf("the rebuild must be counted on the recorder the expirer was given, got %d", got)
+	}
+}
+
+// An expiry REMOVES the lot's remainder from the hot balance: a negative delta, capped at what the pool
+// has, keyed on the lot so a redelivery is a no-op. Getting the sign wrong would credit every customer
+// whose credits expire.
+func TestAnExpiryRemovesTheLotsRemainderCappedAndKeyedOnTheLot(t *testing.T) {
+	t.Parallel()
+	scope := domain.Scope{Realm: "t1", Kind: "workspace", ID: "w1"}
+	lots := []ports.Lot{{ID: "lot-1", Scope: scope, Pool: "promo", Remaining: 40}}
+	cfg := metering.Config{BalanceRedisURL: "redis://x", LedgerDSN: "postgres://x", CreditExpiry: metering.ExpiryLotsFIFO}
+	bal := &coldOnce{}
+	e, err := NewExpirer(cfg, Deps{Balance: bal, Books: dueBooks{lots: lots}, Clock: fixedClock(time.Unix(1_700_000_000, 0))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Tick(context.Background(), 10); err != nil {
+		t.Fatal(err)
+	}
+	if len(bal.deltas) == 0 {
+		t.Fatal("the due lot was never applied")
+	}
+	for _, d := range bal.deltas { // the cold attempt and the retry after the rebuild are the same request
+		if d.Op != domain.OpExpiry || d.Delta != -40 || d.Pool != "promo" || d.Scope != scope {
+			t.Fatalf("an expiry takes the 40 remaining out of the promo pool: %+v", d)
+		}
+		if d.IdemKey != "lot-1" || !d.CapAtAvailable {
+			t.Fatalf("keyed on the lot, and never below what the pool holds: %+v", d)
+		}
 	}
 }
