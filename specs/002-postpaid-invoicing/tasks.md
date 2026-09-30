@@ -2,6 +2,8 @@
 
 **Spec**: [spec.md](./spec.md) | **Contract**: [contracts/invoicing-ports.md](./contracts/invoicing-ports.md)
 
+> **Test-first**: the red/green pairing of [001's tasks](../001-metering-billing-core/tasks.md) applies to every task here. Where a task below is already a suite (**T211**, **T212**, **T222**) it *is* the red for the tasks that make it pass, and lands first, in its own tests-only commit. **T240–T245** are measurements of the finished phase and have no pair.
+
 > **Gate**: do not start this until [001](../001-metering-billing-core/tasks.md) Phases 0–3 are implemented and passing. Post-paid rates the ledger 001 produces; building it first means rating a schema that does not exist yet.
 
 ## Phase A — Schema & settlement model
@@ -44,4 +46,4 @@
 - [ ] **T245** Gapless-number audit across a simulated year including rollbacks and voids.
 
 ## Definition of done
-Same as [001](../001-metering-billing-core/tasks.md), plus: no invoice in any test corpus presents arithmetic that does not close, and no rating result differs between two runs.
+Same as [001](../001-metering-billing-core/tasks.md) — including red before green, properties for arithmetic, and mutation of the lines touched — plus: no invoice in any test corpus presents arithmetic that does not close, and no rating result differs between two runs.

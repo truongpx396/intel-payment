@@ -1,0 +1,9 @@
+# Mutation testing (https://github.com/go-gremlins/gremlins) — see docs/testing.md and
+# scripts/mutation.sh, which holds the per-package thresholds.
+unleash:
+  workers: 4
+  # gremlins derives each mutant's timeout from ONE cached coverage run (~0.1 s here) times this.
+  # Compiling a mutant alone takes longer, so a small coefficient makes nearly every mutant "time
+  # out" — which is then excluded from the score, inflating it. 150 leaves real headroom, and
+  # scripts/mutation.sh fails the run if more than 5% of mutants still time out.
+  timeout-coefficient: 150

@@ -3,6 +3,7 @@ package app_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -275,4 +276,90 @@ type negative struct{}
 
 func (negative) Price(context.Context, domain.RateCard, domain.Event) (domain.Price, error) {
 	return domain.Price{Credits: -5}, nil
+}
+
+// fixedPrice is a compiled pricer that answers one price whatever the event.
+type fixedPrice domain.Price
+
+func (f fixedPrice) Price(context.Context, domain.RateCard, domain.Event) (domain.Price, error) {
+	return domain.Price(f), nil
+}
+
+// The Meter does not trust a compiled pricer with the range check the table pricer does for itself,
+// so the bounds it enforces are its own: a free unit is a price, the ceiling itself is allowed, and
+// one step past either end is refused.
+func TestRecordHoldsACompiledPricerToTheRangeExactly(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		credits domain.Credits
+		refused bool
+	}{
+		"free (a trial, a zero-rated unit)": {0, false},
+		"one credit":                        {1, false},
+		"exactly the ceiling":               {domain.MaxOperationAmount, false},
+		"one past the ceiling":              {domain.MaxOperationAmount + 1, true},
+		"one below zero":                    {-1, true},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t, rigOpt{cards: cardNaming(t, "compiled"),
+				pricers: registryWith("compiled", fixedPrice{Credits: c.credits, RateCardVersion: "v9"})})
+			_, err := r.m.Record(context.Background(), event("k"))
+			if c.refused {
+				if !errors.Is(err, domain.ErrAmountOutOfRange) || len(r.bal.debited) != 0 {
+					t.Fatalf("%d credits must be refused and never debited: %v, %d debits", c.credits, err, len(r.bal.debited))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("%d credits is inside the range: %v", c.credits, err)
+			}
+			if len(r.bal.debited) != 1 || r.bal.debited[0].Amount != c.credits {
+				t.Fatalf("debits: %+v", r.bal.debited)
+			}
+		})
+	}
+}
+
+// Invariant 5: a ledger row names the card that priced it, whether the pricer said so or not.
+func TestRecordNamesTheCardOnTheRowWhenThePricerDoesNot(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct{ named, want string }{
+		"a pricer that names no version gets the card's": {"", "v9"},
+		"a pricer that names its own version keeps it":   {"pricer-7", "pricer-7"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t, rigOpt{cards: cardNaming(t, "compiled"),
+				pricers: registryWith("compiled", fixedPrice{Credits: 5, RateCardVersion: c.named})})
+			rc, err := r.m.Record(context.Background(), event("k"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rc.RateCardVersion != c.want || r.bal.debited[0].RateCardVersion != c.want {
+				t.Fatalf("want card %q on the receipt and the row, got %q and %q", c.want, rc.RateCardVersion, r.bal.debited[0].RateCardVersion)
+			}
+		})
+	}
+}
+
+// An operator debugging a refused event reads the message: it must state the bound actually enforced
+// (the window less its safety margin), not some other number.
+func TestRecordStaleRefusalNamesTheBoundItEnforces(t *testing.T) {
+	t.Parallel()
+	r := newRig(t, rigOpt{})
+	window := r.cfg.UsageIdemWindow - r.cfg.IdemSafetyMargin
+	e := event("k")
+	e.OccurredAt = epoch.Add(-window - time.Hour)
+	_, err := r.m.Record(context.Background(), e)
+	if !errors.Is(err, domain.ErrStaleEvent) {
+		t.Fatalf("want a stale refusal, got %v", err)
+	}
+	for _, want := range []string{"occurred " + (window + time.Hour).String() + " ago", "beyond " + window.String()} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the refusal should say %q: %v", want, err)
+		}
+	}
 }

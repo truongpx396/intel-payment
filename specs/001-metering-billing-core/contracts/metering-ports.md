@@ -437,7 +437,10 @@ which counters to increment without being told the limits (a `Charge` carries no
   counted for every charge they govern — by resource and by subject — keyed
   `ctr:{s<n>}:<tag>:<limit name>:<subject id>:<bucket>`. Daily and hourly buckets are the calendar
   day/hour in `Limit.TZ` (the hourly key carries the zone offset, so the repeated hour when clocks
-  fall back is two counters); rolling is 12 sub-buckets, so its error is at most `Dur/12`.
+  fall back is two counters); rolling is 12 sub-buckets, so its error is at most `Dur/12`. A bucket's
+  lifetime is the time to the end of its window plus a margin, and is always positive — a zone that
+  skips a calendar date still gets the next midnight that lies ahead — so a counter never expires
+  while it is still the current bucket.
 - **A job budget is counted whenever the call carries `Subjects["job"]`**, in credits and in each
   metered unit of the charge, keyed `…:job.<unit>:<job id>:-`. Its counter lives 24 h from the first
   charge (`DefaultJobTTL`): the limit that names its `Dur` is passed at `Admit`, which is not seen at
@@ -464,6 +467,11 @@ was published in between therefore prices differently and is `ErrIdemConflict` �
 double charge, and the first price stands. Producers retry with the same `OccurredAt`; a card
 change inside one retry horizon is rare, and refusing it is the alternative to silently choosing
 which price the customer was charged.
+
+The canonical form is length-prefixed, so no split of the same characters across two fields can
+encode alike, and a charge's `Quantities` are a **multiset**: they are sorted by unit, then amount,
+before encoding, because the pricer sums them and a retry that lists them in another order — even
+one that names a unit twice — is the same request, not a conflict.
 
 ## Port: `Meter` — orchestration callers actually use
 

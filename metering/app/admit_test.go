@@ -2,7 +2,9 @@ package app_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -268,5 +270,70 @@ func TestAdmitObservesItsLatencyByOutcome(t *testing.T) {
 	_, _ = r.m.Admit(context.Background(), domain.Scope{Kind: "Bad Kind", ID: "x"}, domain.AdmitRequest{})
 	if len(r.met.obs) != 2 || r.met.obs[0] != "allowed" || r.met.obs[1] != "invalid" {
 		t.Fatalf("%v", r.met.obs)
+	}
+}
+
+// captureBus records a notification as the bus sees it: subject, body, and the context it was handed.
+type captureBus struct {
+	ports.Bus
+	mu  sync.Mutex
+	got []capturedPublish
+}
+
+type capturedPublish struct {
+	subject     string
+	body        []byte
+	ctxErr      error
+	hasDeadline bool
+	remaining   time.Duration
+}
+
+func (b *captureBus) Publish(ctx context.Context, subject string, body []byte) error {
+	dl, ok := ctx.Deadline()
+	c := capturedPublish{subject: subject, body: body, ctxErr: ctx.Err(), hasDeadline: ok}
+	if ok {
+		c.remaining = time.Until(dl)
+	}
+	b.mu.Lock()
+	b.got = append(b.got, c)
+	b.mu.Unlock()
+	return nil
+}
+
+// A block names WHICH limit blocked and why — the alert, the dashboard and the host's upsell all key
+// on it — and the notification is best effort: published on a live context with its own short
+// deadline, so a slow bus can neither drop it up front nor stall the admission it describes.
+func TestADenialNamesItsLimitAndIsPublishedOnALiveBoundedContext(t *testing.T) {
+	t.Parallel()
+	r := newRig(t, rigOpt{limits: []domain.Limit{balanceLimit}})
+	r.bal.admit = func(domain.Scope, domain.AdmitRequest) (domain.Admission, error) {
+		l := balanceLimit
+		return domain.Admission{Allowed: false, Exceeded: &l}, nil
+	}
+	bus := &captureBus{}
+	r.deps.Bus = bus
+	m, _ := newMeter(t, r)
+	if _, err := m.Admit(context.Background(), ws, domain.AdmitRequest{MaxCost: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.met.count(ports.MetricAdmitDenied + "{" + balanceLimit.Name + "}"); got != 1 {
+		t.Fatalf("the denial metric must carry the limit that denied: %v", r.met.counts)
+	}
+	if len(bus.got) != 1 {
+		t.Fatalf("one notification, got %d", len(bus.got))
+	}
+	p := bus.got[0]
+	var body map[string]any
+	if err := json.Unmarshal(p.body, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["limit_name"] != balanceLimit.Name || body["deny_code"] != string(balanceLimit.DenyCode) {
+		t.Fatalf("the notification must name the limit and its deny code: %v", body)
+	}
+	if p.ctxErr != nil {
+		t.Fatalf("a notification is published on a live context, got %v", p.ctxErr)
+	}
+	if !p.hasDeadline || p.remaining > 100*time.Millisecond {
+		t.Fatalf("a notification has its own deadline of at most 100ms: %v %v", p.hasDeadline, p.remaining)
 	}
 }

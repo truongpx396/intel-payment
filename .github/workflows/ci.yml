@@ -2,6 +2,9 @@ name: CI
 on:
   push: { branches: [ main ] }
   pull_request:
+  schedule:
+    - cron: '23 2 * * *'   # nightly: deep fuzzing and whole-target mutation testing, and a fresh govulncheck
+  workflow_dispatch:
 
 permissions: { contents: read }
 
@@ -49,6 +52,72 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
+
+  # Test-driven development, with the evidence checkable (docs/testing.md; constitution principle X).
+  red-green:
+    name: test-driven (a failing test-only commit precedes the change)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }          # the script reads the branch's commits and checks each one out
+      - uses: actions/setup-go@v7
+        with: { go-version: '1.26', cache: true }
+      # A branch that changes production code needs a tests-only commit BEFORE it that FAILS, and a tip
+      # that passes it. A test written after the code passes where it appears and is refused. A change
+      # that cannot be test-driven says so with `TDD-Exempt: <reason>` in a commit or the PR body.
+      - name: Red, then green
+        env: { PR_BODY: '${{ github.event.pull_request.body }}' }
+        run: scripts/verify-red-green.sh "origin/${{ github.base_ref }}"
+
+  # The gates above judge every pull request, so they are shown to REFUSE what they exist to refuse
+  # (scripts/verify-boundary.sh does the same for the architecture gates).
+  tdd-gates:
+    name: TDD gates reject violations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version: '1.26', cache: true }
+      - run: go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
+      - name: Plant violations, expect refusal
+        run: scripts/verify-tdd-gates.sh
+
+  fuzz:
+    name: fuzz (arithmetic, encodings, time)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version: '1.26', cache: true }
+      # The seed corpus already runs in the `go` job; this searches beyond it. Nightly it searches longer.
+      - name: Fuzz every target
+        env: { FUZZTIME: "${{ github.event_name == 'schedule' && '10m' || '20s' }}" }
+        run: scripts/fuzz.sh
+      # A failing input is a regression test once committed: download it, commit it with the fix.
+      - name: Keep the failing inputs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with: { name: fuzz-failing-inputs, path: '**/testdata/fuzz', if-no-files-found: ignore }
+
+  mutation:
+    name: mutation (do the tests fail when the code is wrong?)
+    # Pull requests run the diff gate; the nightly run and a manual dispatch run every target.
+    if: github.event_name == 'pull_request' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v7
+        with: { go-version: '1.26', cache: true }
+      # Pinned: scripts/mutation.sh parses gremlins' summary, so a format change must be a reviewed change.
+      - run: go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
+      - name: Only the lines this pull request committed
+        if: github.event_name == 'pull_request'
+        run: scripts/mutation.sh --diff "origin/${{ github.base_ref }}"
+      - name: Every target, against its thresholds
+        if: github.event_name != 'pull_request'
+        run: scripts/mutation.sh
 
   deploy:
     name: image · migrate · redis ACL

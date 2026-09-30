@@ -6,13 +6,16 @@ self-contained container.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-> ## ⚠️ Status: design complete, **implementation not started**
-> This repository contains the **specification** — contracts, data model, migrations, deployment
-> scaffolding — and the parts of it that can be executed without Go: the schema is applied and
-> behaviourally tested on PostgreSQL 16, and the reference hot-path functions run on **Redis in
-> cluster mode**, both in CI. There is **no Go code yet**, so the service commands below describe the
-> intended interface. Start at [ROADMAP.md](ROADMAP.md) for what exists and what is deliberately
-> absent; [tasks.md](specs/001-metering-billing-core/tasks.md) is the build order.
+> ## ⚠️ Status: the metering core is built; it is not yet a service
+> The foundation and the **metering core** — domain, ports, the hot path on Redis, the durable
+> writer on Postgres, the Redis Streams and JetStream buses, pricers, and the conformance suites they
+> all pass — are implemented and verified in CI. There is **no gRPC or REST transport and no
+> `paymentd` / `payment-worker` binary yet**, so the service commands below describe the intended
+> interface; today the engine is usable as an embedded Go library. Payments, entitlements, the
+> operational surface and the UI are designed, not built. Start at [ROADMAP.md](ROADMAP.md) for the
+> task count and what is deliberately absent; [tasks.md](specs/001-metering-billing-core/tasks.md) is
+> the build order, and [docs/testing.md](docs/testing.md) is how it is being built (test-first, with
+> the evidence checked).
 >
 > **Scope, stated honestly:** this is a *metering, credits and payment-collection engine* for
 > products that need an internal credit unit with sub-millisecond refuse-before-spend enforcement.
@@ -178,8 +181,8 @@ these are the load-bearing few:
 
 ## Status
 
-Design complete and normative; **implementation not started**. The schema and the reference hot
-path are executable and verified in CI; everything else, including the honest gap list, is in
+The metering core is built and verified; the service around it (transports, payments, entitlements,
+operations, UI) is not. The task count, what is built, and the honest gap list are in
 [ROADMAP.md](ROADMAP.md).
 
 ## Provenance

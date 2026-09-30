@@ -32,7 +32,9 @@ else**, and saying so is more useful than pretending otherwise:
 
 ## Phase 1 — Metering, credits & payment collection
 
-**Status: designed and normative. Implementation not started.** → [specs/001-metering-billing-core](specs/001-metering-billing-core/)
+**Status: in progress — the foundation and the metering core are built and verified; the transports, payments, entitlements, operational surface and UI are not.** → [specs/001-metering-billing-core](specs/001-metering-billing-core/)
+
+Tasks: 46 of 129 done (specs/001-metering-billing-core/tasks.md) — counted by `scripts/check-spec-drift.sh`, which fails CI when this line and the task list disagree.
 
 Prepaid credits in pools, exact rational pricing, the admission gate with subject- and plan-sized
 ceilings, the single durable writer with a per-scope sequence watermark, cluster-safe hot-path
@@ -40,8 +42,23 @@ functions, reconcile and recovery, idempotency with fingerprints, payment-provid
 webhook inbox (refunds, disputes, auto top-up), entitlements, outbound events, an admin API, and the
 credits UI package.
 
-**Executable today:** the schema (applied and behaviourally asserted on PostgreSQL 16) and the
-reference hot-path functions (run on Redis 7 in cluster mode) — both in CI.
+**Built and verified today** (Phases 0–1, about 13,700 lines of Go and 9,000 of tests): the schema
+(applied and behaviourally asserted on PostgreSQL 16); the reference hot-path functions (Redis 7,
+cluster mode); the metering domain, ports and `app` (admit, record, grant, transfer, the writer,
+reconcile, recover, expiry, journal); the Redis, Postgres, Redis Streams, NATS JetStream and
+OpenTelemetry adapters; the pricers; and the conformance suites that every one of them must pass
+(`PricerContract`, `LedgerContract`, `LedgerWriterContract`, `ConsistencyContract`, `BusContract`) —
+all in CI.
+
+**Not yet a service.** There is no `cmd/paymentd` or `cmd/payment-worker` and no gRPC or REST
+transport, so `make up` starts the infrastructure and migrates it but serves nothing (Phase 2 of the
+task list). The engine is usable today only as an embedded Go library.
+
+**How it is being built:** test-first, with the evidence checked — a failing tests-only commit ahead
+of every production change, fuzz targets for arithmetic, encodings and time, and mutation testing of
+the tests themselves ([docs/testing.md](docs/testing.md)). Phases 0–1 were written before that rule
+existed; the [hardening record](specs/001-metering-billing-core/tasks.md#hardening-record) says what
+was done about it afterwards and what it found.
 
 **Required infrastructure: Redis + Postgres.** The bus defaults to Redis Streams, so there is no
 broker to stand up; NATS JetStream is an option for downstream replication.
@@ -49,6 +66,8 @@ broker to stand up; NATS JetStream is an option for downstream replication.
 ## Phase 2 — Post-paid usage invoicing
 
 **Status: designed, not started. Depends on Phase 1.** → [specs/002-postpaid-invoicing](specs/002-postpaid-invoicing/)
+
+Tasks: 1 of 29 done (specs/002-postpaid-invoicing/tasks.md) — the one done is the finalize-immutability triggers, in the draft schema and asserted in CI; no Go exists for this phase.
 
 The settlement model most B2B contracts actually use. Adds a `Rater` (pure over the period's event
 *set* rather than over one event — which is precisely why it cannot be a smarter `Pricer`),
@@ -79,7 +98,7 @@ Tracked openly rather than discovered later.
 
 | Gap | Phase | Note |
 |---|---|---|
-| **No implementation — 0 lines of Go** | 1 | The single largest gap. `make up` cannot work until `cmd/` exists. The schema and the reference hot path *are* executable and verified; the Go Redis adapter must load `hot_path.lua` unchanged so that verification stays meaningful |
+| **No service yet** | 1 | The engine is built and verified as a library, but nothing serves it: no gRPC or REST transport, no `paymentd` or `payment-worker` binary, no payments, entitlements, operational surface or UI. `make up` cannot serve traffic until Phase 2 lands. The Go Redis adapter loads `hot_path.lua` unchanged, so the cluster-mode verification of the reference functions stays meaningful |
 | Post-paid invoicing | 2 | Designed, not built |
 | Coupons, discounts, trials, quantity subscriptions | 2 | Designed in 002; absent from 001 |
 | Invoice generation | 2 | Phase 1 collects payments; it issues no invoices |

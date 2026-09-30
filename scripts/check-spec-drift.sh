@@ -18,6 +18,7 @@ ReconcileReport|operation_type='reconcile'|compensating row to heal|heals? the b
 billing\.allocate|transfers complete through transfer_out / transfer_in intents (D33)
 webhooks/\{provider\}([^/]|$)|webhooks arrive at /webhooks/{provider}/{account} (D36)
 Charge\.Job|job budgets are keyed by Subjects["job"] (D30)
+[Ii]mplementation not started|no Go code yet|\b0 lines of Go|the build status is the task count in ROADMAP.md, which this script checks against tasks.md
 EOF
 )
 
@@ -38,4 +39,25 @@ while IFS='|' read -r -a parts; do
 done <<< "$retired"
 
 [ "$fail" -eq 0 ] && echo "no retired mechanism is described as current"
+
+# A status claim that nothing checks goes stale: ROADMAP.md said "implementation not started" while
+# forty tasks were done and verified. So the claim is DERIVED — ROADMAP.md must state each spec's task
+# count exactly as its tasks.md has it, and a change to one without the other fails here. A task line
+# is "- [ ] **R…/T…" (done: "[x]").
+status_fail=0
+for tasks in specs/*/tasks.md; do
+  spec=$(basename "$(dirname "$tasks")")
+  total=$(grep -cE '^- \[[ x]\] \*\*[RT][0-9]' "$tasks" || true)
+  done_=$(grep -cE '^- \[x\] \*\*[RT][0-9]' "$tasks" || true)
+  want="Tasks: ${done_} of ${total} done (specs/${spec}/tasks.md)"
+  if ! grep -qF "$want" ROADMAP.md; then
+    status_fail=1
+    echo "STALE STATUS: ROADMAP.md does not state this spec's task count as tasks.md has it."
+    echo "    expected the line: $want"
+    have=$(grep -F "(specs/${spec}/tasks.md)" ROADMAP.md | grep -F 'Tasks:' || true)
+    [ -n "$have" ] && echo "    found:             $have"
+  fi
+done
+[ "$status_fail" -eq 0 ] && echo "ROADMAP.md states every spec's task count as its tasks.md has it"
+[ "$status_fail" -eq 0 ] || fail=1
 exit "$fail"

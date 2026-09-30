@@ -3,8 +3,9 @@ COMPOSE := docker compose -f deploy/docker-compose.yml
 MODULE  := github.com/truongpx396/intel-payment
 
 .DEFAULT_GOAL := help
-.PHONY: help build test test-integration lint arch-lint verify-portability verify-boundary verify-schema verify-hot-path \
-        verify-deploy e2e e2e-install up up-jetstream down down-volumes logs migrate seed proto fmt vuln secrets ci clean
+.PHONY: help build test test-integration fuzz mutation mutation-diff verify-red-green verify-tdd-gates lint arch-lint verify-portability \
+        verify-boundary verify-schema verify-hot-path verify-deploy e2e e2e-install up up-jetstream down down-volumes logs \
+        migrate seed proto fmt vuln secrets ci clean
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) | \
@@ -22,6 +23,22 @@ test: ## Unit tests + every conformance suite (parallel, shuffled, race detector
 
 test-integration: ## Integration tests (Testcontainers: real Redis + Postgres; needs Docker)
 	go test -race -count=1 -shuffle=on -tags=integration ./...
+
+# Test-driven development, with the evidence checkable (docs/testing.md).
+fuzz: ## Search every fuzz target beyond its seeds (FUZZTIME=20s each); commit a failing input from testdata/fuzz with its fix
+	scripts/fuzz.sh
+
+mutation: ## Mutation-test every target against its thresholds — do the tests fail when the code is wrong? (minutes)
+	scripts/mutation.sh
+
+mutation-diff: ## Mutation-test only the lines changed since REF, committed or not (REF=origin/main) — what a pull request is held to
+	scripts/mutation.sh --diff $(or $(REF),origin/main)
+
+verify-red-green: ## Prove the branch was test-driven: a failing tests-only commit precedes the change (REF=origin/main)
+	scripts/verify-red-green.sh $(or $(REF),origin/main)
+
+verify-tdd-gates: ## Show the TDD gates refuse what they should (red-green cases, a planted mutation survivor); needs gremlins
+	scripts/verify-tdd-gates.sh
 
 fmt: ## Format
 	gofmt -l -w . && go mod tidy
@@ -68,7 +85,9 @@ e2e-install: ## Install the e2e dependencies
 e2e: ## Run the e2e suite against E2E_BASE_URL (default: the local `make up` stack)
 	cd e2e && E2E_BASE_URL=$${E2E_BASE_URL:-http://localhost:8080} npx playwright test
 
-ci: build test test-integration lint verify-portability verify-boundary vuln verify-hot-path verify-deploy ## Everything CI runs (verify-schema needs an empty DB)
+# verify-red-green and mutation-diff read the branch's history, so they run on a branch, not here: run
+# `make verify-red-green mutation-diff` before opening a pull request. verify-schema needs an empty DB.
+ci: build test fuzz test-integration lint verify-portability verify-boundary verify-tdd-gates vuln verify-hot-path verify-deploy ## Everything CI runs on every change
 
 ## ---- run ------------------------------------------------------------------
 up: ## Start the stack (postgres + redis + migrate + paymentd + worker)

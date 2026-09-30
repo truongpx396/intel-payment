@@ -1,6 +1,9 @@
 package domain_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strconv"
 	"testing"
 	"time"
 
@@ -99,3 +102,63 @@ func TestGrantAndTransferFingerprints(t *testing.T) {
 		t.Fatal("op must matter")
 	}
 }
+
+// The fingerprint is STORED — in the hot guard and in the durable one — and compared on every retry.
+// If its encoding ever changed, every retry in flight across a deploy would be an ErrIdemConflict.
+// These tests therefore pin the encoding itself, built by hand from the documented form
+// (length-prefixed fields, in this order), not merely its properties.
+func sha(canonical string) string {
+	sum := sha256.Sum256([]byte(canonical))
+	return hex.EncodeToString(sum[:])
+}
+
+func TestChargeFingerprintIsTheDocumentedEncoding(t *testing.T) {
+	t.Parallel()
+	canonical := "5:usage" + "15:t1/workspace:w1" + "3:100" + "5:query" + "8:llm.chat" + "3:gpt" +
+		"1:2" + "2:in" + "2:10" + "3:out" + "1:5" + // quantities, sorted by unit
+		"1:2" + "3:job" + "2:j1" + "4:user" + "2:u1" + // subjects, sorted by kind
+		"30:2026-09-29T12:00:00.000000123Z"
+	if got, want := charge().Fingerprint(), sha(canonical); got != want {
+		t.Fatalf("the canonical form changed:\n got %s\nwant %s", got, want)
+	}
+
+	// One unit named twice: sorted by unit, then amount — so both listings encode identically.
+	c := charge()
+	c.Subjects = nil
+	dup := "5:usage" + "15:t1/workspace:w1" + "3:100" + "5:query" + "8:llm.chat" + "3:gpt" +
+		"1:2" + "1:u" + "1:1" + "1:u" + "1:2" + "1:0" + "30:2026-09-29T12:00:00.000000123Z"
+	for _, qs := range [][]domain.Quantity{{{Unit: "u", Amount: 1}, {Unit: "u", Amount: 2}}, {{Unit: "u", Amount: 2}, {Unit: "u", Amount: 1}}} {
+		c.Quantities = qs
+		if got, want := c.Fingerprint(), sha(dup); got != want {
+			t.Fatalf("quantities %v:\n got %s\nwant %s", qs, got, want)
+		}
+	}
+}
+
+func TestGrantAndTransferFingerprintsAreTheDocumentedEncoding(t *testing.T) {
+	t.Parallel()
+	org := domain.Scope{Realm: "t1", Kind: "org", ID: "o1"}
+	ws := domain.Scope{Realm: "t1", Kind: "workspace", ID: "w1"}
+
+	g := domain.Grant{Scope: org, Amount: 100, Reason: "purchase"}
+	if got, want := g.Fingerprint(), sha("5:grant"+"9:t1/org:o1"+"7:general"+"3:100"+"8:purchase"+"0:"); got != want {
+		t.Errorf("grant:\n got %s\nwant %s", got, want)
+	}
+	exp := time.Date(2027, 1, 2, 3, 4, 5, 0, time.UTC)
+	g.Pool, g.ExpiresAt = "promo", &exp
+	if got, want := g.Fingerprint(), sha("5:grant"+"9:t1/org:o1"+"5:promo"+"3:100"+"8:purchase"+"20:2027-01-02T03:04:05Z"); got != want {
+		t.Errorf("expiring grant:\n got %s\nwant %s", got, want)
+	}
+
+	tr := domain.Transfer{From: org, To: ws, FromPool: "promo", Amount: 5, Reason: "allocate", MaxDestBalance: 50}
+	if got, want := tr.Fingerprint(), sha("8:transfer"+"9:t1/org:o1"+"5:promo"+"15:t1/workspace:w1"+"7:general"+"1:5"+"8:allocate"+"2:50"); got != want {
+		t.Errorf("transfer:\n got %s\nwant %s", got, want)
+	}
+
+	if got, want := domain.CorrectionFingerprint(domain.OpCorrection, org, "", -7, "fix-1"), sha(lp(string(domain.OpCorrection))+"9:t1/org:o1"+"7:general"+"2:-7"+"5:fix-1"); got != want {
+		t.Errorf("correction:\n got %s\nwant %s", got, want)
+	}
+}
+
+// lp length-prefixes one field, as the canonical form does.
+func lp(s string) string { return strconv.Itoa(len(s)) + ":" + s }

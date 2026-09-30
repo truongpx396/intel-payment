@@ -1,6 +1,6 @@
 # intel-payment Constitution
 
-**Version**: 1.1.0 | **Ratified**: 2026-09-27 | **Amended**: 2026-09-28
+**Version**: 1.2.0 | **Ratified**: 2026-09-27 | **Amended**: 2026-09-30
 
 This project moves money. A bug here is not a degraded experience — it is a customer charged
 twice, a customer charged for nothing, or revenue quietly lost. These principles exist because
@@ -74,10 +74,27 @@ specific host's string is a defect.
 
 ### X. Test-Driven, Especially for Failure
 
-The conformance suite precedes the implementation. Every invariant that can be tested is, in a
-test named for it. The failure paths — replay, concurrency, cancellation, tampering, outage,
-drift, refund past spend — get more attention than the happy path, because the happy path is the
-one that gets exercised in development anyway.
+A test drives the code, in this order: a failing test, the least code that passes it, then
+cleanup. The conformance suite precedes the implementation; for every other change a test that has
+been **seen to fail** precedes the code it tests, because a test that has never failed has not been
+shown to test anything.
+
+- **Red is evidence, and it is checked.** A change to production code arrives as a tests-only commit
+  that fails for the reason it states, followed by the change that makes it pass
+  (`scripts/verify-red-green.sh`, CI job `red-green`). A change that genuinely cannot be test-driven
+  says so, with a reason, as `TDD-Exempt:`. "Hard to test" is not a reason; it is a finding about
+  the design.
+- **Every invariant that can be tested is, in a test named for it.** The failure paths — replay,
+  concurrency, cancellation, tampering, outage, drift, refund past spend — get more attention than
+  the happy path, because the happy path is the one that gets exercised in development anyway.
+- **Where examples are not enough, state a property.** Arithmetic that must never wrap, canonical
+  encodings that decide whether a retry is a replay or a conflict, and time logic that decides when a
+  limit's counter disappears each have a fuzz target, held to an independent reference. Its seed
+  corpus is a regression test, and a failing input is committed with its fix.
+- **Tests are themselves tested.** Mutation testing asks whether a test fails when the code is
+  wrong. A survivor that is not an equivalent mutant is a missing test, and the thresholds only rise.
+
+The practice, the commit shape and the tiers are in [docs/testing.md](../../docs/testing.md).
 
 ### XI. Verification Before Completion (NON-NEGOTIABLE)
 
@@ -101,11 +118,13 @@ secrets are server-side only.
 
 ## Quality Gates
 
-Before merge: `make ci` green (build, tests, conformance suites, lint, architecture graph,
-portability check, vulnerability scan, the reference hot path on Redis in cluster mode); the schema
-verified on a real PostgreSQL by `scripts/verify-schema.sh`; no document describing a retired
-mechanism (`scripts/check-spec-drift.sh`); contracts updated in the same commit; the verification
-output pasted, not summarized.
+Before merge: `make ci` green (build, tests, conformance suites, fuzz, lint, architecture graph,
+portability check, vulnerability scan, the reference hot path on Redis in cluster mode); a failing
+test-only commit ahead of every production change (`red-green`) and the lines the change touched
+surviving mutation (`mutation-diff`); the schema verified on a real PostgreSQL by
+`scripts/verify-schema.sh`; no document describing a retired mechanism
+(`scripts/check-spec-drift.sh`); contracts updated in the same commit; the verification output
+pasted, not summarized.
 
 Before release: load test against the scale envelope; chaos exercises (hot-store loss, failover to
 a lagging replica, truncated AOF, webhook storm, a processor killed mid-event, injected drift, poison
@@ -120,3 +139,4 @@ relaxed.
 | Version | Change | Rationale |
 |---|---|---|
 | 1.1.0 | II clarified: key reuse with a different request is an error; a time-bounded guard requires refusing operations older than its bound. III gained examples. Quality gates gained the design verifications | A permanent per-event guard cannot scale ([D32](../../specs/001-metering-billing-core/design-decisions.md)); bounding it without refusing stale operations would have *relaxed* II, so the refusal is part of the principle. The examples in III are the three second-writer bugs the second design review found or pre-empted |
+| 1.2.0 | X expanded from "the suite precedes the implementation" to a checked practice: red before green with evidence, properties for arithmetic/encodings/time, and mutation testing of the tests. Quality gates gained `red-green`, fuzz and `mutation-diff` | A review of the task list found the order was asserted, not shown: suites and the code they verify landed in single commits, nothing recorded a red run, and the first fuzz and mutation runs found two defects in reviewed code (a reordered duplicate unit changed a request fingerprint; a daily counter in a zone that skipped a calendar date was given a negative lifetime) and a dozen money-path boundaries no test pinned. A rule only a reviewer can see is followed until the first deadline |

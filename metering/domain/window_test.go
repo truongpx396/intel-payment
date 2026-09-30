@@ -99,3 +99,99 @@ func TestJobBucketIsUnbucketed(t *testing.T) {
 		t.Fatal("a balance limit has no counter")
 	}
 }
+
+// A counter must outlive its window, or a limit silently resets early; it must not outlive it by
+// more than the margin, or keys pile up. Both ends are pinned with exact values.
+func TestHourlyBucketLivesUntilTheHourEndsPlusTheMargin(t *testing.T) {
+	t.Parallel()
+	l := domain.Limit{Name: "h", Window: domain.Hourly}
+	cases := []struct {
+		at   time.Time
+		key  string
+		left time.Duration
+	}{
+		{time.Date(2026, 9, 29, 12, 30, 0, 0, time.UTC), "2026092912Z", 30 * time.Minute},
+		{time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC), "2026092912Z", time.Hour},
+		{time.Date(2026, 9, 29, 12, 59, 59, 0, time.UTC), "2026092912Z", time.Second},
+		{time.Date(2026, 9, 29, 23, 15, 0, 0, time.UTC), "2026092923Z", 45 * time.Minute}, // the last hour of the day
+	}
+	for _, c := range cases {
+		b, err := l.WriteBucket(c.at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if b.Key != c.key || b.TTL != c.left+time.Hour {
+			t.Errorf("%s: got %+v, want key %q ttl %v", c.at.Format(time.RFC3339), b, c.key, c.left+time.Hour)
+		}
+	}
+}
+
+func TestRollingBucketLivesForTheWindowPlusOneBucket(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	hour := domain.Limit{Name: "r", Window: domain.Rolling, Dur: time.Hour} // width 5m
+	if b, _ := hour.WriteBucket(now); b.TTL != time.Hour+5*time.Minute {
+		t.Errorf("ttl %v, want 1h5m", b.TTL)
+	}
+	// A window shorter than RollingBuckets seconds still gets one-second buckets, not zero-width ones.
+	short := domain.Limit{Name: "r", Window: domain.Rolling, Dur: 6 * time.Second}
+	b, _ := short.WriteBucket(now)
+	if b.TTL != 7*time.Second {
+		t.Errorf("a 6s window has 1s buckets, so ttl is 7s: %v", b.TTL)
+	}
+	next, _ := short.WriteBucket(now.Add(time.Second))
+	if next.Key == b.Key {
+		t.Errorf("buckets advance every second: %q == %q", next.Key, b.Key)
+	}
+	if read, _ := short.ReadBuckets(now); len(read) != domain.RollingBuckets {
+		t.Errorf("a rolling read always covers %d buckets, got %d", domain.RollingBuckets, len(read))
+	}
+}
+
+func TestBucketsRefuseWhatHasNoCounter(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	if _, err := (domain.Limit{Name: "b", Window: domain.Balance}).ReadBuckets(now); err == nil {
+		t.Error("a balance limit is read from the books, not from a counter")
+	}
+	if _, err := (domain.Limit{Name: "x", Window: domain.Daily, TZ: "Mars/Olympus"}).WriteBucket(now); err == nil {
+		t.Error("an unknown zone must not silently count in UTC")
+	}
+	if _, err := (domain.Limit{Name: "x", Window: domain.Hourly, TZ: "Mars/Olympus"}).WriteBucket(now); err == nil {
+		t.Error("an unknown zone must not silently count in UTC")
+	}
+}
+
+// Asia/Kolkata is UTC+5:30, so its hours do not line up with UTC's. The counter must live to the end
+// of the LOCAL hour, not the UTC one.
+func TestHourlyBucketInAHalfHourZoneEndsOnTheLocalHour(t *testing.T) {
+	t.Parallel()
+	l := domain.Limit{Name: "h", Window: domain.Hourly, TZ: "Asia/Kolkata"}
+	now := time.Date(2026, 9, 29, 12, 15, 0, 0, time.UTC) // 17:45 in Kolkata
+	b, err := l.WriteBucket(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Key != "2026092917+0530" || b.TTL != 15*time.Minute+time.Hour {
+		t.Fatalf("got %+v; want key 2026092917+0530 and 15 minutes to the local hour plus the margin", b)
+	}
+}
+
+// Samoa skipped 30 December 2011 entirely. Midnight of the date that does not exist lies in the
+// past, so a naive "next midnight" gave the counter a negative lifetime and Redis deleted it at once.
+func TestDailyBucketSurvivesAZoneThatSkippedACalendarDate(t *testing.T) {
+	t.Parallel()
+	l := domain.Limit{Name: "d", Window: domain.Daily, TZ: "Pacific/Apia"}
+	now := time.Date(2011, 12, 29, 12, 0, 0, 0, time.UTC) // 02:00 on the 29th, the day before the skip
+	b, err := l.WriteBucket(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.TTL <= time.Hour {
+		t.Fatalf("a counter written on the 29th got a lifetime of %v; it would be deleted immediately", b.TTL)
+	}
+	// It must run to the moment local time jumps to the 31st (2011-12-30 10:00 UTC), plus the margin.
+	if want := 22*time.Hour + time.Hour; b.TTL != want {
+		t.Fatalf("ttl %v, want %v", b.TTL, want)
+	}
+}

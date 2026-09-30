@@ -112,3 +112,20 @@ func TestRehydrateSurfacesAHotRefusal(t *testing.T) {
 		t.Fatal("a rehydrate failure is the caller's error")
 	}
 }
+
+// The re-read is bounded so a shard that keeps being bumped is reported as an outage rather than
+// looping: three reads of the books, not two and not four.
+func TestRehydrateReadsTheBooksExactlyThreeTimesBeforeGivingUp(t *testing.T) {
+	t.Parallel()
+	r := newRig(t, rigOpt{})
+	r.bal.rehyd = func(domain.Scope, ports.RehydrateState) (ports.RehydrateOutcome, error) {
+		return ports.RehydrateStaleGen, nil
+	}
+	r.bal.debit = func(domain.Charge) (domain.Receipt, error) { return domain.Receipt{}, domain.ErrColdScope }
+	if _, err := r.m.Record(context.Background(), event("k")); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(r.bal.rehydOn); n != 3 {
+		t.Fatalf("a shard that never settles is retried a bounded three times, got %d", n)
+	}
+}

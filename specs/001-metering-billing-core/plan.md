@@ -63,6 +63,7 @@ from the books ([operations.md](../../docs/operations.md#disaster-recovery-regio
 | Fail closed, fail loud | Pricing, entitlements and plan-sized limits fail closed; drift at equal sequence numbers and every regression page |
 | Clean architecture | `domain → ports → app → adapters`, machine-enforced; metering imports neither billing, entitlement nor events |
 | Contract-first | Every surface is a contract before code; the Redis half and the schema are *executable* contracts already |
+| Test-driven | Every task is a red/green pair: the suites precede the implementation, and a failing tests-only commit precedes every production change (`red-green`). Arithmetic, encodings and time carry fuzz targets against an independent reference; mutation testing checks the tests can fail ([docs/testing.md](../../docs/testing.md)) |
 | Configuration over code | Cards, limits, pools, plans, provider accounts and endpoints are data, audited by the database |
 | Verification before completion | `verify-schema`, `verify-hot-path` and `check-spec-drift` run in CI; no task is done without its output |
 
@@ -95,10 +96,11 @@ design verifications already exist and pass.
 suites pass against Testcontainers Redis **in cluster mode** and Postgres, including a forced
 rollback mid-traffic.
 
-**Phase 2 — Transports.** Proto, gRPC server, the wrapped client, REST handlers including the admin
-API, `api/openapi/v1.yaml` with a handler-conformance check, generated TypeScript and Python
-clients. **Done when** one integration suite passes identically against the in-process meter and
-the client stub (FR-044).
+**Phase 2 — Transports.** Suites first, red: the equivalence suite (FR-044), the gRPC status-mapping
+table, the REST error table, the authorization matrix. Then proto, gRPC server, the wrapped client,
+REST handlers including the admin API, `api/openapi/v1.yaml` with a handler-conformance check,
+generated TypeScript and Python clients. **Done when** the one equivalence suite passes identically
+against the in-process meter and the client stub (FR-044).
 
 **Phase 3 — Payments.** The webhook inbox (ingress + processor), provider accounts, the Stripe
 adapter, then Polar and PayPal against the same suites; disputes, partial refunds, auto top-up.

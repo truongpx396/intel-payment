@@ -1,0 +1,125 @@
+# Equivalent mutants: a mutant no test COULD tell from the code (`a > b` -> `a >= b` where a == b changes
+# nothing). scripts/mutation.sh excuses a surviving mutant only when an entry here names its file, its
+# operator, its column (from the first non-blank character) and the exact text of its line — so editing
+# the line lapses the excuse, and an excuse for one operator never covers a neighbour on the same line.
+# Every entry needs a reason (`why`); an entry with none stops the run. A survivor that is NOT equivalent
+# is a missing test: write the test, do not add an entry. Reviewed like code (docs/testing.md).
+
+[[equivalent]]
+file = "metering/domain/pool.go"
+mutator = "CONDITIONALS_BOUNDARY"
+col = 29
+line = 'return eligible[i].Priority < eligible[j].Priority'
+why = "reached only when the priorities differ, so < and <= agree"
+
+[[equivalent]]
+file = "metering/domain/pool.go"
+mutator = "CONDITIONALS_BOUNDARY"
+col = 25
+line = 'return eligible[i].Name < eligible[j].Name'
+why = "EligiblePools returns names only, so swapping two equal names cannot be observed"
+
+[[equivalent]]
+file = "metering/domain/receipt.go"
+mutator = "CONDITIONALS_BOUNDARY"
+col = 35
+line = 'if g.ExpiresAt != nil && g.Amount < 0 {'
+why = "a zero amount was already refused by the check above, so < and <= agree here"
+
+[[equivalent]]
+file = "metering/domain/window.go"
+mutator = "CONDITIONALS_BOUNDARY"
+col = 6
+line = 'if w < time.Second {'
+why = "at equality the assignment writes the value w already holds"
+
+[[equivalent]]
+file = "metering/domain/credits.go"
+mutator = "CONDITIONALS_BOUNDARY"
+col = 7
+line = 'if (o > 0 && c > math.MaxInt64-o) || (o < 0 && c < math.MinInt64-o) {'
+why = "at o == 0 the second operand (c > MaxInt64-o, c < MinInt64-o) is false for every c: adding zero cannot overflow"
+
+[[equivalent]]
+file = "metering/domain/credits.go"
+mutator = "CONDITIONALS_BOUNDARY"
+col = 41
+line = 'if (o > 0 && c > math.MaxInt64-o) || (o < 0 && c < math.MinInt64-o) {'
+why = "at o == 0 the second operand (c > MaxInt64-o, c < MinInt64-o) is false for every c: adding zero cannot overflow"
+
+[[equivalent]]
+file = "metering/domain/limit.go"
+mutator = "CONDITIONALS_BOUNDARY"
+col = 10
+line = 'if c.Max < out[i].Max {'
+why = "at equality the assignment writes the value the field already holds"
+
+[[equivalent]]
+file = "metering/domain/limit.go"
+mutator = "CONDITIONALS_BOUNDARY"
+col = 6
+line = 'if h < 0 {'
+why = "at h == 0 the assignment writes the value h already holds"
+
+[[equivalent]]
+file = "metering/domain/limit.go"
+mutator = "CONDITIONALS_BOUNDARY"
+col = 23
+line = 'if !haveHeadroom || h < headroom {'
+why = "at equality the assignment writes the value headroom already holds"
+
+[[equivalent]]
+file = "metering/domain/money.go"
+mutator = "CONDITIONALS_BOUNDARY"
+col = 18
+line = 'if (o.MinorUnits > 0 && m.MinorUnits > math.MaxInt64-o.MinorUnits) ||'
+why = "at o == 0 the second operand (m > MaxInt64-o) is false for every m: adding zero cannot overflow"
+
+[[equivalent]]
+file = "metering/domain/money.go"
+mutator = "CONDITIONALS_BOUNDARY"
+col = 15
+line = '(o.MinorUnits < 0 && m.MinorUnits < math.MinInt64-o.MinorUnits) {'
+why = "at o == 0 the second operand (m < MinInt64-o) is false for every m: adding zero cannot overflow"
+
+[[equivalent]]
+file = "metering/domain/fingerprint.go"
+mutator = "CONDITIONALS_BOUNDARY"
+col = 23
+line = 'return sorted[i].Unit < sorted[j].Unit'
+why = "reached only when the units differ, so < and <= agree"
+
+[[equivalent]]
+file = "metering/domain/fingerprint.go"
+mutator = "CONDITIONALS_BOUNDARY"
+col = 25
+line = 'return sorted[i].Amount < sorted[j].Amount'
+why = "ties are equal in both Unit and Amount, so their order cannot be observed"
+
+[[equivalent]]
+file = "metering/app/journal.go"
+mutator = "CONDITIONALS_BOUNDARY"
+col = 10
+line = 'if delay > 5*time.Minute {'
+why = "the delay is 1s << n, a power of two of seconds, and 300s is not one, so it can never equal 5m"
+
+[[equivalent]]
+file = "metering/app/coalesce.go"
+mutator = "CONDITIONALS_BOUNDARY"
+col = 16
+line = 'if len(c.last) > 4096 { // bound the map: drop what has already aged out'
+why = "prunes one entry sooner, and only ever drops entries that had already expired; no result changes"
+
+[[equivalent]]
+file = "metering/app/coalesce.go"
+mutator = "CONDITIONALS_BOUNDARY"
+col = 16
+line = 'if now.Sub(at) >= c.window {'
+why = "an entry exactly one window old is treated as expired by allow() whether it is kept or dropped"
+
+[[equivalent]]
+file = "metering/app/rehydrate.go"
+mutator = "ARITHMETIC_BASE"
+col = 61
+line = 'pools := make(map[domain.Pool]domain.Credits, len(st.Booked)+len(st.Suspense))'
+why = "a map capacity hint; a negative hint is treated as zero, so nothing observable changes"

@@ -37,8 +37,15 @@ func (c *canon) sum() string {
 }
 
 func (c *canon) quantities(qs []Quantity) *canon {
+	// A multiset: the pricer sums quantities, so no order of them is a different request — not even
+	// when one unit is named twice, which is why the amount breaks the tie.
 	sorted := append([]Quantity(nil), qs...)
-	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Unit < sorted[j].Unit })
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].Unit != sorted[j].Unit {
+			return sorted[i].Unit < sorted[j].Unit
+		}
+		return sorted[i].Amount < sorted[j].Amount
+	})
 	c.i(int64(len(sorted)))
 	for _, q := range sorted {
 		c.s(string(q.Unit)).i(q.Amount)
