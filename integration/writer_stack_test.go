@@ -13,11 +13,13 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nats-io/nats.go"
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/truongpx396/intel-payment/internal/chaos"
 	"github.com/truongpx396/intel-payment/metering"
 	pgarchive "github.com/truongpx396/intel-payment/metering/adapters/driven/archive/postgres"
+	"github.com/truongpx396/intel-payment/metering/adapters/driven/natsjetstream"
 	pgadapter "github.com/truongpx396/intel-payment/metering/adapters/driven/postgres"
 	hotredis "github.com/truongpx396/intel-payment/metering/adapters/driven/redis"
 	"github.com/truongpx396/intel-payment/metering/adapters/driven/redis/redistest"
@@ -46,6 +48,9 @@ type wopts struct {
 	srv       *redistest.Redis
 	proxied   bool
 	watches   ports.WatchSource
+	// jetstream reads intents through the optional bus: the hot functions still write the Redis
+	// outbox, a Relay forwards it to JetStream, and the writer reads JetStream.
+	jetstream bool
 }
 
 // wstack is the whole durable side over real stores: Postgres for the books, Redis for the hot tier
@@ -68,6 +73,8 @@ type wstack struct {
 	fault   *faultBalance
 	group   string
 	stream  *scopedStream
+	relay   *natsjetstream.Relay // nil unless jetstream
+	jsOpts  natsjetstream.IntentsOptions
 
 	mu     sync.Mutex
 	scopes map[domain.Scope]bool
@@ -145,8 +152,14 @@ func newWriterStack(t *testing.T, o wopts) *wstack {
 	streamRdb := s.client()
 	t.Cleanup(func() { _ = streamRdb.Close() })
 	s.group = fmt.Sprintf("test-%d", seq.Add(1))
-	inner, err := redisstreams.NewStream(streamRdb, redisstreams.IntentOptions{Consumer: "w1", Group: s.group, Clock: s.clock})
-	must(t, err)
+	var inner ports.IntentStream
+	if o.jetstream {
+		inner = s.newJetStreamIntents(streamRdb)
+	} else {
+		in, err := redisstreams.NewStream(streamRdb, redisstreams.IntentOptions{Consumer: "w1", Group: s.group, Clock: s.clock})
+		must(t, err)
+		inner = in
+	}
 	s.stream = &scopedStream{inner: inner, mine: s.owns, mu: &sync.Mutex{}, injected: map[string]bool{}}
 	s.fault = &faultBalance{BalanceStore: s.store}
 
@@ -234,6 +247,10 @@ func (s *scopedStream) Read(ctx context.Context, sh domain.Shard, count int, min
 func (s *scopedStream) isMine(d ports.Delivery) bool {
 	if d.ParseErr == nil {
 		return s.mine(d.Intent.Scope)
+	}
+	// An entry that does not parse is this test's if it names one of its scopes, or was injected by it.
+	if s.mine(domain.Scope{Realm: domain.Realm(d.Fields["realm"]), Kind: d.Fields["kind"], ID: d.Fields["id"]}) {
+		return true
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -337,9 +354,14 @@ func (s *wstack) drain() {
 	s.t.Helper()
 	ctx := context.Background()
 	quiet := 0
-	for pass := 0; pass < 40; pass++ {
+	for pass := 0; pass < 400; pass++ {
 		total := 0
 		for _, sh := range s.shards() {
+			if s.relay != nil {
+				if err := s.relay.Drain(ctx, sh); err != nil {
+					s.t.Fatalf("relay shard %d: %v", sh, err)
+				}
+			}
 			n, err := s.writer.Drain(ctx, sh)
 			if err != nil {
 				s.t.Fatalf("drain shard %d: %v", sh, err)
@@ -352,12 +374,50 @@ func (s *wstack) drain() {
 		}
 		// Two empty passes, a few milliseconds apart: an entry left un-acked behind a gap only becomes
 		// claimable once it has been idle for AckWait.
-		if quiet++; quiet >= 2 {
+		if quiet++; quiet >= 2 && (s.relay == nil || s.settled()) {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	s.t.Fatal("the writer did not reach quiescence in 40 passes")
+	s.t.Fatal("the writer did not reach quiescence")
+}
+
+// settled reports whether the stream holds nothing un-acknowledged or undelivered on any shard the test
+// has touched. It is only asked of JetStream, whose streams are the test's alone; on the shared Redis
+// outbox a neighbour's traffic would keep it from ever being true.
+func (s *wstack) settled() bool {
+	for _, sh := range s.shards() {
+		st, err := s.stream.Stats(context.Background(), sh)
+		if err != nil || st.Pending != 0 || st.Undelivered != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// newJetStreamIntents wires the optional bus: a Relay reads the Redis outbox through a group of its
+// own and forwards it, and the writer reads what the relay forwarded.
+func (s *wstack) newJetStreamIntents(rdb goredis.UniversalClient) ports.IntentStream {
+	s.t.Helper()
+	ctx := context.Background()
+	nc := s.natsConn()
+	io := natsjetstream.IntentsOptions{Clock: s.clock, Prefix: fmt.Sprintf("wjs%d", seq.Add(1)), AckWait: 100 * time.Millisecond, FetchWait: 50 * time.Millisecond}
+	s.jsOpts = io
+	src, err := redisstreams.NewStream(rdb, redisstreams.IntentOptions{Consumer: "relay", Group: fmt.Sprintf("relay-%d", seq.Add(1)), Clock: s.clock})
+	must(s.t, err)
+	s.relay, err = natsjetstream.NewRelay(ctx, nc, src, natsjetstream.RelayOptions{Intents: io, AckWait: 100 * time.Millisecond})
+	must(s.t, err)
+	in, err := natsjetstream.NewIntents(ctx, nc, io)
+	must(s.t, err)
+	return in.WithRelay(s.relay)
+}
+
+func (s *wstack) natsConn() *nats.Conn {
+	s.t.Helper()
+	nc, err := natsSrv.Connect()
+	must(s.t, err)
+	s.t.Cleanup(func() { nc.Close() })
+	return nc
 }
 
 // ----------------------------------------------------------------- probes --
