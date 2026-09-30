@@ -211,15 +211,25 @@ func (*nullBus) Publish(context.Context, string, []byte) error { return nil }
 type metrics struct {
 	mu     sync.Mutex
 	counts map[string]int64
+	gauges map[string]int64 // the last value set
 }
 
-func newMetrics() *metrics { return &metrics{counts: map[string]int64{}} }
+func newMetrics() *metrics { return &metrics{counts: map[string]int64{}, gauges: map[string]int64{}} }
 func (m *metrics) Count(name string, n int64, _ ports.Labels) {
 	m.mu.Lock()
 	m.counts[name] += n
 	m.mu.Unlock()
 }
-func (*metrics) Gauge(string, int64, ports.Labels)     {}
+func (m *metrics) Gauge(name string, v int64, _ ports.Labels) {
+	m.mu.Lock()
+	m.gauges[name] = v
+	m.mu.Unlock()
+}
+func (m *metrics) gauge(name string) int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.gauges[name]
+}
 func (*metrics) Observe(string, float64, ports.Labels) {}
 func (m *metrics) get(name string) int64 {
 	m.mu.Lock()

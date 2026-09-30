@@ -22,6 +22,7 @@ type Deps struct {
 	Bus       ports.Bus            // warn/blocked events (redisstreams by default)
 	Quotas    ports.QuotaSource    // optional: sizes limits that name a max_entitlement
 	Archive   ports.UsageArchive   // required when LedgerGranularity=rollup
+	Stream    ports.IntentStream   // the writer's view of the outbox (redisstreams); unused by the Meter
 	Clock     ports.Clock          // required: the core reads no clock. adapters/driven/system.Clock{}
 	IDs       ports.IDSource       // required by the writer; adapters/driven/system.IDs
 	Metrics   ports.Metrics        // default: no-op. Invariant 15 needs a real one in production

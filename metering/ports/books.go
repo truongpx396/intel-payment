@@ -154,6 +154,10 @@ type BookTx interface {
 	// must agree. It returns the ids of the rows, in order.
 	Book(ctx context.Context, rows []LedgerRow) ([]string, error)
 
+	// HasSuspenseAt reports whether an entry (open or closed) was opened by the intent (gen, seq):
+	// how a redelivered DUPLICATE or POISON intent — which claimed no guard row of its own — is told
+	// from a sequence regression.
+	HasSuspenseAt(ctx context.Context, gen, seq int64) (bool, error)
 	OpenSuspense(ctx context.Context, s Suspense) (string, error)
 	CloseSuspense(ctx context.Context, id string) (bool, error)
 
@@ -226,6 +230,8 @@ type BookStore interface {
 
 	// ParkDead records an intent that exhausted its retry budget. It never drops it.
 	ParkDead(ctx context.Context, d DeadIntent) error
+
+	WriterBooks
 }
 
 // ArchivedEvent is one usage event's full detail, kept per event when the ledger books a rollup.
@@ -251,4 +257,110 @@ type UsageArchive interface {
 	Append(ctx context.Context, events []ArchivedEvent) error
 	// Events reads a scope's events in [from, to), oldest first, for re-pricing and breakdowns.
 	Events(ctx context.Context, scope domain.Scope, from, to time.Time, limit int) ([]ArchivedEvent, error)
+}
+
+// -------------------------------------------------- the writer's wider reads --
+
+// ScopeState is one scope's watermark with its last-booked time, for per-shard sweeps.
+type ScopeState struct {
+	Scope     domain.Scope
+	Watermark Watermark
+	UpdatedAt time.Time
+}
+
+// ReconcileRecord persists one reconcile run (reconcile_runs) and its findings (reconcile_findings).
+type ReconcileRecord struct {
+	Run       domain.ReconcileRun
+	StartedAt time.Time
+}
+
+// AuditRow is one (scope, pool) of the deep audit: booked must equal the checkpoint plus every
+// ledger row created after it.
+type AuditRow struct {
+	Pool              domain.Pool
+	Booked            domain.Credits
+	CheckpointBalance domain.Credits
+	CheckpointThrough time.Time // zero if there is no checkpoint yet
+	SumSince          domain.Credits
+	LatestRow         time.Time // created_at of the newest ledger row, zero if none
+	Advanced          bool      // the checkpoint was moved to LatestRow by this call
+}
+
+// SuspenseCount is a gauge value: open suspense entries by realm and reason.
+type SuspenseCount struct {
+	Realm  domain.Realm
+	Reason string
+	Count  int64
+}
+
+// WriterBooks is what the LedgerWriter's sweeps read beyond a booking transaction: which scopes
+// belong to a shard, what reconcile and audit compare, and what is waiting to be finished. Kept
+// separate from BookStore so the request tier's dependency stays as narrow as it can be.
+type WriterBooks interface {
+	// ScopesSince lists a shard's scopes whose watermark changed at or after `since` (the zero time
+	// = every scope), in a stable order, resuming after `after`. It is a range scan on
+	// (shard, updated_at): its cost follows that shard's activity, not history.
+	ScopesSince(ctx context.Context, shard domain.Shard, since time.Time, after *domain.Scope, limit int) ([]ScopeState, error)
+
+	// LastReconcile returns when the shard's last reconcile of this kind started (zero if never).
+	LastReconcile(ctx context.Context, shard domain.Shard, kind domain.ReconcileKind) (time.Time, error)
+	// SaveReconcile records a run and its findings — one row per scope and pool, never netted.
+	SaveReconcile(ctx context.Context, r ReconcileRecord) error
+
+	// InTransit lists transfers that have been in transit since before `olderThan`, oldest first.
+	InTransit(ctx context.Context, olderThan time.Time, limit int) ([]TransferRecord, error)
+	// OldestInTransit is the age reference for metering_transfer_in_transit_age_seconds; zero if none.
+	OldestInTransit(ctx context.Context, realm domain.Realm) (time.Time, error)
+
+	// OpenSuspenseOlderThan lists open entries created before t that still need a correction issued.
+	OpenSuspenseOlderThan(ctx context.Context, before time.Time, limit int) ([]Suspense, error)
+	SuspenseCounts(ctx context.Context) ([]SuspenseCount, error)
+
+	// DueLots lists lots that have expired by `now` and still hold a remainder.
+	DueLots(ctx context.Context, now time.Time, limit int) ([]Lot, error)
+
+	// AuditScope reads, per pool, the figures a deep audit compares — booked balance, the opening
+	// checkpoint, and Σ ledger rows after it — in ONE transaction under the scope's lock, so no
+	// booking can land between the reads. With advance, it also moves each pool's checkpoint forward
+	// to its newest row, but ONLY for a pool it has just verified (booked == checkpoint + Σ since):
+	// a checkpoint is a statement that the history behind it has been proved.
+	AuditScope(ctx context.Context, scope domain.Scope, advance bool) ([]AuditRow, error)
+	// DetachableLedgerPartitions names the credit_ledger partitions every row of which is covered by
+	// a checkpoint — the only ones that may be detached and archived (FR-050).
+	DetachableLedgerPartitions(ctx context.Context) ([]string, error)
+	// DefaultPartitionRows counts rows in a DEFAULT partition (metering_default_partition_rows).
+	DefaultPartitionRows(ctx context.Context) (map[string]int64, error)
+}
+
+// --------------------------------------------------------- the intent stream --
+
+// Delivery is one stream entry handed to the writer.
+type Delivery struct {
+	ID       string            // the adapter's entry id
+	Fields   map[string]string // the raw entry, kept so a poison entry can be parked whole
+	Intent   domain.Intent     // valid only when ParseErr is nil
+	ParseErr error             // a malformed entry is parked, never dropped (FR-043)
+	Attempts int               // deliveries so far, including this one
+	Idle     time.Duration     // how long it sat un-acked before this delivery (0 for a first delivery)
+}
+
+// StreamStats describes one shard's outbox.
+type StreamStats struct {
+	Length            int64         // entries in the stream
+	Pending           int64         // delivered and not acked
+	OldestPendingAge  time.Duration // metering_outbox_age_seconds
+	Undelivered       int64         // entries no consumer has been given yet
+	OldestUndelivered time.Duration
+}
+
+// IntentStream is the writer's narrow view of the outbox: per-shard, in order, at-least-once. It is
+// separate from Bus because the writer needs shard ownership and in-order batches, not a generic
+// subscription (bus-subjects.md). Only the hot functions ever WRITE to it.
+type IntentStream interface {
+	// Read returns up to count deliveries: first the entries a dead consumer left un-acked past
+	// minIdle (older entries first, so order survives a takeover), then new ones.
+	Read(ctx context.Context, shard domain.Shard, count int, minIdle time.Duration) ([]Delivery, error)
+	// Ack acknowledges entries the writer has booked (or parked).
+	Ack(ctx context.Context, shard domain.Shard, ids ...string) error
+	Stats(ctx context.Context, shard domain.Shard) (StreamStats, error)
 }

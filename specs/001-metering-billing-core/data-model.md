@@ -45,6 +45,7 @@ The account of record. Append-only, partitioned by `created_at` (monthly).
 - `idem_key` — lookup only; uniqueness lives in the guards below
 - `gen`, `seq_from`, `seq_to`, `event_count` — the hot sequence numbers the row books. `event` granularity: one event per row. `rollup` granularity: one row per (scope, pool, resource, rate key, card version) per drain batch, with per-event detail in `usage_events`
 - `rate_card_version`, `cost_micros`, `resource`, `rate_key`, `quantities JSONB`, `subjects JSONB`, `actor_id`, `ref JSONB`, `occurred_at`, `created_at`
+- `created_at` is `clock_timestamp()`, **not** `now()`: `now()` is the instant a transaction *began*, and two writers overlapping on one scope commit in an order that disagrees with it — which would let a checkpoint's `through_created_at` split the ledger wrongly and make the audit report a phantom mismatch
 - Old partitions are **detached and archived**, never dropped, and only once `ledger_checkpoints` covers them.
 
 ### `ledger_checkpoints`

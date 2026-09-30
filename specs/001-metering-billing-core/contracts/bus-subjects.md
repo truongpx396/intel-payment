@@ -117,7 +117,7 @@ type Message struct {
 }
 ```
 
-The writer reads intents through a narrower port of the same adapter — `IntentStream.Read(shard, count)` / `Ack(shard, ids)` / `Claim(shard, minIdle)` — because it needs per-shard ownership and in-order batches, not a generic subscription.
+The writer reads intents through a narrower port of the same adapter — `IntentStream.Read(shard, count, minIdle)` (entries un-acked past `minIdle` are reclaimed first, oldest first, then new ones) / `Ack(shard, ids)` / `Stats(shard)` — because it needs per-shard ownership and in-order batches, not a generic subscription.
 
 ## Rules
 
@@ -142,4 +142,4 @@ The writer reads intents through a narrower port of the same adapter — `Intent
 - `Pending` reports a non-zero oldest-age within one ack-wait of a stalled consumer.
 - Under JetStream, an intent reaches the writer only after it is durable in the Redis outbox, and the relay's redelivery never books it twice.
 
-The intent-specific obligations — duplicate intents book once, a redelivery is told apart from a regression, a negative grant obeys `NegativeBalancePolicy` — belong to the `ConsistencyContract` ([hot-path-consistency.md §9](./hot-path-consistency.md#9-verification)).
+The intent-specific obligations — duplicate intents book once, a redelivery is told apart from a regression, a negative grant obeys `NegativeBalancePolicy` — belong to the `LedgerWriterContract` (booking, redelivery vs gap vs regression, suspense, reconcile) and the `ConsistencyContract` ([hot-path-consistency.md §9](./hot-path-consistency.md#9-verification): a rollback of the hot tier).
