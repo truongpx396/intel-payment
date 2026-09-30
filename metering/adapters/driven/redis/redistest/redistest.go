@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,6 +36,8 @@ type Redis struct {
 	Mode      Mode
 	Addr      string
 	Container testcontainers.Container
+
+	aofPath string // the incremental AOF, learned by AOFSize while the container is up
 }
 
 // Client returns a fresh client for it. Each caller owns and closes its own.
@@ -70,6 +73,18 @@ type Options struct {
 	// ACLFile is a host path to an ACL file (standalone only). With it the default user is whatever
 	// the file says — deploy/redis/users.acl turns it off — so a test can run as the service role.
 	ACLFile string
+
+	// The rest is for a test that destroys a Redis on purpose — standalone only.
+	//
+	// AppendFsync sets appendfsync ("always" makes the AOF exactly what has been acknowledged, so a
+	// test can truncate it at a known boundary). FixedPort publishes a port that survives Stop/Start.
+	// Network and Alias join a Docker network under a name other containers can reach, and ReplicaOf
+	// ("primary 6379") starts this Redis as a replica of one of them.
+	AppendFsync string
+	FixedPort   bool
+	Network     string
+	Alias       string
+	ReplicaOf   string
 }
 
 // RunWith launches Redis with options.
@@ -101,8 +116,35 @@ func RunWith(ctx context.Context, o Options) (*Redis, error) {
 		req.HostConfigModifier = func(hc *container.HostConfig) {
 			hc.PortBindings = network.PortMap{network.MustParsePort(port + "/tcp"): {{HostIP: netip.MustParseAddr("127.0.0.1"), HostPort: port}}}
 		}
+	} else if o.FixedPort {
+		p, err := freePort()
+		if err != nil {
+			return nil, err
+		}
+		port = fmt.Sprint(p)
+		args = append(args, "--port", port)
+		req.ExposedPorts = []string{port + "/tcp"}
+		req.HostConfigModifier = func(hc *container.HostConfig) {
+			hc.PortBindings = network.PortMap{network.MustParsePort(port + "/tcp"): {{HostIP: netip.MustParseAddr("127.0.0.1"), HostPort: port}}}
+		}
 	} else {
 		req.ExposedPorts = []string{"6379/tcp"}
+	}
+	if o.AppendFsync != "" {
+		args = append(args, "--appendfsync", o.AppendFsync)
+	}
+	if o.ReplicaOf != "" {
+		host, port, ok := strings.Cut(o.ReplicaOf, " ")
+		if !ok {
+			return nil, fmt.Errorf("redistest: ReplicaOf must be \"host port\", got %q", o.ReplicaOf)
+		}
+		args = append(args, "--replicaof", host, port)
+	}
+	if o.Network != "" {
+		req.Networks = []string{o.Network}
+		if o.Alias != "" {
+			req.NetworkAliases = map[string][]string{o.Network: {o.Alias}}
+		}
 	}
 	req.Cmd = args
 
@@ -116,11 +158,13 @@ func RunWith(ctx context.Context, o Options) (*Redis, error) {
 	}
 	addr := net.JoinHostPort(host, port)
 	if mode == Standalone {
-		mapped, err := c.MappedPort(ctx, "6379/tcp")
-		if err != nil {
-			return nil, err
+		if !o.FixedPort {
+			mapped, err := c.MappedPort(ctx, "6379/tcp")
+			if err != nil {
+				return nil, err
+			}
+			addr = net.JoinHostPort(host, mapped.Port())
 		}
-		addr = net.JoinHostPort(host, mapped.Port())
 	} else {
 		// Own every slot, as a one-node cluster.
 		if code, out, err := execIn(ctx, c, "redis-cli", "-p", port, "cluster", "addslotsrange", "0", "16383"); err != nil || code != 0 {

@@ -58,7 +58,10 @@ func (p *Proxy) accept() {
 
 func (p *Proxy) pipe(client net.Conn) {
 	defer p.wg.Done()
-	up, err := net.Dial("tcp", p.target)
+	p.mu.Lock()
+	target := p.target
+	p.mu.Unlock()
+	up, err := net.Dial("tcp", target)
 	if err != nil {
 		p.drop(client)
 		return
@@ -90,6 +93,21 @@ func (p *Proxy) drop(c net.Conn) {
 func (p *Proxy) Cut() {
 	p.mu.Lock()
 	p.cut = true
+	open := make([]net.Conn, 0, len(p.conns))
+	for c := range p.conns {
+		open = append(open, c)
+	}
+	p.mu.Unlock()
+	for _, c := range open {
+		_ = c.Close()
+	}
+}
+
+// Retarget points the proxy at another server and drops every open connection, so each client
+// reconnects to it: a failover, as the client sees it. Connections are refused only while cut.
+func (p *Proxy) Retarget(target string) {
+	p.mu.Lock()
+	p.target = target
 	open := make([]net.Conn, 0, len(p.conns))
 	for c := range p.conns {
 		open = append(open, c)

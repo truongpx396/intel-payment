@@ -248,6 +248,18 @@ func (t *bookTx) Book(ctx context.Context, rows []ports.LedgerRow) ([]string, er
 	return ids, nil
 }
 
+func (t *bookTx) HasSuspenseAt(ctx context.Context, gen, seq int64) (bool, error) {
+	r, k, i := t.key()
+	var ok bool
+	err := t.tx.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM credit_suspense WHERE realm = $1 AND scope_kind = $2 AND scope_id = $3 AND gen = $4 AND seq = $5)`,
+		r, k, i, gen, seq).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("postgres: probe suspense: %w", err)
+	}
+	return ok, nil
+}
+
 func (t *bookTx) OpenSuspense(ctx context.Context, s ports.Suspense) (string, error) {
 	r, k, i := t.key()
 	var id string

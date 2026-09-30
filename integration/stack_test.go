@@ -21,6 +21,7 @@ import (
 	"github.com/truongpx396/intel-payment/internal/chaos"
 	"github.com/truongpx396/intel-payment/internal/pgtest"
 	"github.com/truongpx396/intel-payment/metering"
+	"github.com/truongpx396/intel-payment/metering/adapters/driven/natsjetstream/natstest"
 	pgadapter "github.com/truongpx396/intel-payment/metering/adapters/driven/postgres"
 	pricingtable "github.com/truongpx396/intel-payment/metering/adapters/driven/pricing/table"
 	hotredis "github.com/truongpx396/intel-payment/metering/adapters/driven/redis"
@@ -32,8 +33,9 @@ import (
 )
 
 var (
-	pg    *pgtest.Postgres
-	redis *redistest.Redis
+	pg      *pgtest.Postgres
+	redis   *redistest.Redis
+	natsSrv *natstest.Server
 )
 
 func TestMain(m *testing.M) {
@@ -48,6 +50,12 @@ func TestMain(m *testing.M) {
 		_ = pg.Terminate(ctx)
 		os.Exit(1)
 	}
+	if natsSrv, err = natstest.Run(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		_ = redis.Terminate(ctx)
+		_ = pg.Terminate(ctx)
+		os.Exit(1)
+	}
 	rdb := redis.Client()
 	if _, err := hotredis.EnsureInstalled(ctx, rdb); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -55,6 +63,7 @@ func TestMain(m *testing.M) {
 	}
 	_ = rdb.Close()
 	code := m.Run()
+	_ = natsSrv.Terminate(ctx)
 	_ = redis.Terminate(ctx)
 	_ = pg.Terminate(ctx)
 	if code == 0 {
@@ -211,15 +220,25 @@ func (*nullBus) Publish(context.Context, string, []byte) error { return nil }
 type metrics struct {
 	mu     sync.Mutex
 	counts map[string]int64
+	gauges map[string]int64 // the last value set
 }
 
-func newMetrics() *metrics { return &metrics{counts: map[string]int64{}} }
+func newMetrics() *metrics { return &metrics{counts: map[string]int64{}, gauges: map[string]int64{}} }
 func (m *metrics) Count(name string, n int64, _ ports.Labels) {
 	m.mu.Lock()
 	m.counts[name] += n
 	m.mu.Unlock()
 }
-func (*metrics) Gauge(string, int64, ports.Labels)     {}
+func (m *metrics) Gauge(name string, v int64, _ ports.Labels) {
+	m.mu.Lock()
+	m.gauges[name] = v
+	m.mu.Unlock()
+}
+func (m *metrics) gauge(name string) int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.gauges[name]
+}
 func (*metrics) Observe(string, float64, ports.Labels) {}
 func (m *metrics) get(name string) int64 {
 	m.mu.Lock()
