@@ -5,6 +5,8 @@
 # other host would, and cannot reach around it.
 version: 3
 workdir: .
+excludeFiles:
+  - "^.*_test\\.go$"        # tests may import their own package from outside it
 allow:
   depOnAnyVendor: true      # infra SDKs are gated by depguard, not here
 
@@ -15,11 +17,14 @@ components:
   metering-driven:  { in: metering/adapters/driven/** }
   metering-driving: { in: metering/adapters/driving/** }
   metering-config:  { in: metering }
+  # Conformance suites: importable by an adapter's own tests, given constructors — they import no adapter.
+  metering-contracts: { in: metering/contracts }
   billing:          { in: billing/** }
   entitlement:      { in: entitlement/** }
   events:           { in: events/** }
   api:              { in: api/** }
   migrate:          { in: migrate }
+  testsupport:      { in: internal/** }   # containers and fault injection for tests; imports migrations so tests run against the real schema
   migrations:       { in: migrations }
   cmd:              { in: cmd/** }
 
@@ -27,10 +32,13 @@ deps:
   # metering-domain and migrations are deliberately ABSENT from deps: a component with no entry may
   # depend on no other component. metering-domain depends on NOTHING — portable by construction.
   migrate:          { mayDependOn: [ migrations ] }
+  testsupport:      { mayDependOn: [ migrate, migrations ] }
   metering-ports:   { mayDependOn: [ metering-domain ] }
   metering-config:  { mayDependOn: [ metering-domain ] }
+  metering-contracts: { mayDependOn: [ metering-domain, metering-ports, metering-config ] }
   metering-app:     { mayDependOn: [ metering-domain, metering-ports, metering-config ] }
-  metering-driven:  { mayDependOn: [ metering-domain, metering-ports, metering-config ] }
+  metering-driven:  { mayDependOn: [ metering-domain, metering-ports, metering-config, metering-contracts,
+                                     metering-driven ] }    # an adapter may build on a sibling (pricing → table); contracts: only from tests
   metering-driving: { mayDependOn: [ metering-domain, metering-ports, metering-config, api ] }
   billing:          { mayDependOn: [ metering-domain, metering-ports, api ] }
   entitlement:      { mayDependOn: [ metering-domain, metering-ports, api ] }   # also implements metering's QuotaSource

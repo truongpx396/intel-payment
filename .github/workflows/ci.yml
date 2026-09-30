@@ -10,8 +10,8 @@ jobs:
     name: build · test · boundary
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         # '1.26' resolves to the latest 1.26.x patch. go-version-file would pin go.mod's `go 1.26.0`
         # — the OLDEST 1.26, whose standard library can carry vulnerabilities govulncheck reports.
         with: { go-version: '1.26', cache: true }
@@ -29,7 +29,7 @@ jobs:
         run: go test -race -count=1 -shuffle=on -tags=integration ./...
 
       - name: golangci-lint (incl. depguard boundary rules)
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v9
         with: { version: v2.14 }   # must be built with a Go >= the module's `go` line
 
       - name: Architecture graph
@@ -54,7 +54,7 @@ jobs:
     name: image · migrate · redis ACL
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Builds the distroless/non-root image, brings an EMPTY Postgres to head with payment-migrate
       # (and asserts `check` agrees), and proves the Redis ACL by attempting what it forbids.
       - name: Verify the deployment
@@ -64,13 +64,13 @@ jobs:
     name: e2e (Playwright)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: svc
         run: echo "present=$([ -d cmd/paymentd ] && echo yes || echo no)" >> "$GITHUB_OUTPUT"
       # The suite drives the REAL stack, so it activates with cmd/paymentd (Phase 1). Until then
       # the job still type-checks and lists the tests, so the suite cannot rot unseen.
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm, cache-dependency-path: e2e/package-lock.json }
+      - uses: actions/setup-node@v7
+        with: { node-version: 24, cache: npm, cache-dependency-path: e2e/package-lock.json }
       - run: npm ci
         working-directory: e2e
       - run: npx tsc --noEmit && npx playwright test --list
@@ -85,7 +85,7 @@ jobs:
         run: npx playwright test
       - name: Upload report
         if: always() && steps.svc.outputs.present == 'yes'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with: { name: playwright-report, path: e2e/playwright-report, if-no-files-found: ignore }
       - name: Stack logs on failure
         if: failure() && steps.svc.outputs.present == 'yes'
@@ -102,7 +102,7 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U payment" --health-interval 5s --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Applies every shipped migration to a clean PostgreSQL 16, seeds a realm, and asserts
       # BEHAVIOUR — the idempotency guards, insert-only rate cards, database-written audit rows,
       # partitions created ahead of need — then applies the Phase 2 DRAFT on top and asserts its
@@ -117,7 +117,7 @@ jobs:
     name: hot path on Redis Cluster
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Runs the reference Redis Functions against Redis 7 in CLUSTER MODE, where a script that
       # touches two hash slots is refused — the constraint the key layout exists to satisfy.
       - name: Verify the reference hot path
@@ -127,7 +127,7 @@ jobs:
     name: spec drift
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: No retired mechanism described as current
         run: scripts/check-spec-drift.sh
 
@@ -135,7 +135,7 @@ jobs:
     name: gitleaks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { fetch-depth: 0 }
       - uses: gitleaks/gitleaks-action@v2
         env: { GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}' }
@@ -144,7 +144,7 @@ jobs:
     name: contract links
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: No dangling relative markdown links
         run: |
           fail=0

@@ -73,12 +73,17 @@ services:
     volumes: ["natsdata:/data"]
     ports: ["4222:4222"]
 
+  # Applies the schema, then installs the Redis hot-path functions with the DEPLOY role's credential —
+  # the only principal allowed to FUNCTION LOAD (deploy/redis/README.md).
   migrate:
     build: { context: .., dockerfile: deploy/Dockerfile }
     entrypoint: ["/usr/local/bin/payment-migrate", "up"]
-    environment: *env
+    environment:
+      <<: *env
+      PAYMENT_BALANCE_REDIS_DEPLOY_URL: redis://deploy:dev-deploy@redis:6379/0
     depends_on:
       postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
     restart: "no"
 
   paymentd:

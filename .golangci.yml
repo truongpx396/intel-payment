@@ -1,6 +1,9 @@
 version: "2"
 run:
   timeout: 5m
+  # Lint the integration tests too: they are half of what verifies the money path, and they were
+  # invisible to the linter until now.
+  build-tags: [ integration ]
 linters:
   default: standard        # errcheck, govet, ineffassign, staticcheck, unused
   enable:
@@ -14,7 +17,13 @@ linters:
     # say why with `//nolint:paralleltest // <reason>`, which makes shared state a reviewed decision.
     - paralleltest
     - tparallel
+    # The contract bans time.Now in the core: a core that reads the wall clock is not replayable.
+    - forbidigo
   settings:
+    forbidigo:
+      forbid:
+        - pattern: '^time\.Now$'
+          msg: inject the Clock port — a core that reads the wall clock is not replayable
     depguard:
       rules:
         layers-use-ports-only:
@@ -77,6 +86,9 @@ linters:
       - legacy
       - std-error-handling
     rules:
+      # forbidigo guards the CORE only; adapters and cmd own the real clock.
+      - linters: [ forbidigo ]
+        path-except: metering/(domain|ports|app)/
       - linters:
           - errcheck
           - gosec
