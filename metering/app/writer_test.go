@@ -49,5 +49,31 @@ func TestNewExpirerNeedsItsStores(t *testing.T) {
 	}
 }
 
+// Each dependency is refused ON ITS OWN. With everything missing, any one check refuses the build and
+// hides the others going wrong.
+func TestNewExpirerRefusesEachMissingDependencyAlone(t *testing.T) {
+	t.Parallel()
+	cfg := metering.Config{BalanceRedisURL: "redis://x", LedgerDSN: "postgres://x"}
+	good := app.Deps{Balance: &fakeBalance{}, Books: &fakeBooks{}, Clock: contracts.NewFakeClock(epoch)}
+	cases := map[string]func(*app.Deps){
+		"no balance": func(d *app.Deps) { d.Balance = nil },
+		"no books":   func(d *app.Deps) { d.Books = nil },
+		"no clock":   func(d *app.Deps) { d.Clock = nil },
+	}
+	for name, remove := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			d := good
+			remove(&d)
+			if _, err := app.NewExpirer(cfg, d); err == nil {
+				t.Fatal("an expirer missing one of its stores must not build")
+			}
+		})
+	}
+	if _, err := app.NewExpirer(cfg, good); err != nil {
+		t.Fatalf("a complete wiring must build: %v", err)
+	}
+}
+
 type nopStream struct{ ports.IntentStream }
 type nopBus struct{ ports.Bus }
