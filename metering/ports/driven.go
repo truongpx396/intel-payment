@@ -56,8 +56,9 @@ type PoolStore interface {
 const Unlimited int64 = -1
 
 // QuotaSource sizes a limit whose row names a max_entitlement. The entitlement module provides it
-// (wired in cmd/); metering never imports that module. An error means the quota could not be
-// resolved, and the Meter applies AdmitFailPolicy — it never treats the failure as unlimited.
+// (wired in cmd/); metering never imports that module. domain.ErrQuotaNotGranted means nothing
+// grants the key, so the limit keeps its own configured Max; any other error means the quota could
+// not be resolved, and the Meter applies AdmitFailPolicy — it never treats the failure as unlimited.
 type QuotaSource interface {
 	Quota(ctx context.Context, s domain.Scope, key string) (int64, error)
 }
