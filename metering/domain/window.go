@@ -72,6 +72,12 @@ func (l Limit) WriteBucket(now time.Time) (Bucket, error) {
 		}
 		t := now.In(loc)
 		next := time.Date(t.Year(), t.Month(), t.Day()+1, 0, 0, 0, 0, loc)
+		// A zone can skip a calendar date (Samoa went from 29 to 31 December 2011). Midnight of a date
+		// that does not exist resolves to an instant already behind us, and a negative TTL deletes the
+		// counter at once — the day's ceiling would never bind. Take the next local midnight that is ahead.
+		if !next.After(now) {
+			next = time.Date(t.Year(), t.Month(), t.Day()+2, 0, 0, 0, 0, loc)
+		}
 		return Bucket{Key: t.Format("20060102"), TTL: next.Sub(now) + counterMargin}, nil
 	case Hourly:
 		loc, err := l.Location()
