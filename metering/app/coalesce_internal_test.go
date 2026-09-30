@@ -43,3 +43,19 @@ func TestTheCoalescerForgetsWhatHasAgedOut(t *testing.T) {
 		t.Fatalf("aged-out keys must be dropped once the map is large; it holds %d", n)
 	}
 }
+
+// Dropping what has aged out must never drop what has NOT: a key still inside its window stays
+// suppressed across the cleanup, or a flood of other scopes would re-open every block notification.
+func TestTheCoalescerKeepsWhatIsStillInsideItsWindowWhenItCleansUp(t *testing.T) {
+	t.Parallel()
+	clk := &stepClock{now: time.Unix(1_700_000_000, 0)}
+	c := newCoalescer(clk, time.Minute)
+	for i := 0; i < 6000; i++ {
+		c.allow(fmt.Sprintf("scope-%d", i))
+	}
+	clk.now = clk.now.Add(30 * time.Second) // half a window: nothing has aged out
+	c.allow("one-more")                     // large enough to trigger the cleanup
+	if c.allow("scope-0") {
+		t.Fatal("scope-0 published 30s ago and is still inside its minute: the cleanup must not have forgotten it")
+	}
+}

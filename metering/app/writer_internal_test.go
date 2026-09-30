@@ -11,20 +11,31 @@ import (
 	"github.com/truongpx396/intel-payment/metering/ports"
 )
 
-type gaugeRecorder struct {
+// metricRecorder keeps the last gauge and the running total of every counter it is handed.
+type metricRecorder struct {
 	mu     sync.Mutex
 	gauges map[string]int64
+	counts map[string]int64
 }
 
-func (g *gaugeRecorder) Count(string, int64, ports.Labels)     {}
-func (g *gaugeRecorder) Observe(string, float64, ports.Labels) {}
-func (g *gaugeRecorder) Gauge(name string, v int64, _ ports.Labels) {
+func (g *metricRecorder) Observe(string, float64, ports.Labels) {}
+
+func (g *metricRecorder) Gauge(name string, v int64, _ ports.Labels) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.gauges == nil {
 		g.gauges = map[string]int64{}
 	}
 	g.gauges[name] = v
+}
+
+func (g *metricRecorder) Count(name string, n int64, _ ports.Labels) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.counts == nil {
+		g.counts = map[string]int64{}
+	}
+	g.counts[name] += n
 }
 
 type statsStream struct {
@@ -57,7 +68,7 @@ func writerOver(t *testing.T, stream ports.IntentStream, met ports.Metrics) *Wri
 // pages are built on (invariant 15) — and a writer handed none must still run.
 func TestTheWriterReportsTheOutboxToTheMetricsItWasGiven(t *testing.T) {
 	t.Parallel()
-	rec := &gaugeRecorder{}
+	rec := &metricRecorder{}
 	stream := statsStream{stats: ports.StreamStats{Pending: 3, Undelivered: 4, OldestPendingAge: 9 * time.Second, OldestUndelivered: 12 * time.Second}}
 	writerOver(t, stream, rec).observe(context.Background(), 2)
 	if got := rec.gauges[ports.MetricOutboxDepth]; got != 7 {
