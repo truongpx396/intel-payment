@@ -270,8 +270,12 @@ A third finding is about the gate, not the code. The first pull-request-form run
 in `fingerprint.go` — because the tool had no way to honour what the docs promised, that an equivalent mutant
 is "named in the PR". It now has one: `.mutation-equivalents`, where each excuse names the file, operator,
 column and the exact text of its line and must give a reason, and a pull request has no tolerance for any
-survivor that is not excused. Both halves are held by cases in `scripts/verify-tdd-gates.sh` that were
-written first and seen to fail.
+survivor that is not excused. Both halves are held by cases in `scripts/verify-tdd-gates.sh`, each shown
+able to fail: the acceptance cases against the script as it was, the no-tolerance case by planting the
+leniency back, each refusal case by planting the over-broad rule it exists to catch (an excuse that ignores
+the text of the line; one that ignores the column), and the status-drift cases against the drift script as
+it was before the check. Only some were written before their implementation; the rest were proven able to
+fail afterwards.
 
 ### What the tests are worth
 
