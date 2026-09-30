@@ -34,7 +34,7 @@ Per realm: `name`, `priority` (lower drawn first), `applies_to TEXT[]` (resource
 **Booked** balances: the ledger's running sum per `(realm, scope_kind, scope_id, pool)`, maintained by the sole durable writer in the same transaction as every ledger row. The hot tier equals `booked + open suspense` at every sequence number.
 
 ### `account_watermarks`
-Per scope: `gen`, `applied_seq` (the highest **contiguously** booked hot sequence number), `blocked`, `updated_at` (indexed — reconcile checks scopes booked since its last run, so its cost follows activity, not history).
+Per scope: `gen`, `applied_seq` (the highest **contiguously** booked hot sequence number), `blocked`, `shard` (`fnv1a64(tag) mod Shards`, stored by the writer), `updated_at`. Indexed on `(shard, updated_at)` — reconcile checks one shard's scopes booked since its last run, so its cost follows that shard's activity, not history and not the other shards'.
 
 ### `credit_ledger`
 The account of record. Append-only, partitioned by `created_at` (monthly).

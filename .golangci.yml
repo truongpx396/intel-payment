@@ -1,6 +1,9 @@
 version: "2"
 run:
   timeout: 5m
+  # Lint the integration tests too: they are half of what verifies the money path, and they were
+  # invisible to the linter until now.
+  build-tags: [ integration ]
 linters:
   default: standard        # errcheck, govet, ineffassign, staticcheck, unused
   enable:

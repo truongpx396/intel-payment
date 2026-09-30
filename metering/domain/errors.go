@@ -23,6 +23,10 @@ var (
 	// ErrDestBalanceCap is a transfer that would leave its destination holding more than
 	// Transfer.MaxDestBalance: 422. It guards against an errant admin action, not a race.
 	ErrDestBalanceCap = errors.New("transfer would exceed the destination's balance cap")
+	// ErrShardCountMismatch is a process configured with a different Shards than the one recorded in
+	// hot_config: two processes hashing scopes differently keep two sets of books. It refuses to start
+	// (and fails /readyz), FR-042.
+	ErrShardCountMismatch = errors.New("configured shard count differs from the recorded one")
 	// ErrCrossRealm is a transfer between two realms — a mint and a burn, never a transfer: 403.
 	ErrCrossRealm = errors.New("transfer across realms")
 	// ErrHotStoreUnavailable is the hot tier unreachable, frozen or cold: 503. Admit under

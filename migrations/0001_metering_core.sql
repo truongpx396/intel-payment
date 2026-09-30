@@ -115,11 +115,15 @@ CREATE TABLE account_watermarks (
     gen          BIGINT      NOT NULL DEFAULT 1,
     applied_seq  BIGINT      NOT NULL DEFAULT 0 CHECK (applied_seq >= 0),
     blocked      BOOLEAN     NOT NULL DEFAULT false,   -- block_and_flag, until an operator clears it
+    -- fnv1a64(tag) mod Shards, stored by the writer (which knows the count) so that per-shard work —
+    -- reconcile, audit — is an index range scan rather than a scan of every shard's scopes.
+    shard        INT         NOT NULL CHECK (shard >= 0),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (realm, scope_kind, scope_id)
 );
--- Reconcile checks scopes booked since its last run, so its cost follows activity, not history.
-CREATE INDEX account_watermarks_updated_idx ON account_watermarks (updated_at);
+-- Reconcile checks scopes booked since its last run, so its cost follows activity, not history —
+-- and only THIS shard's activity.
+CREATE INDEX account_watermarks_shard_updated_idx ON account_watermarks (shard, updated_at);
 
 -- ------------------------------------------------------------------ ledger --
 -- The ACCOUNT OF RECORD. Append-only, partitioned by month. Old partitions are detached and
