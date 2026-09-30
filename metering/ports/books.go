@@ -363,4 +363,8 @@ type IntentStream interface {
 	// Ack acknowledges entries the writer has booked (or parked).
 	Ack(ctx context.Context, shard domain.Shard, ids ...string) error
 	Stats(ctx context.Context, shard domain.Shard) (StreamStats, error)
+	// Trim drops history below the retention floor (billing.trim.tick) and returns how many entries
+	// it removed. It NEVER removes an entry that any consumer group has not acknowledged, or that has
+	// not been delivered to it: that would delete a money intent.
+	Trim(ctx context.Context, shard domain.Shard, keep RetentionPolicy) (removed int64, err error)
 }

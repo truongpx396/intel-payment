@@ -542,6 +542,8 @@ type LedgerWriter interface {
 //     again from the start.
 //   Ack(ctx, shard, ids...)          — never deletes; retention is explicit (Trim, once acked AND old).
 //   Stats(ctx, shard)                — length, pending, undelivered and the age of the oldest of each.
+//   Trim(ctx, shard, keep)           — drops history every group has acknowledged and that is past the retention
+//     floor; never an entry any group has not acknowledged or been delivered (that is deleting a money intent).
 
 // Shard is fnv1a64(Scope.Tag()) mod Shards — the unit of Redis Cluster placement and of writer
 // ownership. The count is recorded in hot_config and changed only by a reshard.
@@ -1468,7 +1470,7 @@ So the wiring is: build a `Config`, build the driven adapters, register pricers,
 
 ## Observability contract
 
-Invariant 15 requires that every terminal state be observable, which means the metric names are part of the contract, not an implementation detail — a host writes alerts against them before it ever reads the code.
+Invariant 15 requires that every terminal state be observable, which means the metric names are part of the contract, not an implementation detail — a host writes alerts against them before it ever reads the code. The `metering_*` rows below are `ports.Catalog`, and a test holds the two equal; `adapters/driven/otel` registers each with its declared kind, unit and description on the MeterProvider the host hands it, and creates the `billing_*` and `events_*` ones on first use.
 
 | Metric | Type | Why it pages |
 |---|---|---|
@@ -1494,6 +1496,10 @@ Invariant 15 requires that every terminal state be observable, which means the m
 | `metering_price_error_total` | counter (`realm`, `rate_key`, `reason`) | fail-closed pricing refusing real traffic — usually a card missing a newly launched SKU |
 | `metering_stale_event_total` | counter (`realm`) | events refused as older than the dedup window — a producer retrying far too late |
 | `metering_default_partition_rows` | gauge (`table`) | rows in a DEFAULT partition: the partition tick is behind, and must be fixed before a partition can be created for that range |
+| `metering_effect_failed_total` | counter (`kind`) | a follow-up to a booking (a transfer's second leg, a correction, a balance-low notification) failed after the commit. A sweep finishes it; a rising count means the hot tier is refusing the writer |
+| `metering_correction_orphan_total` | counter (`realm`) | a correction was booked that closed no suspense entry: it was already closed, or never existed |
+| `metering_correction_stale_total` | counter (`realm`) | an open suspense entry older than `HotIdemTTL`: re-issuing its correction could apply twice, so it is left for a human |
+| `metering_recover_parked_total` | counter (`shard`) | intents a recovery parked because they sat behind a sequence gap that can no longer fill — each is a movement to investigate |
 | `billing_webhook_verify_failed_total` | counter (`provider`) | a signature failure is a **security** event (see [payment-provider-ports.md](./payment-provider-ports.md)) |
 | `billing_webhook_inbox_age_seconds` | gauge | the oldest unprocessed verified webhook — a payment someone made that has not been fulfilled yet |
 | `billing_grant_applied_total` | counter (`realm`, `reason`) | reconciles against the provider's own payout report |
