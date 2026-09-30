@@ -19,10 +19,32 @@ import (
 
 func TestConsistencyContract_RestartFromATruncatedAOF(t *testing.T) {
 	t.Parallel()
-	contracts.ConsistencyContract(t, func(t *testing.T) contracts.ConsistencyHarness {
+	contracts.ConsistencyContract(t, truncatedAOF(false))
+}
+
+// The same rollbacks with the intents travelling by the optional bus. The Relay's own consumer group
+// can be lost with the rollback too — it then reads the outbox again from the start, and JetStream
+// recognises every entry it had already stored by its message id.
+func TestConsistencyContract_RestartFromATruncatedAOF_OverJetStream(t *testing.T) {
+	t.Parallel()
+	contracts.ConsistencyContract(t, truncatedAOF(true))
+}
+
+func TestConsistencyContract_FailoverToALaggingReplica(t *testing.T) {
+	t.Parallel()
+	contracts.ConsistencyContract(t, laggingReplica(false))
+}
+
+func TestConsistencyContract_FailoverToALaggingReplica_OverJetStream(t *testing.T) {
+	t.Parallel()
+	contracts.ConsistencyContract(t, laggingReplica(true))
+}
+
+func truncatedAOF(jetstream bool) func(t *testing.T) contracts.ConsistencyHarness {
+	return func(t *testing.T) contracts.ConsistencyHarness {
 		t.Helper()
 		ctx := context.Background()
-		s := newWriterStack(t, wopts{dedicated: true, redisOpts: redistest.Options{AppendFsync: "always", FixedPort: true}})
+		s := newWriterStack(t, wopts{jetstream: jetstream, dedicated: true, redisOpts: redistest.Options{AppendFsync: "always", FixedPort: true}})
 		var size int64
 		return contracts.ConsistencyHarness{
 			WriterHarness: s.writerHarness(),
@@ -39,12 +61,11 @@ func TestConsistencyContract_RestartFromATruncatedAOF(t *testing.T) {
 				must(t, s.srv.Start(ctx))
 			},
 		}
-	})
+	}
 }
 
-func TestConsistencyContract_FailoverToALaggingReplica(t *testing.T) {
-	t.Parallel()
-	contracts.ConsistencyContract(t, func(t *testing.T) contracts.ConsistencyHarness {
+func laggingReplica(jetstream bool) func(t *testing.T) contracts.ConsistencyHarness {
+	return func(t *testing.T) contracts.ConsistencyHarness {
 		t.Helper()
 		ctx := context.Background()
 		netName, removeNet, err := redistest.NewNetwork(ctx)
@@ -63,7 +84,7 @@ func TestConsistencyContract_FailoverToALaggingReplica(t *testing.T) {
 		must(t, err)
 		waitReplicated(t, primary, replica)
 
-		s := newWriterStack(t, wopts{srv: primary, proxied: true})
+		s := newWriterStack(t, wopts{jetstream: jetstream, srv: primary, proxied: true})
 		return contracts.ConsistencyHarness{
 			WriterHarness: s.writerHarness(),
 			// The replica has everything up to here; from here it receives nothing more. That is what a
@@ -78,7 +99,7 @@ func TestConsistencyContract_FailoverToALaggingReplica(t *testing.T) {
 				s.proxy.Retarget(replica.Addr)
 			},
 		}
-	})
+	}
 }
 
 // waitReplicated waits until the replica has applied everything the primary has written.

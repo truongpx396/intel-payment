@@ -147,7 +147,7 @@ func (s *Stream) read(ctx context.Context, sh domain.Shard, count int, minIdle t
 		return nil, nil
 	}
 
-	attempts := s.deliveryCounts(ctx, key, msgs)
+	attempts := deliveryCounts(ctx, s.rdb, key, s.group, msgs)
 	out := make([]ports.Delivery, 0, len(msgs))
 	for _, m := range msgs {
 		d := ports.Delivery{ID: m.ID, Fields: fieldsOf(m), Attempts: attempts[m.ID]}
@@ -161,23 +161,6 @@ func (s *Stream) read(ctx context.Context, sh domain.Shard, count int, minIdle t
 		out = append(out, d)
 	}
 	return out, nil
-}
-
-// deliveryCounts reads how many times each entry has been delivered (XPENDING's retry count), so a
-// poison entry is parked after MaxAttempts even across a worker restart. A failure here only makes
-// the count read as one.
-func (s *Stream) deliveryCounts(ctx context.Context, key string, msgs []goredis.XMessage) map[string]int {
-	out := make(map[string]int, len(msgs))
-	pend, err := s.rdb.XPendingExt(ctx, &goredis.XPendingExtArgs{
-		Stream: key, Group: s.group, Start: msgs[0].ID, End: msgs[len(msgs)-1].ID, Count: int64(len(msgs)) * 4,
-	}).Result()
-	if err != nil {
-		return out
-	}
-	for _, p := range pend {
-		out[p.ID] = int(p.RetryCount)
-	}
-	return out
 }
 
 func fieldsOf(m goredis.XMessage) map[string]string {
@@ -215,56 +198,12 @@ func (s *Stream) stats(ctx context.Context, sh domain.Shard) (ports.StreamStats,
 	if err := s.ensureGroup(ctx, sh); err != nil {
 		return ports.StreamStats{}, err
 	}
-	key := hotredis.OutboxKey(sh)
-	var st ports.StreamStats
-	n, err := s.rdb.XLen(ctx, key).Result()
-	if err != nil {
-		return st, fmt.Errorf("redisstreams: xlen: %w", err)
-	}
-	st.Length = n
-	now := s.clock.Now()
-
-	pend, err := s.rdb.XPending(ctx, key, s.group).Result()
-	if err != nil {
-		return st, fmt.Errorf("redisstreams: xpending: %w", err)
-	}
-	st.Pending = pend.Count
-	if pend.Count > 0 {
-		st.OldestPendingAge = age(now, pend.Lower)
-	}
-
-	groups, err := s.rdb.XInfoGroups(ctx, key).Result()
-	if err != nil {
-		return st, fmt.Errorf("redisstreams: xinfo groups: %w", err)
-	}
-	for _, g := range groups {
-		if g.Name != s.group {
-			continue
-		}
-		st.Undelivered = g.Lag
-		if g.Lag > 0 {
-			first, err := s.rdb.XRangeN(ctx, key, "("+g.LastDeliveredID, "+", 1).Result()
-			if err == nil && len(first) == 1 {
-				st.OldestUndelivered = age(now, first[0].ID)
-			}
-		}
-	}
-	return st, nil
+	return groupStats(ctx, s.rdb, hotredis.OutboxKey(sh), s.group, s.clock.Now())
 }
 
-// age is how long ago a stream entry id (`<ms>-<seq>`) was created.
-func age(now time.Time, id string) time.Duration {
-	ms, _, ok := strings.Cut(id, "-")
-	if !ok {
-		return 0
-	}
-	var t int64
-	if _, err := fmt.Sscan(ms, &t); err != nil {
-		return 0
-	}
-	d := now.Sub(time.UnixMilli(t))
-	if d < 0 {
-		return 0
-	}
-	return d
+// Trim drops acknowledged history older than keep allows. The outbox is never trimmed by the hot
+// functions (a full stream is BACKPRESSURE, not a reason to drop), so this is the only thing that
+// bounds it.
+func (s *Stream) Trim(ctx context.Context, sh domain.Shard, keep ports.RetentionPolicy) (int64, error) {
+	return trimAcked(ctx, s.rdb, hotredis.OutboxKey(sh), keep, s.clock.Now())
 }

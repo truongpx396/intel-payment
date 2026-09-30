@@ -140,7 +140,7 @@ func (w *Writer) parkStuck(ctx context.Context, shard domain.Shard) error {
 	if err := w.d.Stream.Ack(ctx, shard, ack...); err != nil {
 		return err
 	}
-	w.met.Count("metering_recover_parked_total", int64(len(ack)), ports.Labels{"shard": fmt.Sprint(int(shard))})
+	w.met.Count(ports.MetricRecoverParked, int64(len(ack)), ports.Labels{"shard": fmt.Sprint(int(shard))})
 	return nil
 }
 

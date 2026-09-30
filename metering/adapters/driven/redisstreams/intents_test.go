@@ -318,3 +318,60 @@ func TestAGroupLostWithARollbackIsCreatedAgain(t *testing.T) {
 		})
 	}
 }
+
+// The same suite the JetStream relay runs: the two ways of delivering intents to the writer are
+// interchangeable behind the port.
+func TestIntentStreamContract(t *testing.T) {
+	t.Parallel()
+	for mode := range servers {
+		t.Run(string(mode), func(t *testing.T) {
+			t.Parallel()
+			contracts.IntentStreamContract(t, func(t *testing.T, _ contracts.IntentStreamOptions) contracts.IntentStreamHarness {
+				rdb := servers[mode].Client()
+				t.Cleanup(func() { _ = rdb.Close() })
+				// A shard no hot function uses: the stream is this subtest's alone.
+				sh := domain.Shard(20000 + seq.Add(1))
+				group := fmt.Sprintf("contract-%d", seq.Add(1))
+				open := func(consumer string) *redisstreams.Stream {
+					c := servers[mode].Client()
+					t.Cleanup(func() { _ = c.Close() })
+					s, err := redisstreams.NewStream(c, redisstreams.IntentOptions{Consumer: consumer, Group: group, Clock: system.Clock{}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					return s
+				}
+				return contracts.IntentStreamHarness{
+					Stream: open("w1"), Shard: sh,
+					Peer: func(*testing.T) ports.IntentStream { return open("w2") },
+					Emit: func(t *testing.T, ins ...domain.Intent) {
+						t.Helper()
+						for _, in := range ins {
+							f, err := in.Fields()
+							if err != nil {
+								t.Fatal(err)
+							}
+							vals := map[string]any{}
+							for k, v := range f {
+								vals[k] = v
+							}
+							if err := rdb.XAdd(context.Background(), &goredis.XAddArgs{Stream: hotredis.OutboxKey(sh), Values: vals}).Err(); err != nil {
+								t.Fatal(err)
+							}
+						}
+					},
+					EmitRaw: func(t *testing.T, f map[string]string) {
+						t.Helper()
+						vals := map[string]any{}
+						for k, v := range f {
+							vals[k] = v
+						}
+						if err := rdb.XAdd(context.Background(), &goredis.XAddArgs{Stream: hotredis.OutboxKey(sh), Values: vals}).Err(); err != nil {
+							t.Fatal(err)
+						}
+					},
+				}
+			})
+		})
+	}
+}
