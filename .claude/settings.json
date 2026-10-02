@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(make help)",
+      "Bash(make build)",
+      "Bash(make test)",
+      "Bash(make test-integration)",
+      "Bash(make fuzz*)",
+      "Bash(make mutation*)",
+      "Bash(make fmt)",
+      "Bash(make lint)",
+      "Bash(make arch-lint)",
+      "Bash(make vuln)",
+      "Bash(make verify-portability)",
+      "Bash(make verify-boundary)",
+      "Bash(make verify-red-green*)",
+      "Bash(make verify-tdd-gates)",
+      "Bash(make ci)",
+      "Bash(scripts/fuzz.sh*)",
+      "Bash(scripts/mutation.sh*)",
+      "Bash(scripts/verify-red-green.sh*)",
+      "Bash(scripts/verify-boundary.sh*)",
+      "Bash(scripts/check-spec-drift.sh*)",
+      "Bash(go build *)",
+      "Bash(go test *)",
+      "Bash(go vet *)",
+      "Bash(go list *)",
+      "Bash(go doc *)",
+      "Bash(go env *)",
+      "Bash(go version*)",
+      "Bash(go mod tidy)",
+      "Bash(go mod why *)",
+      "Bash(go mod graph)",
+      "Bash(gofmt *)",
+      "Bash(golangci-lint run*)",
+      "Bash(go-arch-lint check*)",
+      "Bash(govulncheck *)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git show*)",
+      "Bash(git blame*)",
+      "Bash(git rev-parse*)",
+      "Bash(git rev-list*)",
+      "Bash(git merge-base*)",
+      "Bash(git ls-files*)",
+      "Bash(git branch --show-current)",
+      "Bash(git worktree list)",
+      "Bash(git remote -v)",
+      "Bash(git fetch*)",
+      "Bash(gh pr view*)",
+      "Bash(gh pr list*)",
+      "Bash(gh pr diff*)",
+      "Bash(gh pr checks*)",
+      "Bash(gh run list*)",
+      "Bash(gh run view*)",
+      "Bash(jq *)",
+      "WebFetch(domain:pkg.go.dev)",
+      "WebFetch(domain:go.dev)",
+      "WebFetch(domain:redis.io)",
+      "WebFetch(domain:www.postgresql.org)",
+      "WebFetch(domain:docs.nats.io)",
+      "WebFetch(domain:docs.stripe.com)"
+    ],
+    "ask": [
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Bash(git push * --force*)",
+      "Bash(git push * -f*)",
+      "Bash(git push * +*)",
+      "Bash(git reset --hard*)",
+      "Bash(git clean*)",
+      "Bash(git rebase*)",
+      "Bash(git branch -D*)",
+      "Bash(git tag -d*)",
+      "Bash(git worktree remove*)",
+      "Bash(gh pr create*)",
+      "Bash(gh pr merge*)",
+      "Bash(gh pr close*)",
+      "Bash(gh pr edit*)",
+      "Bash(gh pr comment*)",
+      "Bash(gh pr review*)",
+      "Bash(gh api *)",
+      "Bash(make down-volumes)",
+      "Bash(docker compose * down -v*)",
+      "Bash(docker volume rm*)",
+      "Bash(docker system prune*)",
+      "Edit(./migrations/**)",
+      "Edit(./deploy/redis/users.acl)",
+      "Edit(./.specify/memory/constitution.md)",
+      "Edit(./.mutation-equivalents)",
+      "Edit(./.gremlins.yaml)",
+      "Edit(./.golangci.yml)",
+      "Edit(./.go-arch-lint.yml)",
+      "Edit(./.github/workflows/**)",
+      "Edit(./scripts/mutation.sh)",
+      "Edit(./scripts/verify-*.sh)",
+      "Edit(./scripts/check-spec-drift.sh)",
+      "Edit(./.claude/settings.json)",
+      "Edit(./.claude/hooks/**)"
+    ],
+    "deny": [
+      "Bash(sudo *)",
+      "Bash(rm -rf /*)",
+      "Bash(rm -rf ~*)",
+      "Read(./.env)",
+      "Read(./.env.local)",
+      "Read(./.env.*.local)",
+      "Read(./.env.development)",
+      "Read(./.env.test)",
+      "Read(./.env.staging)",
+      "Read(./.env.production)",
+      "Read(./**/*.pem)",
+      "Read(./**/*.key)",
+      "Edit(./.env)",
+      "Edit(./.env.local)",
+      "Edit(./.env.*.local)",
+      "Edit(./.env.development)",
+      "Edit(./.env.test)",
+      "Edit(./.env.staging)",
+      "Edit(./.env.production)",
+      "Edit(./**/*.pem)",
+      "Edit(./**/*.key)"
+    ]
+  },
+  "worktree": {
+    "baseRef": "head"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard-bash.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/format-go.sh",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/stop-gate.sh",
+            "timeout": 120,
+            "statusMessage": "Checking the tree builds and the docs agree..."
+          }
+        ]
+      }
+    ]
+  }
+}
