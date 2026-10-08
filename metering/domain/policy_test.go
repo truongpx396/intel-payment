@@ -28,9 +28,12 @@ func TestEveryPolicyEnumAcceptsItsValuesAndNothingElse(t *testing.T) {
 		"NegativeBalance": {
 			[]validator{domain.AllowDebt, domain.ClampToZero, domain.BlockAndFlag},
 			[]validator{domain.NegativeBalancePolicy(""), domain.NegativeBalancePolicy("clamp")}},
+		// The literals are the contract with operators (PAYMENT_CREDIT_EXPIRY), so they are pinned as text.
+		// `lots_fifo` named a draw order the engine no longer uses; refusing it makes an operator who set
+		// it read the new name, instead of a mode quietly changing its meaning under them.
 		"CreditExpiry": {
-			[]validator{domain.ExpiryOff, domain.ExpiryLotsFIFO},
-			[]validator{domain.CreditExpiry(""), domain.CreditExpiry("lots")}},
+			[]validator{domain.ExpiryOff, domain.CreditExpiry("lots_fefo")},
+			[]validator{domain.CreditExpiry(""), domain.CreditExpiry("lots"), domain.CreditExpiry("lots_fifo")}},
 		"AdmitFail": {
 			[]validator{domain.FailClosed, domain.FailOpen},
 			[]validator{domain.AdmitFailPolicy(""), domain.AdmitFailPolicy("closed")}},
