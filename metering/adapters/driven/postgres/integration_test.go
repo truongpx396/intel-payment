@@ -724,6 +724,53 @@ func TestLotsConsumeFIFOAndExpireAtTheExactRemainder(t *testing.T) {
 	}))
 }
 
+// A customer who tops up (never expires) and is then given a monthly allotment (expires) must spend
+// the allotment first. Drawing by grant date instead spends the top-up and lets the allotment lapse
+// unspent: credits the customer was entitled to use are destroyed while others sit untouched.
+func TestLotsAreConsumedSoonestExpiryFirstAndNeverExpiringLast(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	p := db(t)
+	b := pgadapter.NewBooks(p)
+	s := scope("t1")
+	soon, later := time.Now().Add(time.Hour), time.Now().Add(48*time.Hour)
+	must(t, b.InTx(ctx, s, func(ctx context.Context, tx ports.BookTx) error {
+		// Granted in THIS order, which is the reverse of the order they should be spent in.
+		for _, l := range []ports.Lot{
+			{Pool: "general", Granted: 100, SourceKey: "forever"},
+			{Pool: "general", Granted: 100, ExpiresAt: &later, SourceKey: "later"},
+			{Pool: "general", Granted: 100, ExpiresAt: &soon, SourceKey: "soon-a"},
+			{Pool: "general", Granted: 100, ExpiresAt: &soon, SourceKey: "soon-b"},
+		} {
+			if err := tx.OpenLot(ctx, l); err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
+	rem := func(key string) int64 {
+		return scalar[int64](t, p, `SELECT remaining FROM credit_lots WHERE source_idem_key = $1 AND scope_id = $2`, key, s.ID)
+	}
+	consume := func(n domain.Credits) {
+		t.Helper()
+		must(t, b.InTx(ctx, s, func(ctx context.Context, tx ports.BookTx) error {
+			if got, err := tx.ConsumeLots(ctx, "general", n); err != nil || got != n {
+				t.Fatalf("consumed %d of %d: %v", got, n, err)
+			}
+			return nil
+		}))
+	}
+	consume(150)
+	if rem("soon-a") != 0 || rem("soon-b") != 50 || rem("later") != 100 || rem("forever") != 100 {
+		t.Fatalf("the soonest expiry is spent first, and lots that expire together in grant order: soon-a %d soon-b %d later %d forever %d",
+			rem("soon-a"), rem("soon-b"), rem("later"), rem("forever"))
+	}
+	consume(100)
+	if rem("soon-b") != 0 || rem("later") != 50 || rem("forever") != 100 {
+		t.Fatalf("a lot that never expires is spent last: soon-b %d later %d forever %d", rem("soon-b"), rem("later"), rem("forever"))
+	}
+}
+
 func TestTransfersOpenIdempotentlyAndSettleOnce(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

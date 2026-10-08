@@ -249,6 +249,26 @@ func (s *wstack) rows(sc domain.Scope) []ports.LedgerRow {
 	return out
 }
 
+func (s *wstack) lots(sc domain.Scope) []ports.Lot {
+	s.t.Helper()
+	sc = sc.Normalized()
+	rs, err := s.rawPool.Query(context.Background(), `
+		SELECT id::text, pool, granted, remaining, expires_at, source_idem_key, created_at FROM credit_lots
+		WHERE realm=$1 AND scope_kind=$2 AND scope_id=$3 ORDER BY created_at, id`, string(sc.Realm), sc.Kind, sc.ID)
+	must(s.t, err)
+	defer rs.Close()
+	var out []ports.Lot
+	for rs.Next() {
+		l := ports.Lot{Scope: sc}
+		var pool string
+		must(s.t, rs.Scan(&l.ID, &pool, &l.Granted, &l.Remaining, &l.ExpiresAt, &l.SourceKey, &l.CreatedAt))
+		l.Pool = domain.Pool(pool)
+		out = append(out, l)
+	}
+	must(s.t, rs.Err())
+	return out
+}
+
 func (s *wstack) shardGen(sc domain.Scope) int64 {
 	s.t.Helper()
 	rec, err := s.books.EnsureShard(context.Background(), sc.Normalized().Shard(s.cfg.Shards))
@@ -337,6 +357,7 @@ func (s *wstack) writerHarness() contracts.WriterHarness {
 		DropIntent: func(t *testing.T, sc domain.Scope, n int64) { t.Helper(); s.dropIntent(sc, n) },
 
 		Watermark: func(t *testing.T, sc domain.Scope) ports.Watermark { t.Helper(); return s.watermark(sc) },
+		Lots:      func(t *testing.T, sc domain.Scope) []ports.Lot { t.Helper(); return s.lots(sc) },
 		Suspense:  func(t *testing.T, sc domain.Scope) []ports.Suspense { t.Helper(); return s.suspense(sc) },
 		Rows:      func(t *testing.T, sc domain.Scope) []ports.LedgerRow { t.Helper(); return s.rows(sc) },
 		ShardGen:  func(t *testing.T, sc domain.Scope) int64 { t.Helper(); return s.shardGen(sc) },

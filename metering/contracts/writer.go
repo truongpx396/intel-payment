@@ -57,6 +57,7 @@ type WriterHarness struct {
 
 	// The books.
 	Watermark func(t *testing.T, s domain.Scope) ports.Watermark
+	Lots      func(t *testing.T, s domain.Scope) []ports.Lot // the scope's credit lots, oldest grant first
 	Suspense  func(t *testing.T, s domain.Scope) []ports.Suspense
 	Rows      func(t *testing.T, s domain.Scope) []ports.LedgerRow
 	ShardGen  func(t *testing.T, s domain.Scope) int64
@@ -748,6 +749,50 @@ func LedgerWriterContract(t *testing.T, newHarness func(t *testing.T, o WriterOp
 		}
 		if n := h.Expire(t); n != 0 {
 			t.Fatalf("an expired lot is not expired again: %d", n)
+		}
+	})
+
+	// lotLeft is what the books say one grant's lot still holds.
+	lotLeft := func(t *testing.T, h WriterHarness, s domain.Scope, sourceKey string) domain.Credits {
+		t.Helper()
+		for _, l := range h.Lots(t, s) {
+			if l.SourceKey == sourceKey {
+				return l.Remaining
+			}
+		}
+		t.Fatalf("no lot was opened for grant %q: %+v", sourceKey, h.Lots(t, s))
+		return 0
+	}
+
+	sub("lots: credits that expire are spent before credits that never do, whatever the grant order", func(t *testing.T) {
+		h, s := newHarness(t, WriterOptions{Lots: true}), ws()
+		h.need(t, "Expire", h.Expire != nil)
+		h.need(t, "Lots", h.Lots != nil)
+		soon := h.Clock.Now().Add(time.Hour)
+		grant(t, h, s, "", 5000, "topup") // granted FIRST, never expires
+		_, err := h.Ledger.Grant(ctx, domain.Grant{Scope: s, Amount: 1000, IdemKey: "monthly", Reason: "subscription_grant", ExpiresAt: &soon})
+		mustNoErr(t, err)
+		debit(t, h, charge(s, 300, "spend"))
+		h.Drain(t)
+
+		if got := lotLeft(t, h, s, "monthly"); got != 700 {
+			t.Fatalf("the spend is drawn from the allotment that will lapse, not the top-up that will not: monthly lot holds %d, want 700", got)
+		}
+		if got := lotLeft(t, h, s, "topup"); got != 5000 {
+			t.Fatalf("the top-up is untouched while an expiring lot can pay: %d", got)
+		}
+
+		// The consequence the customer sees: only what was genuinely unspent lapses.
+		h.Clock.Advance(2 * time.Hour)
+		if n := h.Expire(t); n != 1 {
+			t.Fatalf("expired %d lots", n)
+		}
+		h.Drain(t)
+		if !h.HasRow(t, s, "expiry", -700) {
+			t.Fatalf("the allotment lapses at its unspent 700, not at 1000: %+v", h.Rows(t, s))
+		}
+		if got := hot(t, h, s); got != 5000 {
+			t.Fatalf("the customer keeps the whole top-up: hot %d, want 5000", got)
 		}
 	})
 
