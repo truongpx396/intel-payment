@@ -49,7 +49,7 @@ type CreditExpiry string
 
 const (
 	ExpiryOff      CreditExpiry = "off"       // default — a grant never expires
-	ExpiryLotsFIFO CreditExpiry = "lots_fifo" // credit_lots per pool; oldest lot consumed and expired first
+	ExpiryLotsFEFO CreditExpiry = "lots_fefo" // credit_lots per pool; the lot that lapses soonest is spent first, lots that never lapse last
 )
 
 // AdmitFailPolicy is what Admit does when the hot store is unreachable or the shard is frozen.
@@ -83,7 +83,7 @@ func (v NegativeBalancePolicy) Validate() error {
 	return oneOf("NegativeBalance", v, AllowDebt, ClampToZero, BlockAndFlag)
 }
 func (v CreditExpiry) Validate() error {
-	return oneOf("CreditExpiry", v, ExpiryOff, ExpiryLotsFIFO)
+	return oneOf("CreditExpiry", v, ExpiryOff, ExpiryLotsFEFO)
 }
 func (v AdmitFailPolicy) Validate() error {
 	return oneOf("AdmitFail", v, FailClosed, FailOpen)

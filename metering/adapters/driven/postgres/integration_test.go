@@ -667,7 +667,7 @@ func TestBookedOfANewScopeIsEmpty(t *testing.T) {
 	}
 }
 
-func TestLotsConsumeFIFOAndExpireAtTheExactRemainder(t *testing.T) {
+func TestLotsConsumeInGrantOrderWhenExpiriesTieAndExpireAtTheExactRemainder(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	p := db(t)
@@ -675,7 +675,7 @@ func TestLotsConsumeFIFOAndExpireAtTheExactRemainder(t *testing.T) {
 	s := scope("t1")
 	exp := time.Now().Add(24 * time.Hour)
 	must(t, b.InTx(ctx, s, func(ctx context.Context, tx ports.BookTx) error {
-		// Three lots opened in ONE transaction: FIFO must still follow the order they were granted.
+		// Three lots that lapse together, opened in ONE transaction: ties must follow the order they were granted.
 		for i, n := range []domain.Credits{100, 100, 100} {
 			if err := tx.OpenLot(ctx, ports.Lot{Pool: "general", Granted: n, ExpiresAt: &exp, SourceKey: fmt.Sprintf("g%d", i)}); err != nil {
 				return err
@@ -691,10 +691,10 @@ func TestLotsConsumeFIFOAndExpireAtTheExactRemainder(t *testing.T) {
 		return scalar[int64](t, p, `SELECT remaining FROM credit_lots WHERE source_idem_key = $1 AND scope_id = $2`, key, s.ID)
 	}
 	if rem("g0") != 0 || rem("g1") != 50 || rem("g2") != 100 {
-		t.Fatalf("oldest first: %d %d %d", rem("g0"), rem("g1"), rem("g2"))
+		t.Fatalf("equal expiries are spent in grant order: %d %d %d", rem("g0"), rem("g1"), rem("g2"))
 	}
 	must(t, b.InTx(ctx, s, func(ctx context.Context, tx ports.BookTx) error {
-		// More than the lots hold is not an error: the rest predates lots_fifo being switched on.
+		// More than the lots hold is not an error: the rest predates lots_fefo being switched on.
 		if got, _ := tx.ConsumeLots(ctx, "general", 1000, ""); got != 150 {
 			t.Fatalf("consumed %d, want the 150 that remained", got)
 		}

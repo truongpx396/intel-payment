@@ -20,8 +20,9 @@ column with no schema change. Renamed from `credits_used` because a column named
 a positive grant is a trap for the next person to read it.
 
 ### D2 — Credit expiry: configurable, off by default
-**Decided**: `CreditExpiry` ∈ `off` | `lots_fifo`. When on, `credit_lots` tracks per-grant lots
-and consumption draws oldest-first.
+**Decided**: `CreditExpiry` ∈ `off` | `lots_fefo`. When on, `credit_lots` tracks per-grant lots
+and consumption draws the lot that lapses soonest first. *(Amended by [D47](#d47--lots-are-spent-soonest-expiring-first-and-a-refund-takes-its-own-payments-lot):
+it was `lots_fifo` and drew oldest-first.)*
 **Rejected**: picking one and shipping it.
 **Why**: open decision #2. Hosts differ on this for commercial reasons, not technical ones —
 a prepaid-pack product usually expires, a platform-credit product usually does not. Off by
@@ -551,3 +552,31 @@ mechanism as current; the schema and hot-path verifications run in CI without an
 commands in the runbook, a quickstart whose SQL named a column that does not exist, tasks that
 reintroduced constraints D21 had proved impossible. CI checked that links resolved, not that the
 contracts agreed.
+
+### D47 — Lots are spent soonest-expiring first, and a refund takes its own payment's lot
+**Changed**: `lots_fifo` is `lots_fefo`: within a pool the lot that lapses soonest is spent first, lots
+that never lapse last, ties in grant order. A negative `Grant` may name the grant it reverses
+(`SourceKey`); the books draw that grant's lot first and take any shortfall in the same order. A lot
+records what expiry removed (`expired_credits`) apart from what was consumed, and `LotReader.LotsOf`
+answers where a grant's credits stand.
+**Why**: drawing by grant date spends a never-expiring top-up while a later allotment lapses unspent —
+credits destroyed that the customer could have used. A refund that empties whichever lot is first leaves
+the customer holding what the refunded payment bought and shifts every expiry. And a lapsed lot read as
+fully spent, so nothing could tell a refund that the credits were already lost.
+**Rejected**: bounding the clawback *amount* in the hot function (it has no lots, and a Postgres read on
+the grant path would put a durable-store wait on a request-path call); keeping `lots_fifo` as an alias (an
+operator who set it would get a different order, silently); a `source_op` column on lots (a grant and a
+transfer already have separate keyspaces in `credit_idem`, so `LotsOf` returns a list instead).
+**Consequence**: the amount is still the caller's, so the bound that stops a refund taking back credits
+expiry already took lives in the processor (payments invariant 20) and is specified, not yet enforced.
+
+### D48 — Deliberately not built: a pool's funding class, and promo-code redemption
+**Not built**: a `funding` attribute on `credit_pools` (paid vs promotional), and a promo-code → grant
+mechanism with campaign-wide caps.
+**Why**: the first has no consumer until revenue recognition (Phase 3, not designed), and migrations here
+follow the rule that a feature that is not built ships no schema; adding a defaulted column later is
+additive, so waiting costs nothing and guessing its shape now would. The second is host policy — whether a
+code exists, is open and suits this customer, and how many redemptions a campaign allows, are the host's
+rules over the host's data. The engine supplies the part only it can: a redemption keyed
+`promo:<campaign>:<scope>` mints once however many times, or however concurrently, it is attempted. The
+pattern is in the [integration guide](../../docs/integration-guide.md#promotions-expiring-credits-and-refunds).

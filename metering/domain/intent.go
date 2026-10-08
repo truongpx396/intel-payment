@@ -63,8 +63,9 @@ type Payload struct {
 	Actor           string            `json:"actor,omitempty"`
 	TraceID         string            `json:"trace_id,omitempty"`
 
-	// Grants and lots.
+	// Grants and lots. SourceKey, on a clawback, names the grant whose lot is drawn first.
 	ExpiresAt string `json:"expires_at,omitempty"`
+	SourceKey string `json:"source_key,omitempty"`
 	// Transfers: the counterparty and pools. On transfer_out it names the destination; on
 	// transfer_in, the source.
 	Counterparty *PayloadScope `json:"counterparty,omitempty"`

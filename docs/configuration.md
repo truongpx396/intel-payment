@@ -106,7 +106,7 @@ or move money.
 | Variable | Values | Default | What it decides |
 |---|---|---|---|
 | `PAYMENT_NEGATIVE_BALANCE_POLICY` | `allow_debt` · `clamp_to_zero` · `block_and_flag` | `clamp_to_zero` | What a refund past consumed credits does, per pool. A floor always books a `writeoff` row and never forgives debt that already existed |
-| `PAYMENT_CREDIT_EXPIRY` | `off` · `lots_fifo` | `off` | Whether grants expire |
+| `PAYMENT_CREDIT_EXPIRY` | `off` · `lots_fefo` | `off` | Whether grants expire. With `lots_fefo` each grant is a lot and the one that lapses soonest is spent first (lots that never lapse last). `lots_fifo`, the name this mode had before it drew by expiry, is refused at start-up |
 | `PAYMENT_PLAN_CHANGE_POLICY` | `at_period_end` · `immediate_prorate` · `immediate_no_prorate` | `at_period_end` | Mid-period upgrade/downgrade. Proration is the provider's math |
 | `PAYMENT_TAX_STRATEGY` | `provider_managed` · `external_hook` · `none` | `provider_managed` | **Who computes tax.** There is no compute-it-here mode |
 
@@ -180,7 +180,7 @@ Three rules make this safe:
 
 **Free internal metering (no money).** No provider accounts, one `Balance` limit, `TaxStrategy=none`. Enforcement and a ledger, no fiat.
 
-**Prepaid credit packs.** `plans.kind=one_time`, `CreditExpiry=lots_fifo`, a `promo` pool for signup credits, auto top-up offered per customer.
+**Prepaid credit packs.** `plans.kind=one_time`, `CreditExpiry=lots_fefo`, a `promo` pool for signup credits, auto top-up offered per customer.
 
 **Seat-based SaaS.** A `seat_day` card for the `table` pricer, `PlanChangePolicy=immediate_prorate`, entitlements carrying the seat quota. Most gating is entitlements, not credits.
 

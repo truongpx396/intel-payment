@@ -78,6 +78,12 @@ func (g Grant) Fingerprint() string {
 	} else {
 		c.s("")
 	}
+	// The source is what the operation IS (the same refund key aimed at another payment is another
+	// request), but it is appended only when named: a grant that names none keeps the exact encoding it
+	// always had, so no retry in flight across a deploy becomes an ErrIdemConflict.
+	if g.SourceKey != "" {
+		c.s("src").s(g.SourceKey)
+	}
 	return c.sum()
 }
 

@@ -55,7 +55,12 @@ type Grant struct {
 	Amount    Credits    // positive to add; NEGATIVE for refund/chargeback — NegativeBalancePolicy applies
 	IdemKey   string     // REQUIRED; unique per realm: one provider payment mints once, for one scope
 	Reason    string     // "purchase" | "subscription_grant" | "signup_grant" | "promo" | "refund" | "chargeback" | "chargeback_reversal" | "admin_adjustment"
-	ExpiresAt *time.Time // the lot's expiry under CreditExpiry=lots_fifo
+	ExpiresAt *time.Time // the lot's expiry under CreditExpiry=lots_fefo
+	// SourceKey is, on a NEGATIVE grant, the IdemKey of the grant it reverses — the payment a refund
+	// refunds. Under CreditExpiry=lots_fefo the books draw that grant's lot first and take any shortfall
+	// from the rest in expiry order, so what the customer keeps has the expiry it was bought with. It
+	// does not change the amount or the balance, and is ignored when credits do not expire.
+	SourceKey string
 	Ref       map[string]string
 }
 
@@ -78,6 +83,9 @@ func (g Grant) Validate() error {
 	}
 	if g.ExpiresAt != nil && g.Amount < 0 {
 		return fmt.Errorf("%w: only a positive grant can expire", ErrInvalid)
+	}
+	if g.SourceKey != "" && g.Amount > 0 {
+		return fmt.Errorf("%w: only a clawback can name the grant it reverses", ErrInvalid)
 	}
 	return nil
 }

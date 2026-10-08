@@ -13,6 +13,7 @@ import (
 )
 
 var _ ports.WriterBooks = (*Books)(nil)
+var _ ports.LotReader = (*Books)(nil)
 
 // ScopesSince lists a shard's scopes whose watermark changed at or after `since`, in key order,
 // resuming after `after`. The (shard, updated_at) index makes the filter a range scan.
@@ -202,6 +203,33 @@ func (b *Books) DueLots(ctx context.Context, now time.Time, limit int) ([]ports.
 			return nil, fmt.Errorf("postgres: scan lot: %w", err)
 		}
 		l.Scope.Realm, l.Pool, l.Granted, l.Remaining = domain.Realm(realm), domain.Pool(pool), domain.Credits(granted), domain.Credits(remaining)
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// LotsOf returns the lots a grant (or transfer) opened in one pool of one scope, lapsed ones included,
+// oldest first. It reads the books as they stand, without the scope's lock: a refund asks where a
+// payment's credits stand, and a lot's figures are exact at the watermark whenever it is read.
+func (b *Books) LotsOf(ctx context.Context, scope domain.Scope, pool domain.Pool, sourceKey string) ([]ports.Lot, error) {
+	scope = scope.Normalized()
+	rows, err := b.pool.Query(ctx, `
+		SELECT id::text, granted, remaining, expired_credits, expires_at, expired_at, source_idem_key, created_at
+		FROM credit_lots
+		WHERE realm = $1 AND scope_kind = $2 AND scope_id = $3 AND pool = $4 AND source_idem_key = $5
+		ORDER BY created_at, id`, string(scope.Realm), scope.Kind, scope.ID, string(pool.Or()), sourceKey)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: lots of %q: %w", sourceKey, err)
+	}
+	defer rows.Close()
+	var out []ports.Lot
+	for rows.Next() {
+		l := ports.Lot{Scope: scope, Pool: pool.Or()}
+		var granted, remaining, expired int64
+		if err := rows.Scan(&l.ID, &granted, &remaining, &expired, &l.ExpiresAt, &l.ExpiredAt, &l.SourceKey, &l.CreatedAt); err != nil {
+			return nil, fmt.Errorf("postgres: scan lot: %w", err)
+		}
+		l.Granted, l.Remaining, l.Expired = domain.Credits(granted), domain.Credits(remaining), domain.Credits(expired)
 		out = append(out, l)
 	}
 	return out, rows.Err()

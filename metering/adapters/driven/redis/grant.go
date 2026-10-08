@@ -24,7 +24,7 @@ func (s *Store) Grant(ctx context.Context, g domain.Grant) (domain.Receipt, erro
 	defer cancel()
 
 	sh := s.shard(g.Scope)
-	p := domain.Payload{Reason: g.Reason, Ref: g.Ref}
+	p := domain.Payload{Reason: g.Reason, Ref: g.Ref, SourceKey: g.SourceKey}
 	if g.ExpiresAt != nil {
 		p.ExpiresAt = g.ExpiresAt.UTC().Format(time.RFC3339Nano)
 	}

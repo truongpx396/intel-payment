@@ -260,10 +260,10 @@ func (b *booking) usageIntent(ctx context.Context, in domain.Intent) (outcome, e
 		return 0, err
 	}
 	b.usage = append(b.usage, usageRec{in: in, rows: rows, occurred: occurred})
-	if b.w.cfg.CreditExpiry == metering.ExpiryLotsFIFO {
+	if b.w.cfg.CreditExpiry == metering.ExpiryLotsFEFO {
 		for _, d := range in.Draws {
 			if d.Delta < 0 {
-				if _, err := b.tx.ConsumeLots(ctx, d.Pool, -d.Delta); err != nil {
+				if _, err := b.tx.ConsumeLots(ctx, d.Pool, -d.Delta, ""); err != nil {
 					return 0, err
 				}
 			}
@@ -426,7 +426,7 @@ func (b *booking) grantIntent(ctx context.Context, in domain.Intent) (outcome, e
 	if err := b.tx.PutCreditIdem(ctx, ports.IdemOpGrant, in.IdemKey, in.Fingerprint, in.Gen, in.Seq, ""); err != nil {
 		return 0, err
 	}
-	if b.w.cfg.CreditExpiry == metering.ExpiryLotsFIFO {
+	if b.w.cfg.CreditExpiry == metering.ExpiryLotsFEFO {
 		switch {
 		case requested > 0:
 			lot := ports.Lot{Pool: pool, Granted: requested, SourceKey: in.IdemKey}
@@ -441,7 +441,7 @@ func (b *booking) grantIntent(ctx context.Context, in domain.Intent) (outcome, e
 				return 0, err
 			}
 		case applied < 0:
-			if _, err := b.tx.ConsumeLots(ctx, pool, -applied); err != nil {
+			if _, err := b.tx.ConsumeLots(ctx, pool, -applied, p.SourceKey); err != nil {
 				return 0, err
 			}
 		}
@@ -472,8 +472,8 @@ func (b *booking) transferOut(ctx context.Context, in domain.Intent) (outcome, e
 	if err := b.tx.OpenTransfer(ctx, ports.TransferRecord{Realm: b.scope.Realm, IdemKey: in.IdemKey, From: b.scope, To: dest, FromPool: fromPool, ToPool: toPool, Amount: amount}); err != nil {
 		return 0, err
 	}
-	if b.w.cfg.CreditExpiry == metering.ExpiryLotsFIFO {
-		if _, err := b.tx.ConsumeLots(ctx, fromPool, amount); err != nil {
+	if b.w.cfg.CreditExpiry == metering.ExpiryLotsFEFO {
+		if _, err := b.tx.ConsumeLots(ctx, fromPool, amount, ""); err != nil {
 			return 0, err
 		}
 	}
@@ -501,7 +501,7 @@ func (b *booking) transferIn(ctx context.Context, in domain.Intent) (outcome, er
 	if err := b.tx.PutCreditIdem(ctx, ports.IdemOpTransferIn, in.IdemKey, in.Fingerprint, in.Gen, in.Seq, ""); err != nil {
 		return 0, err
 	}
-	if b.w.cfg.CreditExpiry == metering.ExpiryLotsFIFO && applied > 0 {
+	if b.w.cfg.CreditExpiry == metering.ExpiryLotsFEFO && applied > 0 {
 		if err := b.tx.OpenLot(ctx, ports.Lot{Pool: pool, Granted: applied, SourceKey: in.IdemKey}); err != nil {
 			return 0, err
 		}

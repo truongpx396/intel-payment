@@ -74,6 +74,7 @@ exactly without mutating the original, and that a tampered webhook body is rejec
 7. Given a dispute, when funds are withdrawn the credits are clawed back, and when funds are reinstated they are granted back.
 8. Given a failed renewal, when processed, the subscription enters `past_due` with a grace window and is **not** revoked instantly.
 9. Given subscription events delivered out of order, when processed, the newest provider state wins.
+10. Given several payments and credit expiry, when one is refunded, the credits come out of that payment's lot and the others keep the expiry they were bought with; and credits that expiry had already removed from it are not revoked a second time.
 10. Given a webhook naming another scope in its metadata, when processed, the grant lands on the scope resolved from the **verified customer mapping**.
 
 ### User Story 3 — A member understands their position (Priority: P2)
@@ -150,7 +151,8 @@ intents as deferred rather than drift.
 - **FR-013**: The system MUST treat a scope as opaque.
 - **FR-014**: The system MUST isolate realms completely.
 - **FR-015**: The system MUST apply an explicit, configured policy when a credit change would drive a pool negative, and MUST book a compensating row when it floors one.
-- **FR-016**: The system MUST support an optional credit-expiry mode that consumes and expires grants oldest-first within each pool.
+- **FR-016**: The system MUST support an optional credit-expiry mode in which each grant is a lot that expires, and within each pool the lot that lapses soonest is spent first, lots that never lapse last, ties in grant order.
+- **FR-016a**: Under that mode a clawback MUST be able to name the grant it reverses and take its credits from that grant's lot before any other, the books MUST record what expiry removed from a lot apart from what was consumed, and a caller MUST be able to ask where a grant's credits stand.
 - **FR-017**: The system MUST load ceilings, pools and rate cards as per-realm configuration data, and MUST allow a ceiling's size to come from the scope's plan, override or free tier.
 - **FR-017a**: The system MUST support a cumulative ceiling scoped to a single unit of work, as a counter rather than a granted balance.
 - **FR-017b**: The system MUST provide a transfer between two scopes of one realm under one idempotency key that refuses rather than overdraws, conserves the realm's total including credits in transit at every step, and always completes both sides once it has begun.

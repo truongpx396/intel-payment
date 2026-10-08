@@ -285,8 +285,8 @@ func (t *bookTx) CloseSuspense(ctx context.Context, id string) (bool, error) {
 }
 
 // OpenLot stamps created_at with clock_timestamp(), not the transaction's now(): several grants
-// booked in one transaction must still consume in the order they were granted (FIFO), and now() is
-// the same instant for all of them.
+// booked in one transaction must still tie-break in the order they were granted, and now() is the
+// same instant for all of them.
 func (t *bookTx) OpenLot(ctx context.Context, l ports.Lot) error {
 	r, k, i := t.key()
 	_, err := t.tx.Exec(ctx, `
@@ -298,15 +298,41 @@ func (t *bookTx) OpenLot(ctx context.Context, l ports.Lot) error {
 	return nil
 }
 
-func (t *bookTx) ConsumeLots(ctx context.Context, pool domain.Pool, n domain.Credits) (domain.Credits, error) {
+func (t *bookTx) ConsumeLots(ctx context.Context, pool domain.Pool, n domain.Credits, sourceKey string) (domain.Credits, error) {
 	if n <= 0 {
 		return 0, nil
 	}
+	// A clawback empties the lot of the grant it reverses first. The ordinary draw is a separate,
+	// second pass rather than a sort key on the first, so the path every usage intent takes keeps an
+	// index-ordered scan (credit_lots_fefo_idx).
+	var consumed domain.Credits
+	if sourceKey != "" {
+		got, err := t.drawLots(ctx, pool, n, sourceKey)
+		if err != nil {
+			return 0, err
+		}
+		consumed = got
+	}
+	if consumed < n {
+		got, err := t.drawLots(ctx, pool, n-consumed, "")
+		if err != nil {
+			return 0, err
+		}
+		consumed += got
+	}
+	return consumed, nil
+}
+
+// drawLots takes up to n credits from the pool's live lots — only those opened by onlySource when it
+// is set — soonest-expiring first, lots that never lapse last, ties in grant order. It returns what
+// it found.
+func (t *bookTx) drawLots(ctx context.Context, pool domain.Pool, n domain.Credits, onlySource string) (domain.Credits, error) {
 	r, k, i := t.key()
 	rows, err := t.tx.Query(ctx, `
 		SELECT id::text, remaining FROM credit_lots
 		WHERE realm = $1 AND scope_kind = $2 AND scope_id = $3 AND pool = $4 AND remaining > 0 AND expired_at IS NULL
-		ORDER BY created_at, id FOR UPDATE`, r, k, i, string(pool.Or()))
+		  AND ($5 = '' OR source_idem_key = $5)
+		ORDER BY expires_at NULLS LAST, created_at, id FOR UPDATE`, r, k, i, string(pool.Or()), onlySource)
 	if err != nil {
 		return 0, fmt.Errorf("postgres: read lots: %w", err)
 	}
@@ -352,7 +378,7 @@ func (t *bookTx) ExpireLot(ctx context.Context, lotID string) (domain.Credits, b
 	if err != nil {
 		return 0, false, fmt.Errorf("postgres: read lot: %w", err)
 	}
-	if _, err := t.tx.Exec(ctx, `UPDATE credit_lots SET remaining = 0, expired_at = now() WHERE id = $1::uuid`, lotID); err != nil {
+	if _, err := t.tx.Exec(ctx, `UPDATE credit_lots SET expired_credits = remaining, remaining = 0, expired_at = now() WHERE id = $1::uuid`, lotID); err != nil {
 		return 0, false, fmt.Errorf("postgres: expire lot: %w", err)
 	}
 	return domain.Credits(rem), true, nil

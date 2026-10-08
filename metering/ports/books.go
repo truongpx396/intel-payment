@@ -96,17 +96,34 @@ type Suspense struct {
 	CreatedAt time.Time
 }
 
-// Lot is a grant's remainder under CreditExpiry=lots_fifo. Lots are maintained by the writer as it
+// Lot is a grant's remainder under CreditExpiry=lots_fefo. Lots are maintained by the writer as it
 // books in sequence order, so Remaining is exact at the watermark.
+//
+// Granted = Remaining + Expired + what was consumed (spent, or clawed back). Expired is what expiry
+// took out of the lot, kept apart from consumption so that a refund can tell credits the customer
+// used from credits they have already lost.
 type Lot struct {
 	ID        string
 	Scope     domain.Scope
 	Pool      domain.Pool
 	Granted   domain.Credits
 	Remaining domain.Credits
-	ExpiresAt *time.Time
-	SourceKey string
+	Expired   domain.Credits
+	ExpiresAt *time.Time // when the lot lapses; nil = never
+	ExpiredAt *time.Time // when it did lapse; nil = it has not
+	SourceKey string     // the IdemKey of the grant (or transfer) that opened it
 	CreatedAt time.Time
+}
+
+// LotReader is the read side of the lots: where a grant's credits stand. It exists for the caller that
+// decides how much of a payment a refund can still take back — billing — which may depend on ports only.
+type LotReader interface {
+	// LotsOf returns the lots that the grant (or transfer) with this key opened in one pool of one scope,
+	// lapsed ones included, oldest first. Normally there is exactly one; a grant and a transfer that
+	// share a key string open one each, which is why the answer is a list. Remaining is exact at the
+	// watermark: usage still in flight has not been booked yet, so it is an upper bound on what a
+	// clawback can find. An unknown key is an empty answer, not an error.
+	LotsOf(ctx context.Context, scope domain.Scope, pool domain.Pool, sourceKey string) ([]Lot, error)
 }
 
 // TransferRecord is a transfer in flight or settled (credit_transfers).
@@ -162,9 +179,14 @@ type BookTx interface {
 	CloseSuspense(ctx context.Context, id string) (bool, error)
 
 	OpenLot(ctx context.Context, l Lot) error
-	// ConsumeLots draws n credits from the pool's oldest unexpired lots (FIFO) and returns how many
-	// it found; a pool with less in lots than n is not an error (grants before lots_fifo was on).
-	ConsumeLots(ctx context.Context, pool domain.Pool, n domain.Credits) (domain.Credits, error)
+	// ConsumeLots draws n credits from the pool's live lots and returns how many it found; a pool
+	// with less in lots than n is not an error (grants before lots_fefo was on). The order is the
+	// lot that lapses soonest first, lots that never lapse last, ties in grant order (FEFO): spending
+	// a lot that will not lapse while one that will sits untouched destroys credits the customer could
+	// have used. A non-empty sourceKey (a clawback naming the grant it reverses) puts THAT grant's lot
+	// in the pool first; the shortfall past it follows the order above, and a key that matches no lot
+	// (a grant from before lots were on) is not an error.
+	ConsumeLots(ctx context.Context, pool domain.Pool, n domain.Credits, sourceKey string) (domain.Credits, error)
 	// ExpireLot zeroes a lot and returns the EXACT remainder it held at this point in the sequence.
 	ExpireLot(ctx context.Context, lotID string) (remaining domain.Credits, found bool, err error)
 

@@ -22,7 +22,7 @@ Conventions: `Idempotency-Key` required on every mutating request, and it **is**
 |--------|------|-----------|---------|
 | POST | `/v1/admit` | `record` | Admission gate. `{scope, resource, subjects?, limits?, max_cost?}` → `{allowed, exceeded?, warning?, headroom, blocked}`. Hot path: co-locate, tight deadline, explicit fail policy. Prefer gRPC |
 | POST | `/v1/record` | `record` | Price + settle. `{scope, resource, rate_key, quantities[], subjects?, occurred_at, attributes?}` → `Receipt`. **`occurred_at` is required and must be identical on every retry.** A replay returns `applied:false`; an outage returns **`202`** with `deferred:true` (journaled, applied on recovery) |
-| POST | `/v1/grant` | `grant` | Mint/remove credits in a pool. `{scope, pool?, amount, reason, expires_at?, ref?}` → `Receipt` |
+| POST | `/v1/grant` | `grant` | Mint/remove credits in a pool. `{scope, pool?, amount, reason, expires_at?, source_key?, ref?}` → `Receipt`. `source_key` is allowed only on a negative `amount` and names the grant it reverses |
 | POST | `/v1/transfer` | `grant` | Pool → allocation. `{from, to, from_pool?, to_pool?, amount, reason, max_dest_balance?}` → `{applied, status: in_transit, from_balance}` |
 | GET | `/v1/transfers/{idem_key}` | `grant` | `{status: in_transit\|settled, …}` |
 | GET | `/v1/balance` | `record` | `?scope_kind=&scope_id=` → `{pools: {general: …, promo: …}, total}` — the hot copy |

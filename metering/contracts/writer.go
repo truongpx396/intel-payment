@@ -17,7 +17,7 @@ import (
 type WriterOptions struct {
 	LedgerOptions
 	Rollup      bool           // LedgerGranularity=rollup (needs an archive)
-	Lots        bool           // CreditExpiry=lots_fifo
+	Lots        bool           // CreditExpiry=lots_fefo
 	Tolerance   domain.Credits // ReconcileTolerance
 	MaxAttempts int            // deliveries before an intent is parked; 0 = the default
 	// Dedicated asks for a hot tier no other test shares. A behaviour that bumps a shard's

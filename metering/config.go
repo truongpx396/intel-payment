@@ -39,7 +39,7 @@ const (
 	BlockAndFlag = domain.BlockAndFlag
 
 	ExpiryOff      = domain.ExpiryOff
-	ExpiryLotsFIFO = domain.ExpiryLotsFIFO
+	ExpiryLotsFEFO = domain.ExpiryLotsFEFO
 
 	FailClosed = domain.FailClosed
 	FailOpen   = domain.FailOpen

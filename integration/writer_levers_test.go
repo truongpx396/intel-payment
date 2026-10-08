@@ -310,7 +310,7 @@ func writerConfig(o contracts.WriterOptions) metering.Config {
 		cfg.LedgerGranularity = "rollup"
 	}
 	if o.Lots {
-		cfg.CreditExpiry = "lots_fifo"
+		cfg.CreditExpiry = "lots_fefo"
 	}
 	return cfg
 }

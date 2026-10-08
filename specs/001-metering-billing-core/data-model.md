@@ -93,7 +93,11 @@ Ceilings as per-realm data.
 A low-water mark on one pool of one scope, with a `key` naming what it triggers (`auto_recharge`, or a host-defined notice). The hot function flags the intent that crosses it.
 
 ### `credit_lots`
-Only under `CreditExpiry=lots_fifo`: per-grant lots **per pool**, `granted`, `remaining`, `expires_at`. Maintained by the writer as it books intents in sequence order, so `remaining` is exact at the watermark; expiry is pre-applied at that upper bound and trued up.
+Only under `CreditExpiry=lots_fefo`: per-grant lots **per pool**, with `granted`, `remaining`, `expired_credits`, `expires_at`, `expired_at` and `source_idem_key` (the key of the grant or transfer that opened it). Maintained by the writer as it books intents in sequence order, so `remaining` is exact at the watermark; expiry is pre-applied at that upper bound and trued up.
+
+- `granted = remaining + expired_credits + consumed`, where consumed is what was spent **or clawed back**. The database holds `remaining + expired_credits ≤ granted`; `expired_credits` is kept apart from consumption so a refund can tell credits the customer used from credits they already lost.
+- **Draw order** is `expires_at` (NULL last), then `created_at`, then `id`, over live lots (`remaining > 0 AND expired_at IS NULL`) — `credit_lots_fefo_idx`. A clawback that names its grant draws that grant's lot first, then the same order.
+- `credit_lots_source_idx` finds a grant's lots by key, lapsed or not: it is the refund path's question (`LotReader.LotsOf`), and the live-lot index does not cover a lot that has lapsed.
 
 ---
 
@@ -169,7 +173,7 @@ How hosts hear what happened ([outbound-events.md](./contracts/outbound-events.m
 | `0002_payments.sql` | `provider_accounts`, `plans`, `plan_prices`, `plan_provider_prices`, `billing_customers`, `subscriptions`, `payments`, `payment_events`, `auto_recharge` |
 | `0003_entitlements.sql` | `entitlement_keys`, `plan_entitlements`, `realm_defaults`, `entitlement_overrides` |
 | `0004_operations.sql` | `usage_daily`, `reconcile_runs`, `reconcile_findings`, `dead_letters`, `audit_log` + the configuration audit trigger, `event_endpoints`, `outbound_events`, `event_deliveries` |
-| `0005_credit_lots.sql` | `credit_lots` — applied always, used only under `lots_fifo` |
+| `0005_credit_lots.sql` | `credit_lots` — applied always, used only under `lots_fefo` |
 
 The Phase 2 schema is a **draft** kept with its spec ([002 draft-migrations](../002-postpaid-invoicing/draft-migrations/)), verified in CI on top of this baseline and shipped only with Phase 2's code ([D38](./design-decisions.md)).
 

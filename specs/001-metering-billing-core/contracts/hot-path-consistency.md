@@ -131,11 +131,11 @@ charge.
 
 | `op` | Idempotency row | Booked (ledger rows) | Other |
 |---|---|---|---|
-| `usage` | `usage_idem (realm, scope, idem_key)` — window-bounded (§6) | one consumption row per pool draw (`event` granularity) or a share of a rollup row (`rollup`) | FIFO lot consumption under `lots_fifo`; journal row marked settled |
-| `grant` | `credit_idem (realm, 'grant', idem_key)` — permanent | the grant row, plus a `writeoff` row when `wo` is set | a lot is opened for a positive grant under `lots_fifo` |
+| `usage` | `usage_idem (realm, scope, idem_key)` — window-bounded (§6) | one consumption row per pool draw (`event` granularity) or a share of a rollup row (`rollup`) | lot consumption under `lots_fefo` (soonest-expiring first); journal row marked settled |
+| `grant` | `credit_idem (realm, 'grant', idem_key)` — permanent | the grant row, plus a `writeoff` row when `wo` is set | a lot is opened for a positive grant under `lots_fefo`; a negative grant that names its `source_key` draws that grant's lot first |
 | `transfer_out` | `credit_idem (realm, 'transfer', idem_key)` | `allocation_out` on the source | `credit_transfers` row `in_transit`; then the writer credits the destination (§4) |
 | `transfer_in` | `credit_idem (realm, 'transfer_in', idem_key)` | `allocation_in` on the destination | `credit_transfers` row → `settled` |
-| `expiry` | `credit_idem (realm, 'expiry', lot_id)` | `expiry` row for the lot's **exact** remainder at this point in the sequence | the pre-applied upper bound minus the exact figure opens a suspense entry |
+| `expiry` | `credit_idem (realm, 'expiry', lot_id)` | `expiry` row for the lot's **exact** remainder at this point in the sequence | the exact remainder is recorded on the lot as `expired_credits`; the pre-applied upper bound minus the exact figure opens a suspense entry |
 | `correction` | `credit_idem (realm, 'correction', suspense_id)` | nothing | closes the suspense entry it names |
 
 Any intent carrying `lw` also publishes `billing.balance.low.<tag>` after it is booked — the trigger
