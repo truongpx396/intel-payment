@@ -825,6 +825,74 @@ func TestAClawbackDrawsTheRefundedGrantsLotBeforeAnyOther(t *testing.T) {
 	}
 }
 
+// Whoever decides how much of a payment a refund can still take back — and whether the customer has
+// already lost some of it to expiry — needs the books' answer, not a guess. LotsOf is that answer.
+func TestLotsOfReportsWhereAGrantsCreditsStand(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	p := db(t)
+	b := pgadapter.NewBooks(p)
+	s, other := scope("t1"), scope("t1")
+	exp := time.Now().Add(24 * time.Hour)
+	must(t, b.InTx(ctx, s, func(ctx context.Context, tx ports.BookTx) error {
+		for _, l := range []ports.Lot{
+			{Pool: "general", Granted: 1000, ExpiresAt: &exp, SourceKey: "pay-1"},
+			{Pool: "general", Granted: 500, SourceKey: "pay-2"},
+			{Pool: "promo", Granted: 70, SourceKey: "pay-1"}, // the same key in another pool
+		} {
+			if err := tx.OpenLot(ctx, l); err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
+	must(t, b.InTx(ctx, other, func(ctx context.Context, tx ports.BookTx) error {
+		return tx.OpenLot(ctx, ports.Lot{Pool: "general", Granted: 9, SourceKey: "pay-1"}) // another scope
+	}))
+	must(t, b.InTx(ctx, s, func(ctx context.Context, tx ports.BookTx) error {
+		_, err := tx.ConsumeLots(ctx, "general", 300, "") // soonest expiry first: this comes out of pay-1
+		return err
+	}))
+
+	lots, err := b.LotsOf(ctx, s, "general", "pay-1")
+	must(t, err)
+	if len(lots) != 1 {
+		t.Fatalf("one grant opens one lot, and only in its own pool and scope: %+v", lots)
+	}
+	l := lots[0]
+	if l.Granted != 1000 || l.Remaining != 700 || l.Expired != 0 || l.ExpiredAt != nil {
+		t.Fatalf("1000 granted, 300 spent, 700 still spendable and none lapsed: %+v", l)
+	}
+	if l.ExpiresAt == nil || l.ExpiresAt.Sub(exp).Abs() > time.Millisecond {
+		t.Fatalf("the lot says when it lapses: %v, want %v", l.ExpiresAt, exp)
+	}
+
+	must(t, b.InTx(ctx, s, func(ctx context.Context, tx ports.BookTx) error {
+		if got, found, err := tx.ExpireLot(ctx, l.ID); err != nil || !found || got != 700 {
+			t.Fatalf("expired %d (found %v): %v", got, found, err)
+		}
+		return nil
+	}))
+	lots, err = b.LotsOf(ctx, s, "general", "pay-1")
+	must(t, err)
+	if len(lots) != 1 || lots[0].Remaining != 0 || lots[0].Expired != 700 || lots[0].ExpiredAt == nil {
+		t.Fatalf("after expiry the 700 are recorded as lapsed, not as spent: %+v", lots)
+	}
+	if spent := lots[0].Granted - lots[0].Remaining - lots[0].Expired; spent != 300 {
+		t.Fatalf("what is neither spendable nor lapsed was consumed: %d, want 300", spent)
+	}
+
+	if got, err := b.LotsOf(ctx, s, "general", "no-such-grant"); err != nil || len(got) != 0 {
+		t.Fatalf("an unknown grant has no lots, and that is not an error: %+v %v", got, err)
+	}
+	if got, _ := b.LotsOf(ctx, s, "promo", "pay-1"); len(got) != 1 || got[0].Granted != 70 {
+		t.Fatalf("the pool is part of the question: %+v", got)
+	}
+	if got, _ := b.LotsOf(ctx, other, "general", "pay-1"); len(got) != 1 || got[0].Granted != 9 {
+		t.Fatalf("so is the scope: %+v", got)
+	}
+}
+
 func TestTransfersOpenIdempotentlyAndSettleOnce(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

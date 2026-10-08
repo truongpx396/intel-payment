@@ -59,6 +59,8 @@ type WriterHarness struct {
 	// The books.
 	Watermark func(t *testing.T, s domain.Scope) ports.Watermark
 	Lots      func(t *testing.T, s domain.Scope) []ports.Lot // the scope's credit lots, oldest grant first
+	// LotsOf is the books' read side (ports.LotReader): where one grant's credits stand.
+	LotsOf    func(t *testing.T, s domain.Scope, pool domain.Pool, sourceKey string) []ports.Lot
 	Suspense  func(t *testing.T, s domain.Scope) []ports.Suspense
 	Rows      func(t *testing.T, s domain.Scope) []ports.LedgerRow
 	ShardGen  func(t *testing.T, s domain.Scope) int64
@@ -919,6 +921,41 @@ func LedgerWriterContract(t *testing.T, newHarness func(t *testing.T, o WriterOp
 		h.Drain(t)
 		if !h.HasRow(t, s, "refund", -400) || h.Booked(t, s, domain.GeneralPool) != 600 || hot(t, h, s) != 600 {
 			t.Fatalf("a refund books exactly as before: hot %d booked %d", hot(t, h, s), h.Booked(t, s, domain.GeneralPool))
+		}
+	})
+
+	sub("lots: the books say where a payment's credits stand, before they lapse and after", func(t *testing.T) {
+		h, s := newHarness(t, WriterOptions{Lots: true}), ws()
+		h.need(t, "Expire", h.Expire != nil)
+		h.need(t, "LotsOf", h.LotsOf != nil)
+		soon := h.Clock.Now().Add(time.Hour)
+		_, err := h.Ledger.Grant(ctx, domain.Grant{Scope: s, Amount: 1000, IdemKey: "pay-1", Reason: "purchase", ExpiresAt: &soon})
+		mustNoErr(t, err)
+		debit(t, h, charge(s, 300, "spend"))
+		h.Drain(t)
+		one := func(t *testing.T) ports.Lot {
+			t.Helper()
+			ls := h.LotsOf(t, s, domain.GeneralPool, "pay-1")
+			if len(ls) != 1 {
+				t.Fatalf("one grant opens one lot: %+v", ls)
+			}
+			return ls[0]
+		}
+		if l := one(t); l.Granted != 1000 || l.Remaining != 700 || l.Expired != 0 || l.ExpiredAt != nil {
+			t.Fatalf("1000 granted, 300 spent: %+v", l)
+		}
+
+		h.Clock.Advance(2 * time.Hour)
+		if n := h.Expire(t); n != 1 {
+			t.Fatalf("expired %d lots", n)
+		}
+		h.Drain(t)
+		l := one(t)
+		if l.Remaining != 0 || l.Expired != 700 || l.ExpiredAt == nil {
+			t.Fatalf("the 700 that lapsed are recorded as lapsed, not as spent: %+v", l)
+		}
+		if got := l.Granted - l.Remaining - l.Expired; got != 300 {
+			t.Fatalf("what neither remains nor lapsed was consumed: %d, want 300", got)
 		}
 	})
 

@@ -358,6 +358,12 @@ func (s *wstack) writerHarness() contracts.WriterHarness {
 
 		Watermark: func(t *testing.T, sc domain.Scope) ports.Watermark { t.Helper(); return s.watermark(sc) },
 		Lots:      func(t *testing.T, sc domain.Scope) []ports.Lot { t.Helper(); return s.lots(sc) },
+		LotsOf: func(t *testing.T, sc domain.Scope, pool domain.Pool, key string) []ports.Lot {
+			t.Helper()
+			ls, err := s.books.LotsOf(ctx, sc.Normalized(), pool, key)
+			must(t, err)
+			return ls
+		},
 		Suspense:  func(t *testing.T, sc domain.Scope) []ports.Suspense { t.Helper(); return s.suspense(sc) },
 		Rows:      func(t *testing.T, sc domain.Scope) []ports.LedgerRow { t.Helper(); return s.rows(sc) },
 		ShardGen:  func(t *testing.T, sc domain.Scope) int64 { t.Helper(); return s.shardGen(sc) },
