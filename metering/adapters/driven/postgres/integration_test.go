@@ -681,7 +681,7 @@ func TestLotsConsumeFIFOAndExpireAtTheExactRemainder(t *testing.T) {
 				return err
 			}
 		}
-		got, err := tx.ConsumeLots(ctx, "general", 150)
+		got, err := tx.ConsumeLots(ctx, "general", 150, "")
 		if err != nil || got != 150 {
 			t.Fatalf("consumed %d: %v", got, err)
 		}
@@ -695,10 +695,10 @@ func TestLotsConsumeFIFOAndExpireAtTheExactRemainder(t *testing.T) {
 	}
 	must(t, b.InTx(ctx, s, func(ctx context.Context, tx ports.BookTx) error {
 		// More than the lots hold is not an error: the rest predates lots_fifo being switched on.
-		if got, _ := tx.ConsumeLots(ctx, "general", 1000); got != 150 {
+		if got, _ := tx.ConsumeLots(ctx, "general", 1000, ""); got != 150 {
 			t.Fatalf("consumed %d, want the 150 that remained", got)
 		}
-		if got, _ := tx.ConsumeLots(ctx, "promo", 10); got != 0 {
+		if got, _ := tx.ConsumeLots(ctx, "promo", 10, ""); got != 0 {
 			t.Fatal("another pool has no lots")
 		}
 		return nil
@@ -708,7 +708,7 @@ func TestLotsConsumeFIFOAndExpireAtTheExactRemainder(t *testing.T) {
 		if err := tx.OpenLot(ctx, ports.Lot{Pool: "promo", Granted: 80, SourceKey: "p"}); err != nil {
 			return err
 		}
-		_, _ = tx.ConsumeLots(ctx, "promo", 30)
+		_, _ = tx.ConsumeLots(ctx, "promo", 30, "")
 		return nil
 	}))
 	lotID = scalar[string](t, p, `SELECT id::text FROM credit_lots WHERE source_idem_key = 'p' AND scope_id = $1`, s.ID)
@@ -754,7 +754,7 @@ func TestLotsAreConsumedSoonestExpiryFirstAndNeverExpiringLast(t *testing.T) {
 	consume := func(n domain.Credits) {
 		t.Helper()
 		must(t, b.InTx(ctx, s, func(ctx context.Context, tx ports.BookTx) error {
-			if got, err := tx.ConsumeLots(ctx, "general", n); err != nil || got != n {
+			if got, err := tx.ConsumeLots(ctx, "general", n, ""); err != nil || got != n {
 				t.Fatalf("consumed %d of %d: %v", got, n, err)
 			}
 			return nil
@@ -768,6 +768,60 @@ func TestLotsAreConsumedSoonestExpiryFirstAndNeverExpiringLast(t *testing.T) {
 	consume(100)
 	if rem("soon-b") != 0 || rem("later") != 50 || rem("forever") != 100 {
 		t.Fatalf("a lot that never expires is spent last: soon-b %d later %d forever %d", rem("soon-b"), rem("later"), rem("forever"))
+	}
+}
+
+// A refund of one payment must take THAT payment's credits. Taking them from whichever lot expires
+// first leaves the customer holding credits the refunded payment bought, drains credits an unrelated
+// payment bought, and shifts every expiry.
+func TestAClawbackDrawsTheRefundedGrantsLotBeforeAnyOther(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	p := db(t)
+	b := pgadapter.NewBooks(p)
+	s := scope("t1")
+	later := time.Now().Add(48 * time.Hour)
+	must(t, b.InTx(ctx, s, func(ctx context.Context, tx ports.BookTx) error {
+		for _, l := range []ports.Lot{
+			{Pool: "general", Granted: 1000, ExpiresAt: &later, SourceKey: "pay-1"}, // expiry order alone would take THIS first
+			{Pool: "general", Granted: 1000, SourceKey: "pay-2"},                    // never expires
+			{Pool: "promo", Granted: 100, SourceKey: "pay-2"},                       // the same key in another pool is another lot
+		} {
+			if err := tx.OpenLot(ctx, l); err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
+	rem := func(pool, key string) int64 {
+		return scalar[int64](t, p, `SELECT remaining FROM credit_lots WHERE pool = $1 AND source_idem_key = $2 AND scope_id = $3`, pool, key, s.ID)
+	}
+	clawback := func(n domain.Credits, source string) {
+		t.Helper()
+		must(t, b.InTx(ctx, s, func(ctx context.Context, tx ports.BookTx) error {
+			if got, err := tx.ConsumeLots(ctx, "general", n, source); err != nil || got != n {
+				t.Fatalf("took %d of %d: %v", got, n, err)
+			}
+			return nil
+		}))
+	}
+
+	clawback(600, "pay-2")
+	if rem("general", "pay-2") != 400 || rem("general", "pay-1") != 1000 {
+		t.Fatalf("the refunded payment's lot is drawn before another that expires sooner: pay-2 %d pay-1 %d", rem("general", "pay-2"), rem("general", "pay-1"))
+	}
+	if rem("promo", "pay-2") != 100 {
+		t.Fatal("a clawback is per pool: another pool's lot under the same key is not touched")
+	}
+
+	clawback(700, "pay-2") // 400 left in the source lot: the other 300 come from the rest, in expiry order
+	if rem("general", "pay-2") != 0 || rem("general", "pay-1") != 700 {
+		t.Fatalf("the shortfall past the source lot is taken from the others: pay-2 %d pay-1 %d", rem("general", "pay-2"), rem("general", "pay-1"))
+	}
+
+	clawback(100, "no-such-grant") // a grant that predates lots, or never had one: ordinary expiry order, not an error
+	if rem("general", "pay-1") != 600 {
+		t.Fatalf("an unknown source falls back to the ordinary order: pay-1 %d", rem("general", "pay-1"))
 	}
 }
 

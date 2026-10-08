@@ -160,5 +160,29 @@ func TestGrantAndTransferFingerprintsAreTheDocumentedEncoding(t *testing.T) {
 	}
 }
 
+// A clawback names the grant it reverses, and that is part of what the operation IS: the same refund
+// key aimed at a different payment is a different request, so it must conflict rather than replay.
+// The field is appended ONLY when set, so every grant that names no source keeps the exact fingerprint
+// it had — a retry in flight across a deploy must not turn into an ErrIdemConflict.
+func TestAClawbacksSourceGrantIsPartOfItsFingerprintOnlyWhenNamed(t *testing.T) {
+	t.Parallel()
+	org := domain.Scope{Realm: "t1", Kind: "org", ID: "o1"}
+	refund := domain.Grant{Scope: org, Amount: -40, Reason: "refund", SourceKey: "pay-2"}
+
+	if got, want := refund.Fingerprint(), sha("5:grant"+"9:t1/org:o1"+"7:general"+"3:-40"+"6:refund"+"0:"+"3:src"+"5:pay-2"); got != want {
+		t.Errorf("a clawback that names its source:\n got %s\nwant %s", got, want)
+	}
+	aimedElsewhere := refund
+	aimedElsewhere.SourceKey = "pay-1"
+	if refund.Fingerprint() == aimedElsewhere.Fingerprint() {
+		t.Error("the same key aimed at another payment must not fingerprint alike: it would replay silently")
+	}
+	unsourced := refund
+	unsourced.SourceKey = ""
+	if got, want := unsourced.Fingerprint(), sha("5:grant"+"9:t1/org:o1"+"7:general"+"3:-40"+"6:refund"+"0:"); got != want {
+		t.Errorf("a grant that names no source must keep its established encoding:\n got %s\nwant %s", got, want)
+	}
+}
+
 // lp length-prefixes one field, as the canonical form does.
 func lp(s string) string { return strconv.Itoa(len(s)) + ":" + s }
