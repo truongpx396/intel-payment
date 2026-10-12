@@ -1,6 +1,7 @@
 package otelmetrics_test
 
 import (
+	"compress/gzip"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -151,4 +152,45 @@ func grep(body string, needles ...string) string {
 		}
 	}
 	return strings.Join(out, "\n")
+}
+
+// A Prometheus server asks for gzip, and so does Go's HTTP client by default. The handler appends the
+// declarations the exporter leaves out, so it must not hand back a compressed body with plain text stuck on its
+// end: that is a body no scraper can read, and an empty /metrics looks exactly like a service with no traffic.
+func TestAScrapeThatAsksForGzipStillGetsAReadableBodyWithTheWholeCatalogue(t *testing.T) {
+	t.Parallel()
+	m, h := newProm(t)
+	m.Count(ports.MetricAdmitDenied, 1, ports.Labels{"realm": "acme"})
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+	var body []byte
+	switch enc := rec.Header().Get("Content-Encoding"); enc {
+	case "":
+		body = rec.Body.Bytes()
+	case "gzip":
+		zr, err := gzip.NewReader(rec.Body)
+		if err != nil {
+			t.Fatalf("the body is labelled gzip and is not: %v", err)
+		}
+		if body, err = io.ReadAll(zr); err != nil {
+			t.Fatalf("the gzip body is corrupt: %v", err)
+		}
+	default:
+		t.Fatalf("Content-Encoding %q", enc)
+	}
+	text := string(body)
+	if !hasSample(text, `metering_admit_denied_total{realm="acme"} 1`) {
+		t.Errorf("a sample recorded before the scrape is missing:\n%.500s", text)
+	}
+	for _, d := range ports.Catalog {
+		if !strings.Contains(text, "# TYPE "+d.Name+" "+string(d.Kind)+"\n") {
+			t.Errorf("%s is not declared in the body a gzip-asking scraper reads", d.Name)
+		}
+	}
 }
