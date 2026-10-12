@@ -128,7 +128,7 @@ Contract-derived: the invariants and the test skeleton are in [payment-provider-
 - [ ] **R086** Stripe, against **recorded** signed fixtures: `R082` run against the adapter; the timestamp tolerance exactly at its bound, one second inside and one outside; per-account secrets (a body signed with account B's secret fails on account A); signatures compared in constant time (`hmac.Equal`); grants keyed on payment/invoice id, so a redelivery is the same key.
 - [ ] **T086** `adapters/driven/stripe` — HMAC, tolerance, per-account secrets; key grants on payment/invoice id; refunds and dispute events.
 - [ ] **R087** Polar and PayPal: `R082` run against each; PayPal's remote verification down → the delivery is parked **with its raw body** and answered `202` (IngressContract), never `2xx`-and-dropped.
-- [ ] **T087** [P] `adapters/driven/polar`, **T088** [P] `adapters/driven/paypal` (remote verification, **park unverifiable with the raw body**).
+- [ ] **T087** [P] `adapters/driven/polar`, **T088** [P] `adapters/driven/paypal` (remote verification, **park unverifiable with the raw body**). Both make **R087** green.
 - [ ] **R089** `TaxStrategy` — each of the three modes: `provider_managed` adds nothing the provider does not compute, `external_hook` is called before checkout and its failure fails the checkout closed, `none` annotates nothing; there is no fourth mode (**FR-028**). **R090** `PlanChangePolicy` — a table over upgrade / downgrade × each policy, including a change that would take an entitlement below current usage (**FR-029**). **R091** the catalogue is per account and currency: an unknown price id is `!ok`, never a default plan.
 - [ ] **T089** `TaxStrategy` impls. **T090** `PlanChangePolicy`. **T091** Catalogue store per account and currency.
 - [ ] **T092** Run **R082** against **every** adapter (**SC-004**) — a new adapter is not registered until it passes.
@@ -189,12 +189,12 @@ Contract-derived: [credits-ui-ports.md § Invariants](./contracts/credits-ui-por
 
 These are measurements, not features, so there is no pair: each is its own red, and a miss is a design finding.
 
-- [ ] **T130** Load test against the [scale envelope](./plan.md#scale-envelope) and **SC-001**. A miss is a design finding.
-- [ ] **T131** Chaos: kill Redis; fail it over to a lagging replica; restart it from a truncated AOF; replay webhooks at volume; kill a processor mid-event; inject drift; poison an intent. Each ends with no double charge and a page where the contract says so.
-- [ ] **T132** Security review against the checklists; `gitleaks` + `govulncheck` in CI; Redis ACLs verified from a host's credentials.
-- [ ] **T133** Recovery rehearsals: shard recover under traffic; region failover per the DR runbook; both timed against the RTO (**SC-008**).
-- [ ] **T134** Two full adoption walkthroughs — one embedded, one containerized from a non-Go host with only a rate card — and fix whatever the second reveals.
-- [ ] **T135** Mutation over the **integration** tier, nightly, with Docker: booking, reconcile, recover and the writer in `metering/app` are exercised only by real Redis and Postgres, so the unit-tier run cannot see them. Survivors are classified as the domain's were (see the hardening record), and the `app` mutant-coverage floor in `scripts/mutation.sh` rises from what the unit tier can reach to what this run measures.
+- [ ] **T130** Load test against the [scale envelope](./plan.md#scale-envelope) and **SC-001**. A miss is a design finding. *(A measurement: its own red.)*
+- [ ] **T131** Chaos: kill Redis; fail it over to a lagging replica; restart it from a truncated AOF; replay webhooks at volume; kill a processor mid-event; inject drift; poison an intent. Each ends with no double charge and a page where the contract says so. *(A measurement: its own red.)*
+- [ ] **T132** Security review against the checklists; `gitleaks` + `govulncheck` in CI; Redis ACLs verified from a host's credentials. *(A measurement: its own red.)*
+- [ ] **T133** Recovery rehearsals: shard recover under traffic; region failover per the DR runbook; both timed against the RTO (**SC-008**). *(A measurement: its own red.)*
+- [ ] **T134** Two full adoption walkthroughs — one embedded, one containerized from a non-Go host with only a rate card — and fix whatever the second reveals. *(A measurement: its own red.)*
+- [ ] **T135** Mutation over the **integration** tier, nightly, with Docker: booking, reconcile, recover and the writer in `metering/app` are exercised only by real Redis and Postgres, so the unit-tier run cannot see them. Survivors are classified as the domain's were (see the hardening record), and the `app` mutant-coverage floor in `scripts/mutation.sh` rises from what the unit tier can reach to what this run measures. *(A measurement: its own red.)*
 <!-- pairs:end -->
 
 ---
