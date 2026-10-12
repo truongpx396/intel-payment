@@ -65,4 +65,10 @@ expect_reject "depguard 5: api is a leaf (api -> metering/adapters/driving/auth)
 import \"$mod/metering/adapters/driving/auth\"
 var _ = auth.Record"
 
+expect_reject "depguard 6: a transport does not import another (grpcclient -> grpcserver)" lint \
+  metering/adapters/driving/grpcclient/zz_violation.go metering/adapters/driving/grpcclient \
+  "package grpcclient
+import \"$mod/metering/adapters/driving/grpcserver\"
+var _ = grpcserver.New"
+
 [ "$fail" -eq 0 ] && echo "boundary verified" || { echo "boundary NOT verified"; exit 1; }

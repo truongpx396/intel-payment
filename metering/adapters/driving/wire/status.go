@@ -72,6 +72,10 @@ type Error struct {
 
 func (e *Error) Error() string { return e.msg }
 
+// GRPCStatus keeps the code visible to status.Code and status.FromError, so a caller that checks the
+// wire status of an error that crossed the wire finds the one the server wrote.
+func (e *Error) GRPCStatus() *status.Status { return status.New(e.Condition.GRPC, e.msg) }
+
 // Unwrap is the sentinel of the condition: what a caller tests with errors.Is. nil for a decision.
 func (e *Error) Unwrap() error { return e.Condition.Err }
 
