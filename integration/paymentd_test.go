@@ -49,34 +49,53 @@ import (
 // no package test can see.
 
 var (
-	paymentdOnce sync.Once
-	paymentdPath string
-	paymentdDir  string
-	paymentdErr  error
+	binariesMu sync.Mutex
+	binaries   = map[string]*builtBinary{}
+	binaryDir  string
 )
 
-func paymentdBinary(t *testing.T) string {
-	t.Helper()
-	paymentdOnce.Do(func() {
-		paymentdDir, paymentdErr = os.MkdirTemp("", "paymentd-bin-")
-		if paymentdErr != nil {
-			return
-		}
-		paymentdPath = filepath.Join(paymentdDir, "paymentd")
-		out, err := exec.Command("go", "build", "-o", paymentdPath, "../cmd/paymentd").CombinedOutput()
-		if err != nil {
-			paymentdErr = fmt.Errorf("go build ./cmd/paymentd: %w\n%s", err, out)
-		}
-	})
-	if paymentdErr != nil {
-		t.Fatal(paymentdErr)
-	}
-	return paymentdPath
+type builtBinary struct {
+	once sync.Once
+	path string
+	err  error
 }
 
+// binary builds ./cmd/<name> once per test run and returns the path.
+func binary(t *testing.T, name string) string {
+	t.Helper()
+	binariesMu.Lock()
+	b := binaries[name]
+	if b == nil {
+		b = &builtBinary{}
+		binaries[name] = b
+	}
+	if binaryDir == "" {
+		var err error
+		if binaryDir, err = os.MkdirTemp("", "intel-payment-bin-"); err != nil {
+			binariesMu.Unlock()
+			t.Fatal(err)
+		}
+	}
+	dir := binaryDir
+	binariesMu.Unlock()
+	b.once.Do(func() {
+		b.path = filepath.Join(dir, name)
+		out, err := exec.Command("go", "build", "-o", b.path, "../cmd/"+name).CombinedOutput()
+		if err != nil {
+			b.err = fmt.Errorf("go build ./cmd/%s: %w\n%s", name, err, out)
+		}
+	})
+	if b.err != nil {
+		t.Fatal(b.err)
+	}
+	return b.path
+}
+
+func paymentdBinary(t *testing.T) string { t.Helper(); return binary(t, "paymentd") }
+
 func cleanupPaymentd() {
-	if paymentdDir != "" {
-		_ = os.RemoveAll(paymentdDir)
+	if binaryDir != "" {
+		_ = os.RemoveAll(binaryDir)
 	}
 }
 
@@ -132,7 +151,13 @@ func paymentdEnv(realm, dsn string, kv ...string) map[string]string {
 
 func startPaymentd(t *testing.T, env map[string]string, args ...string) *daemon {
 	t.Helper()
-	cmd := exec.Command(paymentdBinary(t), args...)
+	return startProcess(t, "paymentd", env, args...)
+}
+
+// startProcess runs ./cmd/<name> as a process with exactly this environment.
+func startProcess(t *testing.T, name string, env map[string]string, args ...string) *daemon {
+	t.Helper()
+	cmd := exec.Command(binary(t, name), args...)
 	for k, v := range env {
 		cmd.Env = append(cmd.Env, k+"="+v) // nothing else: the process reads PAYMENT_* and no ambient variable
 	}
@@ -154,7 +179,7 @@ func startPaymentd(t *testing.T, env map[string]string, args ...string) *daemon 
 		case <-time.After(15 * time.Second):
 			_ = cmd.Process.Kill()
 			<-d.exited
-			t.Errorf("paymentd did not stop within 15s of SIGTERM; logs:\n%s", d.logs.String())
+			t.Errorf("%s did not stop within 15s of SIGTERM; logs:\n%s", name, d.logs.String())
 		}
 	})
 	return d
