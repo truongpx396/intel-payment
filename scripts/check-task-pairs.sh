@@ -9,9 +9,13 @@
 #   * a green is never listed before its red, and a name must be a red that exists;
 #   * an exemption needs a reason.
 #
+# Bold defines: `**R083**` at the head of a task line is that task. A T### line may name the red it makes
+# green in bold ("makes **R083** green"); anything else that merely refers to another task — a red naming
+# another spec's red — is written in plain text, or it would be read as defining it a second time.
+#
 # Only the tasks between `<!-- pairs:start -->` and `<!-- pairs:end -->` are held to this. Phases that
 # predate the rule (001's Phases 0–1) stay outside the markers, and the hardening record says so. A task
-# list that has R### tasks but lost its markers is refused, not skipped: an unarmed guard passes everything.
+# list with no markers is refused, whether it lost them or never had them: an unarmed guard passes everything.
 #
 #   scripts/check-task-pairs.sh          # run from anywhere; scans specs/*/tasks.md
 # Proved able to fail by scripts/verify-tdd-gates.sh (the "task pairing" cases).
@@ -38,11 +42,9 @@ for path in sys.argv[1:]:
     ends = [i for i, l in enumerate(lines) if l.strip() == "<!-- pairs:end -->"]
     has_reds = any(re.match(r"^- \[[ x]\] \*\*R\d{3}", l) for l in lines)
     if not starts and not ends:
-        if has_reds:
-            problems.append(f"PAIRING {path}: the pairing check is not armed — it has R### tasks but no "
-                            "`<!-- pairs:start -->` … `<!-- pairs:end -->` region, so nothing would be checked")
-        else:
-            summary.append(f"{path}: skipped — no R### tasks and no pairs region (not paired yet)")
+        why = ("it has R### tasks but no" if has_reds else "it never adopted the rule: no R### tasks and no")
+        problems.append(f"PAIRING {path}: the pairing check is not armed — {why} "
+                        "`<!-- pairs:start -->` … `<!-- pairs:end -->` region, so nothing would be checked")
         continue
     if len(starts) != 1 or len(ends) != 1 or starts[0] > ends[0]:
         problems.append(f"PAIRING {path}: the pairing check is not armed — it needs exactly one "
@@ -107,7 +109,8 @@ for path in sys.argv[1:]:
                 problem(path, lineno, f"{t} is listed before its red {r} (line {defs[r][0]}) — the test comes first")
 
     for r in sorted(reds - answered):
-        problem(path, defs[r][0], f"{r} has no green — no T task is numbered like it, and none names it")
+        problem(path, defs[r][0], f"{r} has no green — no T task is numbered like it, and none names it "
+                                  "(a line that only REFERS to a red must not bold it: bold defines a task)")
 
     exempt = sum(1 for t in greens if EXEMPT.search(text[t]))
     own_red = sum(1 for t in greens if OWN_RED.search(text[t]) and not EXEMPT.search(text[t]))
