@@ -3,7 +3,7 @@ COMPOSE := docker compose -f deploy/docker-compose.yml
 MODULE  := github.com/truongpx396/intel-payment
 
 .DEFAULT_GOAL := help
-.PHONY: help build test test-integration fuzz mutation mutation-diff verify-red-green verify-tdd-gates lint arch-lint verify-portability \
+.PHONY: help build test test-integration fuzz mutation mutation-diff verify-red-green verify-tdd-gates verify-equivalence lint arch-lint verify-portability \
         verify-boundary verify-schema verify-hot-path verify-deploy e2e e2e-install up up-jetstream down down-volumes logs \
         migrate seed proto proto-tools proto-check fmt vuln secrets ci clean
 
@@ -39,6 +39,9 @@ verify-red-green: ## Prove the branch was test-driven: a failing tests-only comm
 
 verify-tdd-gates: ## Show the TDD gates refuse what they should (red-green cases, a planted mutation survivor); needs gremlins
 	scripts/verify-tdd-gates.sh
+
+verify-equivalence: ## Show the Meter equivalence suite rejects five broken transports, by name (needs Docker)
+	scripts/verify-equivalence-teeth.sh
 
 fmt: ## Format
 	gofmt -l -w . && go mod tidy
@@ -89,7 +92,7 @@ e2e: ## Run the e2e suite against E2E_BASE_URL (default: the local `make up` sta
 # `make verify-red-green mutation-diff` before opening a pull request — mutation-diff only when the branch
 # changes production Go in a mutation target (docs/testing.md, "When mutation testing applies").
 # verify-schema needs an empty DB.
-ci: build proto-check test fuzz test-integration lint verify-portability verify-boundary verify-tdd-gates vuln verify-hot-path verify-deploy ## Everything CI runs on every change
+ci: build proto-check test fuzz test-integration lint verify-portability verify-boundary verify-tdd-gates verify-equivalence vuln verify-hot-path verify-deploy ## Everything CI runs on every change
 
 ## ---- run ------------------------------------------------------------------
 up: ## Start the stack (postgres + redis + migrate + paymentd + worker)

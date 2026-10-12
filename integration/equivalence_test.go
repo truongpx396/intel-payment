@@ -4,13 +4,20 @@ package integration
 
 import (
 	"context"
-	"errors"
+	"net"
 	"testing"
 	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/truongpx396/intel-payment/metering"
 	hotredis "github.com/truongpx396/intel-payment/metering/adapters/driven/redis"
 	"github.com/truongpx396/intel-payment/metering/adapters/driven/system"
+	"github.com/truongpx396/intel-payment/metering/adapters/driving/auth"
+	"github.com/truongpx396/intel-payment/metering/adapters/driving/grpcclient"
+	"github.com/truongpx396/intel-payment/metering/adapters/driving/grpcserver"
 	"github.com/truongpx396/intel-payment/metering/contracts"
 	"github.com/truongpx396/intel-payment/metering/domain"
 	"github.com/truongpx396/intel-payment/metering/ports"
@@ -27,54 +34,51 @@ func TestMeterEquivalenceInProcess(t *testing.T) {
 	contracts.MeterEquivalence(t, func(t *testing.T, o contracts.MeterOptions) contracts.MeterHarness {
 		s, h := equivalenceStack(t, o)
 		h.Meter = s.meter
-		h.Balance = func(ctx context.Context, sc domain.Scope) (map[domain.Pool]domain.Credits, error) {
+		h.Balance = func(_ context.Context, sc domain.Scope) (map[domain.Pool]domain.Credits, error) {
 			return h.EngineBalance(t, sc), nil
 		}
 		return h
 	})
 }
 
-// TestMeterEquivalenceOverTheWire is the claim: the same suite through the transport.
-//
-// Until the transports exist the wire mode is bound to unbuiltTransport, a double that answers every
-// call with errNotImplemented, so the suite fails on what it claims — an error that must survive the
-// wire (errors.Is, not a string match), a receipt that must arrive whole — and not on a compile error.
-// Replacing the double with the real pair is the only edit this test takes (T069).
+// TestMeterEquivalenceOverTheWire is the claim: the same suite through the transport — grpcclient dialling
+// grpcserver, which fronts the very engine the in-process mode calls. Nothing in the suite changed when the
+// double that answered "not built yet" gave way to this pair (T069): the assertions are the same ones.
 func TestMeterEquivalenceOverTheWire(t *testing.T) {
 	t.Parallel()
 	contracts.MeterEquivalence(t, func(t *testing.T, o contracts.MeterOptions) contracts.MeterHarness {
-		_, h := equivalenceStack(t, o)
-		h.Meter = unbuiltTransport{}
-		h.Balance = unbuiltTransport{}.balance
+		s, h := equivalenceStack(t, o)
+		client := serveOverTheWire(t, s, h)
+		h.Meter = client
+		h.Balance = client.Balance
 		return h
 	})
 }
 
-var errNotImplemented = errors.New("the transport is not built yet")
+// serveOverTheWire puts a gRPC server in front of the stack's engine and returns a client on an in-memory
+// connection to it. The caller is a credential with record and grant over the harness's two realms.
+func serveOverTheWire(t *testing.T, s *stack, h contracts.MeterHarness) *grpcclient.Client {
+	t.Helper()
+	svc, ok := s.meter.(ports.Service)
+	if !ok {
+		t.Fatal("the engine is not a ports.Service")
+	}
+	srv, err := grpcserver.New(svc, svc)
+	must(t, err)
+	caller := auth.Principal{CallerID: "equivalence", Realms: []domain.Realm{h.Realm, h.OtherRealm}, Privileges: auth.Record | auth.Grant}
+	g := grpc.NewServer(grpc.UnaryInterceptor(func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, next grpc.UnaryHandler) (any, error) {
+		return next(auth.WithPrincipal(ctx, caller), req)
+	}))
+	srv.Register(g)
 
-// unbuiltTransport answers every call with errNotImplemented.
-type unbuiltTransport struct{}
-
-var _ ports.Meter = unbuiltTransport{}
-
-func (unbuiltTransport) Admit(context.Context, domain.Scope, domain.AdmitRequest) (domain.Admission, error) {
-	return domain.Admission{}, errNotImplemented
-}
-
-func (unbuiltTransport) Record(context.Context, domain.Event) (domain.Receipt, error) {
-	return domain.Receipt{}, errNotImplemented
-}
-
-func (unbuiltTransport) Grant(context.Context, domain.Grant) (domain.Receipt, error) {
-	return domain.Receipt{}, errNotImplemented
-}
-
-func (unbuiltTransport) Transfer(context.Context, domain.Transfer) (domain.TransferReceipt, error) {
-	return domain.TransferReceipt{}, errNotImplemented
-}
-
-func (unbuiltTransport) balance(context.Context, domain.Scope) (map[domain.Pool]domain.Credits, error) {
-	return nil, errNotImplemented
+	lis := bufconn.Listen(1 << 20)
+	go func() { _ = g.Serve(lis) }()
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	must(t, err)
+	t.Cleanup(func() { _ = conn.Close(); g.Stop(); _ = lis.Close() })
+	return grpcclient.New(conn)
 }
 
 // equivalenceStack builds one realm's real stack for a subtest, and a harness whose levers drive it. The

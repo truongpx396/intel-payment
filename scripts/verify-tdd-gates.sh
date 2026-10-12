@@ -212,7 +212,8 @@ tasks=specs/001-metering-billing-core/tasks.md
 branch j
 expect "the docs as shipped pass the status check" 0 "task count as its tasks.md has it" "$drift"
 
-branch k; perl -pi -e 's/^- \[ \] \*\*R060\*\*/- [x] **R060**/' "$tasks"; git commit -qam "tick a task"
+# Tick the first task still open, whichever it is: the fixture must not name one that will be ticked for real.
+branch k; perl -0pi -e 's/^- \[ \] /- [x] /m' "$tasks"; git commit -qam "tick a task"
 expect "a task ticked without the roadmap is refused, with the line to write" 1 "expected the line: Tasks: [0-9]+ of [0-9]+ done" "$drift"
 
 branch l; printf '\n> Status: design complete, **implementation not started**\n' >>README.md; git commit -qam "the old claim returns"
