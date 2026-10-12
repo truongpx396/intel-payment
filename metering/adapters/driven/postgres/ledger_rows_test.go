@@ -229,3 +229,35 @@ func TestABadCursorOrLimitIsInvalid(t *testing.T) {
 		t.Fatalf("no limit means the default, and an empty ledger is an empty page: %+v %v", page, err)
 	}
 }
+
+// "granted": what the books say was ever credited to a scope — the denominator of "12,480 left of 15,000".
+// A writeoff is forgiven debt, not a grant; spending and transfers out are not grants; a transfer IN is.
+func TestGrantedIsEverythingTheBooksCreditedToAScope(t *testing.T) {
+	t.Parallel()
+	b := pgadapter.NewBooks(db(t))
+	id := fmt.Sprintf("w-%d", seq.Add(1))
+	s := domain.Scope{Realm: "t1", Kind: "workspace", ID: id}
+	cp := domain.Scope{Realm: "t1", Kind: "organization", ID: "org-1"}
+	bookRows(t, b, s,
+		ports.LedgerRow{Delta: 1000, OperationType: "purchase"},
+		ports.LedgerRow{Delta: 40, OperationType: "writeoff"},
+		ports.LedgerRow{Delta: -500, OperationType: "query"},
+		ports.LedgerRow{Delta: 200, OperationType: "admin_adjustment"},
+		ports.LedgerRow{Delta: 300, OperationType: "allocation_in", Counterparty: &cp},
+		ports.LedgerRow{Delta: -100, OperationType: "allocation_out", Counterparty: &cp},
+		ports.LedgerRow{Pool: "promo", Delta: 5, OperationType: "signup_grant"},
+	)
+	bookRows(t, b, domain.Scope{Realm: "t1", Kind: "workspace", ID: "someone-else"}, ports.LedgerRow{Delta: 9999, OperationType: "purchase"})
+	bookRows(t, b, domain.Scope{Realm: "t2", Kind: "workspace", ID: id}, ports.LedgerRow{Delta: 7777, OperationType: "purchase"})
+
+	got, err := b.Granted(context.Background(), s)
+	if err != nil || got != 1505 {
+		t.Fatalf("1000 + 200 + 300 + 5, and not the writeoff, the spend, the transfer out, or anyone else's: %d, %v", got, err)
+	}
+	if got, err := b.Granted(context.Background(), domain.Scope{Realm: "t1", Kind: "workspace", ID: "never-booked"}); err != nil || got != 0 {
+		t.Fatalf("a scope with no rows was granted nothing: %d, %v", got, err)
+	}
+	if _, err := b.Granted(context.Background(), domain.Scope{Realm: "t1", Kind: "Bad Kind", ID: "x"}); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("%v", err)
+	}
+}

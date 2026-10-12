@@ -112,6 +112,7 @@ var tokens = map[string]auth.Principal{
 
 type apiOpts struct {
 	ledger    ports.LedgerReader
+	credits   ports.CreditsReader
 	transfers ports.TransferReader
 	legacy429 bool
 	upgrade   func(context.Context, domain.Scope) string
@@ -141,7 +142,7 @@ func newAPI(t *testing.T, stub *stubMeter, o apiOpts) *api {
 			}
 			return auth.Principal{}, auth.ErrUnauthenticated
 		}),
-		Ledger: o.ledger, Transfers: o.transfers,
+		Ledger: o.ledger, Transfers: o.transfers, Credits: o.credits,
 		Legacy429ForLimits: o.legacy429, UpgradeURL: o.upgrade, MaxBodyBytes: o.maxBody,
 	})
 	if err != nil {

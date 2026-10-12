@@ -28,6 +28,7 @@ var wantPrivilege = map[string]auth.Privilege{
 	"GET /v1/balance":   auth.Record,
 
 	"GET /v1/ledger":               auth.Record,
+	"GET /v1/credits":              auth.Record,
 	"GET /v1/transfers/{idem_key}": auth.Grant,
 }
 
@@ -35,7 +36,7 @@ func productionTable(t *testing.T) *resthandler.Registry {
 	t.Helper()
 	stub := &stubMeter{}
 	reg, err := resthandler.BuildRegistry(resthandler.Config{
-		Meter: stub, Balance: stub, Clock: contracts.NewFakeClock(epoch), Ledger: &stubReads{}, Transfers: &stubReads{},
+		Meter: stub, Balance: stub, Clock: contracts.NewFakeClock(epoch), Ledger: &stubReads{}, Transfers: &stubReads{}, Credits: &stubCredits{},
 		Auth: auth.AuthenticatorFunc(func(context.Context, auth.Credential) (auth.Principal, error) {
 			return auth.Principal{}, auth.ErrUnauthenticated
 		}),
@@ -105,7 +106,7 @@ func matrixHandler(t *testing.T) http.Handler {
 	}
 	// Either credential: the service runs one mode at a time, and the matrix holds for each.
 	stub := &stubMeter{}
-	reg, err := resthandler.BuildRegistry(resthandler.Config{Meter: stub, Balance: stub, Clock: contracts.NewFakeClock(epoch), Ledger: &stubReads{}, Transfers: &stubReads{}, Auth: bearer})
+	reg, err := resthandler.BuildRegistry(resthandler.Config{Meter: stub, Balance: stub, Clock: contracts.NewFakeClock(epoch), Ledger: &stubReads{}, Transfers: &stubReads{}, Credits: &stubCredits{}, Auth: bearer})
 	if err != nil {
 		t.Fatal(err)
 	}

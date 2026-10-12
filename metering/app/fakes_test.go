@@ -223,6 +223,58 @@ func (m *recMetrics) count(name string) int64 {
 	return m.counts[name]
 }
 
+// fakeUsage is a scripted UsageReader.
+type fakeUsage struct {
+	mu    sync.Mutex
+	fn    func(domain.Scope, domain.Subjects, []domain.Limit) (map[string]int64, error)
+	calls []usageCall
+}
+
+type usageCall struct {
+	scope    domain.Scope
+	subjects domain.Subjects
+	limits   []string
+}
+
+func (u *fakeUsage) Usage(_ context.Context, s domain.Scope, subj domain.Subjects, ls []domain.Limit) (map[string]int64, error) {
+	names := make([]string, len(ls))
+	for i, l := range ls {
+		names[i] = l.Name
+	}
+	u.mu.Lock()
+	u.calls = append(u.calls, usageCall{s, subj, names})
+	u.mu.Unlock()
+	if u.fn == nil {
+		return map[string]int64{}, nil
+	}
+	return u.fn(s, subj, ls)
+}
+
+// fakeLedger is a scripted LedgerReader.
+type fakeLedger struct {
+	mu      sync.Mutex
+	rows    func(ports.LedgerQuery) (ports.LedgerPage, error)
+	granted func(domain.Scope) (domain.Credits, error)
+	gotQ    []ports.LedgerQuery
+}
+
+func (l *fakeLedger) LedgerRows(_ context.Context, q ports.LedgerQuery) (ports.LedgerPage, error) {
+	l.mu.Lock()
+	l.gotQ = append(l.gotQ, q)
+	l.mu.Unlock()
+	if l.rows == nil {
+		return ports.LedgerPage{}, nil
+	}
+	return l.rows(q)
+}
+
+func (l *fakeLedger) Granted(_ context.Context, s domain.Scope) (domain.Credits, error) {
+	if l.granted == nil {
+		return 0, nil
+	}
+	return l.granted(s)
+}
+
 // quota is a scripted QuotaSource.
 type quota struct {
 	max int64
@@ -253,6 +305,8 @@ type rigOpt struct {
 	cards    contracts.StaticCards
 	pricers  ports.PricerRegistry
 	noQuotas bool
+	usage    *fakeUsage  // wired as Deps.Usage when set
+	ledger   *fakeLedger // wired as Deps.Ledger when set
 }
 
 func tokenCard(t *testing.T) domain.RateCard {
@@ -298,6 +352,12 @@ func newRig(t *testing.T, o rigOpt) *rig {
 	}
 	if !o.noQuotas {
 		r.deps.Quotas = o.quotas
+	}
+	if o.usage != nil {
+		r.deps.Usage = o.usage
+	}
+	if o.ledger != nil {
+		r.deps.Ledger = o.ledger
 	}
 	m, err := app.New(cfg, r.deps)
 	if err != nil {

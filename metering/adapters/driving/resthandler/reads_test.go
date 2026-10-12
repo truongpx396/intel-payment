@@ -41,6 +41,8 @@ func (r *stubReads) LedgerRows(ctx context.Context, q ports.LedgerQuery) (ports.
 	return r.rows(ctx, q)
 }
 
+func (r *stubReads) Granted(context.Context, domain.Scope) (domain.Credits, error) { return 0, nil }
+
 func (r *stubReads) Transfer(ctx context.Context, realm domain.Realm, key string) (ports.TransferRecord, bool, error) {
 	r.mu.Lock()
 	r.gotRlm, r.gotKey = realm, key
