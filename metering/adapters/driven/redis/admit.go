@@ -78,48 +78,9 @@ func (s *Store) Admit(ctx context.Context, sc domain.Scope, req domain.AdmitRequ
 	ctx, cancel := s.withTimeout(ctx, s.cfg.AdmitTimeout)
 	defer cancel()
 
-	sh := s.shard(sc)
-	reads, err := planReads(sh, sc, req.Limits, req, s.clock.Now())
+	acct, counters, err := s.readCounters(ctx, sc, req.Limits, req)
 	if err != nil {
 		return domain.Admission{}, err
-	}
-	keys := []string{metaKey(sh), acctKey(sh, sc)}
-	for _, cr := range reads {
-		keys = append(keys, cr.keys...)
-	}
-	r, err := s.call(ctx, "ip_admit", true, keys)
-	if err != nil {
-		return domain.Admission{}, err
-	}
-	if r.status() != "OK" {
-		return domain.Admission{}, statusError(r.status())
-	}
-	acct, err := parseAccount(r)
-	if err != nil {
-		return domain.Admission{}, err
-	}
-	if len(r) < 5 {
-		return domain.Admission{}, fmt.Errorf("redis: short ip_admit reply %#v", []any(r))
-	}
-	vals, ok := r[4].([]any)
-	if !ok || len(vals) != len(keys)-2 {
-		return domain.Admission{}, fmt.Errorf("redis: ip_admit returned %d counters for %d keys", len(vals), len(keys)-2)
-	}
-
-	// Sum each limit's buckets back together.
-	counters := make(map[string]int64, len(reads))
-	i := 0
-	for _, cr := range reads {
-		var sum int64
-		for range cr.keys {
-			n, err := toInt(vals[i])
-			if err != nil {
-				return domain.Admission{}, err
-			}
-			sum += n
-			i++
-		}
-		counters[cr.limit] = sum
 	}
 
 	pools, err := s.eligible(ctx, sc.Realm, req.Resource)
@@ -133,4 +94,76 @@ func (s *Store) Admit(ctx context.Context, sc domain.Scope, req domain.AdmitRequ
 		}
 	}
 	return domain.Evaluate(req, req.Limits, domain.Snapshot{Eligible: eligible, Blocked: acct.Blocked, Counters: counters})
+}
+
+// readCounters is the one read both Admit and Usage make: the account and every window counter the limits
+// need, in one function call on one slot.
+func (s *Store) readCounters(ctx context.Context, sc domain.Scope, limits []domain.Limit, req domain.AdmitRequest) (ports.HotAccount, map[string]int64, error) {
+	sh := s.shard(sc)
+	reads, err := planReads(sh, sc, limits, req, s.clock.Now())
+	if err != nil {
+		return ports.HotAccount{}, nil, err
+	}
+	keys := []string{metaKey(sh), acctKey(sh, sc)}
+	for _, cr := range reads {
+		keys = append(keys, cr.keys...)
+	}
+	r, err := s.call(ctx, "ip_admit", true, keys)
+	if err != nil {
+		return ports.HotAccount{}, nil, err
+	}
+	if r.status() != "OK" {
+		return ports.HotAccount{}, nil, statusError(r.status())
+	}
+	acct, err := parseAccount(r)
+	if err != nil {
+		return ports.HotAccount{}, nil, err
+	}
+	if len(r) < 5 {
+		return ports.HotAccount{}, nil, fmt.Errorf("redis: short ip_admit reply %#v", []any(r))
+	}
+	vals, ok := r[4].([]any)
+	if !ok || len(vals) != len(keys)-2 {
+		return ports.HotAccount{}, nil, fmt.Errorf("redis: ip_admit returned %d counters for %d keys", len(vals), len(keys)-2)
+	}
+
+	// Sum each limit's buckets back together.
+	counters := make(map[string]int64, len(reads))
+	i := 0
+	for _, cr := range reads {
+		var sum int64
+		for range cr.keys {
+			n, err := toInt(vals[i])
+			if err != nil {
+				return ports.HotAccount{}, nil, err
+			}
+			sum += n
+			i++
+		}
+		counters[cr.limit] = sum
+	}
+	return acct, counters, nil
+}
+
+var _ ports.UsageReader = (*Store)(nil)
+
+// Usage reads how much of each limit's window counter a scope has used, for the member named in subjects:
+// the read Admit makes, without its verdict, and it changes nothing. A balance has no counter and is not in
+// the answer; a resource-scoped limit is answered whatever the resource. A limit that needs a member the
+// caller did not name is ErrMissingSubject — zero would be a guess — and a scope that was never built is
+// ErrColdScope, for the caller to rebuild from the books.
+func (s *Store) Usage(ctx context.Context, sc domain.Scope, subjects domain.Subjects, limits []domain.Limit) (map[string]int64, error) {
+	if err := sc.Validate(); err != nil {
+		return nil, err
+	}
+	sc = sc.Normalized()
+	ctx, cancel := s.withTimeout(ctx, s.cfg.AdmitTimeout)
+	defer cancel()
+	every := make([]domain.Limit, len(limits))
+	copy(every, limits)
+	for i := range every {
+		every[i].Resource = "" // a counter is keyed by its limit, not by the resource that was charged
+	}
+	_, counters, err := s.readCounters(ctx, sc, every, domain.AdmitRequest{Subjects: subjects})
+	return counters, err
 }

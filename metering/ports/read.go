@@ -51,3 +51,11 @@ type LedgerReader interface {
 type TransferReader interface {
 	Transfer(ctx context.Context, realm domain.Realm, idemKey string) (TransferRecord, bool, error)
 }
+
+// UsageReader reads how much of each window limit a scope has used: what the credits panel draws. It is the
+// read Admit makes of the counters, without the verdict, and it changes nothing. The answer is keyed by limit
+// name; a balance has no counter and is not in it. A limit that needs a member the caller did not name is
+// ErrMissingSubject, and a scope that was never built is ErrColdScope.
+type UsageReader interface {
+	Usage(ctx context.Context, s domain.Scope, subjects domain.Subjects, limits []domain.Limit) (map[string]int64, error)
+}
