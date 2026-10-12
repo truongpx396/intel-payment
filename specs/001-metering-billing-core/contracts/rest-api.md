@@ -58,11 +58,9 @@ Conventions: `Idempotency-Key` required on every mutating request, and it **is**
 
 ## Configuration (`admin` privilege)
 
-Configuration is data ([D13](../design-decisions.md)), and this is its supported interface: every
-write is validated, runs in one transaction with `intelpay.actor` and `intelpay.reason` set — so the
-database's audit row names a person and a reason — and invalidates every cache immediately.
-A direct SQL write still works and is still audited, attributed to the database role, but skips
-validation; use it only in an emergency.
+Configuration is data ([D13](../design-decisions.md)), and this is its supported interface. **Every write names a person and a reason** — `actor` and `reason` in the body (query parameters on a `DELETE`), both required, non-blank — and is refused without them: the database's audit row is how anyone later answers "who changed the price, and why". The write runs in one transaction with `intelpay.actor` and `intelpay.reason` set, so the database's own trigger writes an audit row that names them (and the service credential it came through), and every process caching configuration is invalidated by the database's own notification — no deploy, no TTL wait. A direct SQL write still works and is still audited, attributed to the database role that made it, but skips validation; use it only in an emergency. The realm is the credential's; `?realm=` names it when the credential spans several. A configuration write has no `Idempotency-Key`: it is idempotent by its natural key (a `PUT` by name; a card by version).
+
+**A rate card is published only after it has been shown to price.** Each `(rate_key, unit)` is test-priced under the card's own pricer at one unit and at a thousand blocks; a card that names a pricer nobody registered (`422 unpriceable`), overflows or prices above the maximum operation (`422 amount_out_of_range`), prices negative, prices nothing, or repeats a price (`400 invalid_request`) is refused before the database is touched — it would otherwise become the card every `Record` is priced under. A version already published is `409 already_exists`, and so is publishing without `retire_previous` while a card is active (a realm has exactly one). A limit's `window` is required (a default would make an unfinished limit a balance); `warn_at` defaults to `0.8`.
 
 | Method | Path | Purpose |
 |--------|------|---------|

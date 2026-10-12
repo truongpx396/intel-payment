@@ -25,9 +25,11 @@ type Config struct {
 	Transfers ports.TransferReader
 	// Credits backs GET /v1/credits, the whole CreditsSnapshot in one round trip.
 	Credits ports.CreditsReader
-	Auth    auth.Authenticator
-	Clock   ports.Clock
-	Logger  *slog.Logger
+	// Admin backs /v1/admin/*: configuration writes with a person and a reason, behind the `admin` privilege.
+	Admin  ports.Admin
+	Auth   auth.Authenticator
+	Clock  ports.Clock
+	Logger *slog.Logger
 
 	// Legacy429ForLimits answers 429 instead of 409 for a spent window, for a host mid-migration
 	// (PAYMENT_LEGACY_429_FOR_LIMITS). 429 means "you are calling too fast"; a spent budget is not a rate
@@ -83,6 +85,20 @@ func BuildRegistry(cfg Config) (*Registry, error) {
 	}
 	if cfg.Ledger != nil {
 		reg.Add(Route{Method: http.MethodGet, Path: "/v1/ledger", Surface: V1, Privilege: auth.Record, Handler: h.ledger})
+	}
+	if cfg.Admin != nil {
+		for _, r := range []Route{
+			{Method: http.MethodGet, Path: "/v1/admin/rate-cards", Handler: h.listCards},
+			{Method: http.MethodPost, Path: "/v1/admin/rate-cards", Handler: h.publishCard},
+			{Method: http.MethodGet, Path: "/v1/admin/limits/{name}", Handler: h.getLimit},
+			{Method: http.MethodPut, Path: "/v1/admin/limits/{name}", Handler: h.putLimit},
+			{Method: http.MethodDelete, Path: "/v1/admin/limits/{name}", Handler: h.deleteLimit},
+			{Method: http.MethodGet, Path: "/v1/admin/pools/{name}", Handler: h.getPool},
+			{Method: http.MethodPut, Path: "/v1/admin/pools/{name}", Handler: h.putPool},
+		} {
+			r.Surface, r.Privilege = V1, auth.Admin
+			reg.Add(r)
+		}
 	}
 	if cfg.Credits != nil {
 		reg.Add(Route{Method: http.MethodGet, Path: "/v1/credits", Surface: V1, Privilege: auth.Record, Handler: h.credits})
