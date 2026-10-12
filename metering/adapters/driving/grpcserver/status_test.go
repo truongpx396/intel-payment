@@ -49,6 +49,8 @@ var statusRows = []struct {
 	{"destination balance cap", domain.ErrDestBalanceCap, codes.FailedPrecondition, "dest_balance_cap"},
 	{"insufficient balance", domain.ErrInsufficient, codes.FailedPrecondition, "insufficient_balance"},
 	{"idempotency conflict", domain.ErrIdemConflict, codes.AlreadyExists, "idempotency_conflict"},
+	{"already exists", domain.ErrAlreadyExists, codes.AlreadyExists, "already_exists"},
+	{"not found", domain.ErrNotFound, codes.NotFound, "not_found"},
 	{"cross realm", domain.ErrCrossRealm, codes.PermissionDenied, "cross_realm"},
 	{"hot store unavailable", domain.ErrHotStoreUnavailable, codes.Unavailable, "hot_store_unavailable"},
 	{"cold shard", domain.ErrColdShard, codes.Unavailable, "hot_shard_cold"},

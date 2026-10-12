@@ -25,6 +25,8 @@ var errorRows = []struct {
 	{"uncountable limit", domain.ErrUncountableLimit, 400, "uncountable_limit"},
 	{"cross realm", domain.ErrCrossRealm, 403, "cross_realm"},
 	{"idempotency conflict", domain.ErrIdemConflict, 409, "idempotency_conflict"},
+	{"already exists", domain.ErrAlreadyExists, 409, "already_exists"},
+	{"not found", domain.ErrNotFound, 404, "not_found"},
 	{"insufficient balance", domain.ErrInsufficient, 409, "insufficient_balance"},
 	{"unpriceable", domain.ErrUnpriceable, 422, "unpriceable"},
 	{"stale event", domain.ErrStaleEvent, 422, "stale_event"},

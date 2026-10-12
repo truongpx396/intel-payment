@@ -108,11 +108,13 @@ var tokens = map[string]auth.Principal{
 	"record": {CallerID: "spender", Realms: []domain.Realm{"acme"}, Privileges: auth.Record},
 	"grant":  {CallerID: "minter", Realms: []domain.Realm{"acme"}, Privileges: auth.Grant},
 	"two":    {CallerID: "host-b", Realms: []domain.Realm{"acme", "globex"}, Privileges: auth.Record | auth.Grant},
+	"admin":  {CallerID: "ops-tool", Realms: []domain.Realm{"acme", "globex"}, Privileges: auth.Admin},
 }
 
 type apiOpts struct {
 	ledger    ports.LedgerReader
 	credits   ports.CreditsReader
+	admin     ports.Admin
 	transfers ports.TransferReader
 	legacy429 bool
 	upgrade   func(context.Context, domain.Scope) string
@@ -142,7 +144,7 @@ func newAPI(t *testing.T, stub *stubMeter, o apiOpts) *api {
 			}
 			return auth.Principal{}, auth.ErrUnauthenticated
 		}),
-		Ledger: o.ledger, Transfers: o.transfers, Credits: o.credits,
+		Ledger: o.ledger, Transfers: o.transfers, Credits: o.credits, Admin: o.admin,
 		Legacy429ForLimits: o.legacy429, UpgradeURL: o.upgrade, MaxBodyBytes: o.maxBody,
 	})
 	if err != nil {
