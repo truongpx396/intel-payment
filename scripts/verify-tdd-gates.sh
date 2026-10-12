@@ -11,6 +11,9 @@
 #               that already passes, and a later red whose tip never turns green are each refused
 #   status     ROADMAP.md must state each spec's task count as its tasks.md has it: a task ticked without
 #               the roadmap, and a "not started" claim that came back, are each refused
+#   pairing     the task list is itself test-first: between its `pairs` markers every T### has a red above
+#               it (the R### of the same number, an R### it names as made green, or TDD-Exempt: <reason>),
+#               every R### has a green that answers it, and a list whose markers are gone is refused
 #   mutation    a planted survivor (the boundary tests of the pricer deleted) is refused, by name
 #
 #   scripts/verify-tdd-gates.sh [--no-mutation]     # mutation needs gremlins and ~30 s
@@ -185,6 +188,52 @@ expect "a task ticked without the roadmap is refused, with the line to write" 1 
 
 branch l; printf '\n> Status: design complete, **implementation not started**\n' >>README.md; git commit -qam "the old claim returns"
 expect "a 'not started' claim that came back is refused" 1 "README\.md:[0-9]+:.*implementation not started" "$drift"
+
+# ---------------------------------------------------------------- task pairing
+# The order of COMMITS is checked above; this checks the order of the PLAN: a green task nobody wrote a
+# red for, a red nothing makes pass, or a green listed before its red, is a list that is not test-first.
+# Each case plants one line just inside the markers of the real task list, in a scratch copy.
+pairs=scripts/check-task-pairs.sh
+plant() { # <task lines…> — inserted at the end of the paired region
+  printf '%s\n' "$@" >"$tmp/plant.txt"
+  PLANT="$tmp/plant.txt" perl -0pi -e 'BEGIN { open F, "<", $ENV{PLANT}; local $/; $p = <F> } s/(<!-- pairs:end -->)/$p$1/' "$tasks"
+  if git diff --quiet -- "$tasks"; then echo "gate fixture: planting changed nothing"; exit 2; fi
+}
+branch pair-ok
+expect "the task lists as shipped pass the pairing check" 0 "task pairing holds" "$pairs"
+
+branch pair-green-without-red; plant '- [ ] **T999** A behaviour nobody wrote a test for.'
+expect "a green task with no red above it is refused, by name" 1 "T999.*has no red" "$pairs"
+
+branch pair-red-without-green; plant '- [ ] **R998** A test nothing makes pass.'
+expect "a red that no green answers is refused, by name" 1 "R998.*no green" "$pairs"
+
+branch pair-green-first; plant '- [ ] **T997** The code, listed first.' '- [ ] **R997** The test, listed second.'
+expect "a green listed before its red is refused" 1 "T997.*before its red" "$pairs"
+
+branch pair-in-order; plant '- [ ] **R992** The test.' '- [ ] **T992** The code.'
+expect "a red, then its green, passes" 0 "task pairing holds" "$pairs"
+
+branch pair-exempt; plant '- [ ] **T993** A rename. `TDD-Exempt: a rename moves no behaviour`'
+expect "an exemption with a reason passes" 0 "task pairing holds" "$pairs"
+
+branch pair-exempt-bare; plant '- [ ] **T996** A rename. `TDD-Exempt:`'
+expect "an exemption with no reason is refused" 1 "T996.*needs a reason" "$pairs"
+
+branch pair-names-green; plant '- [ ] **R991** The test.' '- [ ] **T990** The code — makes **R991** green.'
+expect "a green that names the red it makes pass is paired with it" 0 "task pairing holds" "$pairs"
+
+branch pair-dangling; plant '- [ ] **T995** The code — makes **R994** green.'
+expect "a green naming a red that does not exist is refused" 1 "R994.*does not exist" "$pairs"
+
+branch pair-own-red; plant '- [ ] **T989** A load test *(a measurement: its own red)*.'
+expect "a measurement that says it is its own red passes" 0 "task pairing holds" "$pairs"
+
+branch pair-unarmed; perl -pi -e 's/^<!-- pairs:(start|end) -->\n//' "$tasks"; git commit -qam "the markers go"
+expect "a task list whose markers are gone is refused, not silently passed" 1 "not armed" "$pairs"
+
+branch pair-drift; plant '- [ ] **T999** A behaviour nobody wrote a test for.'
+expect "the drift check runs the pairing check" 1 "T999.*has no red" "$drift"
 
 # ---------------------------------------------------------------- mutation
 if [ "$with_mutation" -eq 1 ]; then

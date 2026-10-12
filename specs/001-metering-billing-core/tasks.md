@@ -84,6 +84,7 @@ plus **T069** (the closing check); **T082**/**T083**/**T101** → **R082**/**R08
 - [x] **T056** [P] `archive/postgres` — `UsageArchive` over `usage_events` for `rollup` granularity (**FR-050**). *Verified: `archive/postgres` integration tests — every event returns exactly as archived (SC-010), and a retried batch adds nothing.*
 - [x] **T057** Wire T032 against `table` over three cards and a registered pricer; T033/T034/T034a against the real adapters (**SC-004**). *Verified: T032 in `pricing/table` (three cards and the registry); T033 and T034 in `integration/` over real Redis and Postgres, and T034 again over JetStream; T034a on a truncated AOF and a promoted replica, over both transports. Redis Cluster mode is held by `LedgerContract`, the `BusContract` and the `IntentStreamContract`.*
 
+<!-- pairs:start -->
 ## Phase 2 — Transports
 
 The equivalence suite comes first: it is the red for the whole phase, and the transports exist to make it pass.
@@ -194,6 +195,7 @@ These are measurements, not features, so there is no pair: each is its own red, 
 - [ ] **T133** Recovery rehearsals: shard recover under traffic; region failover per the DR runbook; both timed against the RTO (**SC-008**).
 - [ ] **T134** Two full adoption walkthroughs — one embedded, one containerized from a non-Go host with only a rate card — and fix whatever the second reveals.
 - [ ] **T135** Mutation over the **integration** tier, nightly, with Docker: booking, reconcile, recover and the writer in `metering/app` are exercised only by real Redis and Postgres, so the unit-tier run cannot see them. Survivors are classified as the domain's were (see the hardening record), and the `app` mutant-coverage floor in `scripts/mutation.sh` rises from what the unit tier can reach to what this run measures.
+<!-- pairs:end -->
 
 ---
 
