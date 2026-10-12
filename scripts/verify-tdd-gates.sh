@@ -176,6 +176,35 @@ branch s; first_cycle
 second_red '1 << 51' "test(mutation): pin the ceiling"
 expect "a test(mutation) commit after green is not mistaken for a red" 0 "red, then green" "$vrg" base
 
+# Tiers mix on one branch: a red in an integration-tagged package (a Docker suite), then a red in the unit
+# tier. The tip check must run each package with the tags ITS red needed. It once kept only the last red's
+# tags, so the integration package was built without its tag ("build constraints exclude all Go files") and a
+# branch that held both could never turn green. The package holds only tagged files, as integration/ does.
+branch t
+mkdir -p internal/scratchtier
+cat >internal/scratchtier/tier_test.go <<'GO'
+//go:build integration
+
+package scratchtier_test
+
+import (
+	"testing"
+
+	"github.com/truongpx396/intel-payment/metering/domain"
+)
+
+func TestScratchTier(t *testing.T) {
+	t.Parallel()
+	if domain.MaxOperationAmount < 1<<51 {
+		t.Fatalf("got %d", domain.MaxOperationAmount)
+	}
+}
+GO
+git add internal/scratchtier/tier_test.go; git commit -qm "test(red): the ceiling is at least 2^51, in the integration tier"
+bump; git commit -qam "fix(green): raise the ceiling"
+second_red '1 << 52'; bump_again; git commit -qam "fix(green): raise it again"
+expect "an integration-tagged red then a unit red: the tip is checked with each tag" 0 "red, then green" "$vrg" base
+
 # ---------------------------------------------------------------- status drift
 # The scratch copy of the script is the one that runs: it judges the repository it lives in.
 drift=scripts/check-spec-drift.sh
