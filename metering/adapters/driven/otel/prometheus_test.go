@@ -81,10 +81,10 @@ func TestTrafficAddsSamplesWithTheirLabels(t *testing.T) {
 		}
 	}
 	// "latency buckets resolve the 5 ms target": a bucket at 5 ms holds the three fast calls, not the slow one.
-	if !hasSample(body, `metering_admit_latency_seconds_bucket{le="0.005",outcome="allowed",realm="acme"} 3`) {
+	if !hasSample(body, `metering_admit_latency_seconds_bucket{outcome="allowed",realm="acme",le="0.005"} 3`) {
 		t.Errorf("the 5 ms bucket:\n%s", grep(body, "metering_admit_latency_seconds_bucket"))
 	}
-	if !hasSample(body, `metering_admit_latency_seconds_bucket{le="+Inf",outcome="allowed",realm="acme"} 4`) {
+	if !hasSample(body, `metering_admit_latency_seconds_bucket{outcome="allowed",realm="acme",le="+Inf"} 4`) {
 		t.Errorf("the +Inf bucket:\n%s", grep(body, "metering_admit_latency_seconds_bucket"))
 	}
 }

@@ -31,6 +31,12 @@ type Config struct {
 	Clock  ports.Clock
 	Logger *slog.Logger
 
+	// Ready backs /readyz and Metrics backs /metrics; each route exists only with its source. /healthz always
+	// exists and calls nothing. ReadyTimeout bounds a readiness check (default 2s): a probe must answer.
+	Ready        ports.Readiness
+	Metrics      http.Handler
+	ReadyTimeout time.Duration
+
 	// Legacy429ForLimits answers 429 instead of 409 for a spent window, for a host mid-migration
 	// (PAYMENT_LEGACY_429_FOR_LIMITS). 429 means "you are calling too fast"; a spent budget is not a rate
 	// problem, which is why 409 is the default.
@@ -100,6 +106,7 @@ func BuildRegistry(cfg Config) (*Registry, error) {
 			reg.Add(r)
 		}
 	}
+	h.platform(reg)
 	if cfg.Credits != nil {
 		reg.Add(Route{Method: http.MethodGet, Path: "/v1/credits", Surface: V1, Privilege: auth.Record, Handler: h.credits})
 	}

@@ -150,3 +150,15 @@ The status table is the one table both transports read ([`wire.Table`](../../../
 - **`grant` and `admin` are separate privileges from `record`,** at the transport, not just in code.
 - **Webhook routes carry no CORS and no auth middleware.** A JWT check there rejects the provider.
 - **`/readyz` fails when migrations are behind head**, so a rollout cannot serve money against a half-migrated schema.
+
+## Platform endpoints
+
+Open, uncached (`Cache-Control: no-store`), outside the credential and CORS middleware: a probe and a scraper hold no token. Reachability is the network's to restrict ([security.md](../../../docs/security.md)); the host never proxies them to a browser.
+
+| Route | Answers | Calls a dependency |
+|---|---|---|
+| `GET /healthz` | `200 {"status":"ok"}` while the process runs | never — a liveness probe that checks Postgres turns its outage into a restart loop |
+| `GET /readyz` | `200 {"status":"ready","migrations":"head","shards":N}` only at migration head with the configured shard count and no problem found; otherwise `503 {"status":"not_ready",…,"problems":[…]}` naming each | yes, bounded (default 2 s): a check that does not finish is `503`, because a probe must answer |
+| `GET /metrics` | the Prometheus text exposition | no |
+
+`/healthz` always exists. `/readyz` and `/metrics` exist only when the host supplies a readiness check or a metrics handler. `/metrics` declares **every** name of `ports.Catalog` — type and help — from the first scrape, not only after traffic: an alert written against a counter that has not moved yet must not be an alert on a name that does not exist.
