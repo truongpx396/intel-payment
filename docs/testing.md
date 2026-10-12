@@ -14,13 +14,16 @@ loop with evidence at each step, and machinery that makes the evidence checkable
    if they must, the step was a behaviour change and goes back to red.
 
 A failing test is red **for the right reason** when an *assertion* fails and its message names the
-invariant. A compile error is a weaker red: add the smallest stub (`return 0`, `panic("unimplemented")`)
-so the test runs and fails on what it claims. `scripts/verify-red-green.sh` accepts a build failure but
-says so.
+invariant. A compile error is a weaker red, and `scripts/verify-red-green.sh` accepts it but says so —
+a red commit touches tests only, so a stub of a *new production symbol* cannot ride in it. Where the
+seam is a port, give the test a double of its own so it fails on what it claims: a conformance suite run
+against a test-owned stub that answers `ErrNotImplemented` (R060's unbuilt transport, a stub rater that
+rates everything at zero). Where the symbol itself is the new API, the build failure is the red; say so
+in the commit message.
 
 ## Commit shape
 
-One branch, three kinds of commit, in this order:
+A branch carries one or more cycles, each three kinds of commit in this order:
 
 | Commit | Touches | The suite |
 |---|---|---|
@@ -33,6 +36,14 @@ a branch that changes production code there must be a tests-only commit **before
 production change, the tests it adds must **fail** when that commit is checked out, and the branch
 tip must pass them. A test written after the code cannot satisfy this — at the commit where it
 appears the code is already right, the test passes, and the script says so.
+
+**Every cycle is held to this, not only the first** — the constitution asks for a failing test-only
+commit "ahead of every production change". After the first production change, a test-only commit counts
+as a red only if its subject says `test(red):` (a `test(mutation):` commit is test-after and is never
+mistaken for one); each later production change needs a red of its own since the previous production
+change, each such red is checked out and must fail, and the tip must pass them all. A `refactor:` commit
+needs none — and does not buy the next change one. A branch can therefore carry a stack of task pairs
+(R### → T###, R### → T###); an unredded second change is refused with the commit named.
 
 **Production code** is Go that ships, `migrations/*.sql` and `*.lua`. **Test code** is `_test.go`,
 `testdata/`, `e2e/`, the conformance suites under `contracts/`, and the fixture packages
@@ -100,6 +111,39 @@ make mutation-diff     # only the lines changed since REF (committed or not) —
 make mutation          # every target, against its thresholds — nightly, and before a release
 ```
 
+### When mutation testing applies
+
+gremlins mutates **Go**, and `scripts/mutation.sh` knows three packages: `metering/domain`,
+`metering/adapters/driven/pricing/table` and `metering/app`. `make mutation-diff` judges the lines a
+branch changed **in those packages** and nowhere else. For any other change it mutates nothing: it prints
+`no changed lines since <ref>` for each target and exits 0 in about a second. That pass measured
+nothing, so it is not evidence — do not run it for such a change, do not paste it into a pull request,
+and do not describe it as "passed". Say `N/A` and name the check that does prove the change:
+
+| The branch changes | Mutation | What proves it instead |
+|---|---|---|
+| docs, specs, `ROADMAP.md`, task lists, `.specify/` | no | `scripts/check-spec-drift.sh` (retired terms, status counts, task pairing) and the CI `docs` link check |
+| a gate or helper script (`scripts/*.sh`), the `Makefile`, the CI workflow | no | `make verify-tdd-gates` — each gate shown to refuse what it should, by planting the defect |
+| `CLAUDE.md`, `.claude/`, other configuration | no | review, and `check-spec-drift.sh` for dangling links |
+| a migration | no | `make verify-schema` |
+| the Redis Lua | no | `make verify-hot-path` |
+| the `Dockerfile`, compose file or Redis ACL | no | `make verify-deploy` |
+| lint or architecture rules | no | `make verify-boundary` |
+| Go **outside** the three targets (adapters, `billing/`, …) | it would report "no changed lines" — not evidence | the unit and conformance suites and `make test-integration`; mutating those tiers is task T135 |
+| production Go **inside** the three targets | **yes, always** — no tolerance on the lines changed | `make mutation-diff` |
+
+To decide, ask the diff, not your sense of the change:
+
+```sh
+git diff --name-only origin/main...HEAD -- metering/domain metering/app metering/adapters/driven/pricing/table | grep -v '_test.go$'
+```
+
+No output means the branch touches no production line a mutant could sit on. The exemption is by what the
+branch changes, never by effort: one changed line in a target package puts the whole branch under the
+rule. `make verify-red-green` has the same shape — on a branch with no production Go, SQL or Lua it
+answers `nothing to drive`, which is its result, not a skipped check. The constitution's "the lines the
+change touched surviving mutation" is unchanged; a change that touches no such line has none to survive.
+
 Reading a survivor:
 
 - **Equivalent mutant** — `a > b` → `a >= b` where `a == b` cannot change the result. No test can
@@ -141,7 +185,8 @@ with no reason — and accepts an exact one.
 |---|---|---|
 | build, vet, tests (`-race -shuffle`), every conformance suite | `go` | every change |
 | integration (real Redis, Postgres) | `go` | every change |
-| a failing test-only commit precedes the change | `red-green` | pull requests |
+| a failing test-only commit precedes every production change | `red-green` | pull requests |
+| the task lists are test-first: every green has a red above it, every red a green | `drift` | every change |
 | properties hold on the seed corpus and a short search | `fuzz` | every change |
 | the tests fail when the lines this PR changed are wrong | `mutation` | pull requests |
 | deep fuzz (10 min/target); mutation over whole targets | `fuzz`, `mutation` | nightly |

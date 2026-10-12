@@ -34,7 +34,7 @@ else**, and saying so is more useful than pretending otherwise:
 
 **Status: in progress — the foundation and the metering core are built and verified; the transports, payments, entitlements, operational surface and UI are not.** → [specs/001-metering-billing-core](specs/001-metering-billing-core/)
 
-Tasks: 46 of 129 done (specs/001-metering-billing-core/tasks.md) — counted by `scripts/check-spec-drift.sh`, which fails CI when this line and the task list disagree.
+Tasks: 46 of 141 done (specs/001-metering-billing-core/tasks.md) — counted by `scripts/check-spec-drift.sh`, which fails CI when this line and the task list disagree.
 
 Prepaid credits in pools, exact rational pricing, the admission gate with subject- and plan-sized
 ceilings, the single durable writer with a per-scope sequence watermark, cluster-safe hot-path
@@ -67,7 +67,7 @@ broker to stand up; NATS JetStream is an option for downstream replication.
 
 **Status: designed, not started. Depends on Phase 1.** → [specs/002-postpaid-invoicing](specs/002-postpaid-invoicing/)
 
-Tasks: 1 of 29 done (specs/002-postpaid-invoicing/tasks.md) — the one done is the finalize-immutability triggers, in the draft schema and asserted in CI; no Go exists for this phase.
+Tasks: 1 of 47 done (specs/002-postpaid-invoicing/tasks.md) — the one done is the finalize-immutability triggers, in the draft schema and asserted in CI; no Go exists for this phase.
 
 The settlement model most B2B contracts actually use. Adds a `Rater` (pure over the period's event
 *set* rather than over one event — which is precisely why it cannot be a smarter `Pricer`),

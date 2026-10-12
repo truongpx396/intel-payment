@@ -60,4 +60,7 @@ for tasks in specs/*/tasks.md; do
 done
 [ "$status_fail" -eq 0 ] && echo "ROADMAP.md states every spec's task count as its tasks.md has it"
 [ "$status_fail" -eq 0 ] || fail=1
+
+# The task lists are themselves test-first: every green task has a red above it and every red a green.
+scripts/check-task-pairs.sh || fail=1
 exit "$fail"

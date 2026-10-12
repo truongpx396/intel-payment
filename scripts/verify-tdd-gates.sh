@@ -6,9 +6,14 @@
 #   red-green   a proper red→green branch passes; production code without a failing test-only commit
 #               before it is refused; so are a "red" commit that already passes, test and code squeezed
 #               into one commit, and a tip that never turns green; an exemption needs a reason;
-#               a build failure counts as red but says so
-#   status      ROADMAP.md must state each spec's task count as its tasks.md has it: a task ticked without
+#               a build failure counts as red but says so; and every red→green cycle on a branch is held
+#               to the same rule, not only the first — a later change with no red of its own, a later red
+#               that already passes, and a later red whose tip never turns green are each refused
+#   status     ROADMAP.md must state each spec's task count as its tasks.md has it: a task ticked without
 #               the roadmap, and a "not started" claim that came back, are each refused
+#   pairing     the task list is itself test-first: between its `pairs` markers every T### has a red above
+#               it (the R### of the same number, an R### it names as made green, or TDD-Exempt: <reason>),
+#               every R### has a green that answers it, and a list whose markers are gone is refused
 #   mutation    a planted survivor (the boundary tests of the pricer deleted) is refused, by name
 #
 #   scripts/verify-tdd-gates.sh [--no-mutation]     # mutation needs gremlins and ~30 s
@@ -114,6 +119,63 @@ expect "red by build failure passes, and says to stub the symbol" 0 "build faile
 branch i; write_test '1 << 51'; git add "$testfile"; git commit -qm "test(red): the ceiling is 2^51"; echo "// tweak" >>metering/domain/credits.go; git commit -qam "fix(green): forgot the change"
 expect "a red commit whose tip never turns green is refused" 1 "does not pass the tests" "$vrg" base
 
+# A branch may hold several red→green cycles (a stack of task pairs), and the gate must hold each one to
+# the rule, not only the first: "a failing test-only commit ahead of every production change"
+# (constitution, quality gates). Each cycle pins a FLOOR under the ceiling — at least 2^51, then at least
+# 2^52 — so the second change does not invalidate the first test, as it would if each asserted equality.
+testfile2=metering/domain/scratch_gate_two_test.go
+write_floor_test() { # <file> <test name> <floor expression>
+  cat >"$1" <<GO
+package domain_test
+
+import (
+	"testing"
+
+	"github.com/truongpx396/intel-payment/metering/domain"
+)
+
+func $2(t *testing.T) {
+	t.Parallel()
+	if domain.MaxOperationAmount < $3 {
+		t.Fatalf("got %d", domain.MaxOperationAmount)
+	}
+}
+GO
+}
+bump_again() { perl -pi -e 's/MaxOperationAmount Credits = 1 << 51/MaxOperationAmount Credits = 1 << 52/' metering/domain/credits.go; }
+first_cycle() {
+  write_floor_test "$testfile" TestScratchGate '1 << 51'; git add "$testfile"; git commit -qm "test(red): the ceiling is at least 2^51"
+  bump; git commit -qam "fix(green): raise the ceiling"
+}
+second_red() { # <floor expression> [subject]
+  write_floor_test "$testfile2" TestScratchGateTwo "$1"; git add "$testfile2"; git commit -qm "${2:-test(red): the ceiling is at least $1}"
+}
+
+branch m; first_cycle
+second_red '1 << 52'; bump_again; git commit -qam "fix(green): raise it again"
+expect "two red→green cycles on one branch pass, each red shown" 0 "red, then green" "$vrg" base
+
+branch n; first_cycle; bump_again; git commit -qam "fix(green): raise it again, with no new red"
+expect "a second change with no red of its own is refused" 1 "no test\(red\) commit since" "$vrg" base
+
+branch o; first_cycle
+second_red '1 << 51'; bump_again; git commit -qam "fix(green): raise it again"
+expect "a second 'red' that already passes is refused" 1 "PASSES" "$vrg" base
+
+branch p; first_cycle
+second_red '1 << 52'; echo "// tweak" >>metering/domain/credits.go; git commit -qam "fix(green): forgot the change"
+expect "a second red whose tip never turns green is refused" 1 "does not pass the tests" "$vrg" base
+
+branch q; first_cycle; echo "// tidy" >>metering/domain/credits.go; git commit -qam "refactor: tidy"
+expect "a refactor after green needs no red of its own" 0 "red, then green" "$vrg" base
+
+branch r; first_cycle; echo "// tidy" >>metering/domain/credits.go; git commit -qam "refactor: tidy"; bump_again; git commit -qam "fix(green): raise it again"
+expect "a refactor does not buy the next change its red" 1 "no test\(red\) commit since" "$vrg" base
+
+branch s; first_cycle
+second_red '1 << 51' "test(mutation): pin the ceiling"
+expect "a test(mutation) commit after green is not mistaken for a red" 0 "red, then green" "$vrg" base
+
 # ---------------------------------------------------------------- status drift
 # The scratch copy of the script is the one that runs: it judges the repository it lives in.
 drift=scripts/check-spec-drift.sh
@@ -126,6 +188,57 @@ expect "a task ticked without the roadmap is refused, with the line to write" 1 
 
 branch l; printf '\n> Status: design complete, **implementation not started**\n' >>README.md; git commit -qam "the old claim returns"
 expect "a 'not started' claim that came back is refused" 1 "README\.md:[0-9]+:.*implementation not started" "$drift"
+
+# ---------------------------------------------------------------- task pairing
+# The order of COMMITS is checked above; this checks the order of the PLAN: a green task nobody wrote a
+# red for, a red nothing makes pass, or a green listed before its red, is a list that is not test-first.
+# Each case plants one line just inside the markers of the real task list, in a scratch copy.
+pairs=scripts/check-task-pairs.sh
+plant() { # <task lines…> — inserted at the end of the paired region
+  printf '%s\n' "$@" >"$tmp/plant.txt"
+  PLANT="$tmp/plant.txt" perl -0pi -e 'BEGIN { open F, "<", $ENV{PLANT}; local $/; $p = <F> } s/(<!-- pairs:end -->)/$p$1/' "$tasks"
+  if git diff --quiet -- "$tasks"; then echo "gate fixture: planting changed nothing"; exit 2; fi
+}
+branch pair-ok
+expect "the task lists as shipped pass the pairing check" 0 "task pairing holds" "$pairs"
+
+branch pair-green-without-red; plant '- [ ] **T999** A behaviour nobody wrote a test for.'
+expect "a green task with no red above it is refused, by name" 1 "T999.*has no red" "$pairs"
+
+branch pair-red-without-green; plant '- [ ] **R998** A test nothing makes pass.'
+expect "a red that no green answers is refused, by name" 1 "R998.*no green" "$pairs"
+
+branch pair-green-first; plant '- [ ] **T997** The code, listed first.' '- [ ] **R997** The test, listed second.'
+expect "a green listed before its red is refused" 1 "T997.*before its red" "$pairs"
+
+branch pair-in-order; plant '- [ ] **R992** The test.' '- [ ] **T992** The code.'
+expect "a red, then its green, passes" 0 "task pairing holds" "$pairs"
+
+branch pair-exempt; plant '- [ ] **T993** A rename. `TDD-Exempt: a rename moves no behaviour`'
+expect "an exemption with a reason passes" 0 "task pairing holds" "$pairs"
+
+branch pair-exempt-bare; plant '- [ ] **T996** A rename. `TDD-Exempt:`'
+expect "an exemption with no reason is refused" 1 "T996.*needs a reason" "$pairs"
+
+branch pair-names-green; plant '- [ ] **R991** The test.' '- [ ] **T990** The code — makes **R991** green.'
+expect "a green that names the red it makes pass is paired with it" 0 "task pairing holds" "$pairs"
+
+branch pair-dangling; plant '- [ ] **T995** The code — makes **R994** green.'
+expect "a green naming a red that does not exist is refused" 1 "R994.*does not exist" "$pairs"
+
+branch pair-own-red; plant '- [ ] **T989** A load test *(a measurement: its own red)*.'
+expect "a measurement that says it is its own red passes" 0 "task pairing holds" "$pairs"
+
+branch pair-unarmed; perl -pi -e 's/^<!-- pairs:(start|end) -->\n//' "$tasks"; git commit -qam "the markers go"
+expect "a task list whose markers are gone is refused, not silently passed" 1 "not armed" "$pairs"
+
+# A new spec's list that has no markers and no R### tasks must not be skipped quietly: that is a list that
+# never adopted the rule, and "skipped" is how an unarmed guard looks from the outside.
+branch pair-never-adopted; mkdir -p specs/999-new; printf '# Tasks\n\n- [ ] **T001** Build it.\n' >specs/999-new/tasks.md; git add specs/999-new; git commit -qm "a spec with a plain task list"
+expect "a task list that never adopted the rule is refused, not skipped" 1 "specs/999-new/tasks.md.*not armed" "$pairs"
+
+branch pair-drift; plant '- [ ] **T999** A behaviour nobody wrote a test for.'
+expect "the drift check runs the pairing check" 1 "T999.*has no red" "$drift"
 
 # ---------------------------------------------------------------- mutation
 if [ "$with_mutation" -eq 1 ]; then

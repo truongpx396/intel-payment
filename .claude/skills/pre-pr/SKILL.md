@@ -19,7 +19,8 @@ branch covers from `specs/001-metering-billing-core/tasks.md`.
 ## 1. Red, then green — `make verify-red-green`
 
 A branch that changes production code needs a tests-only commit before it that **fails**, and a tip
-that passes. If it refuses, say which rule failed. Do not rewrite history to satisfy it without asking.
+that passes. On a branch with no production Go, SQL or Lua it says `nothing to drive` — report that as
+its result. If it refuses, say which rule failed. Do not rewrite history to satisfy it without asking.
 A change that genuinely cannot be test-driven needs a `TDD-Exempt: <reason>` line in a commit message or
 the PR body — and "hard to test" is not a reason.
 
@@ -31,9 +32,16 @@ Long, and needs Docker. If it will exceed the shell timeout, run it in the backg
 real result. On a Testcontainers Ryuk start-up error ("unexpected container status created"), rerun once
 before treating it as a failure.
 
-## 4. Mutation on the changed lines — `make mutation-diff`
+## 4. Mutation on the changed lines — `make mutation-diff`, when it applies
 
-A pull request has no tolerance on lines it changed. For each survivor, decide: **equivalent mutant**
+First ask the diff whether it applies (docs/testing.md, *When mutation testing applies*):
+`git diff --name-only origin/main...HEAD -- metering/domain metering/app metering/adapters/driven/pricing/table | grep -v '_test.go$'`.
+No output — a docs, specs, script, config, SQL, Lua or other-Go change — means do **not** run it: it
+mutates nothing and its "gate passed" would read as evidence it never gathered. Report
+`N/A: <what the branch changes>` and run the check that does prove that kind of change (the table in
+that section: `check-spec-drift.sh`, `make verify-tdd-gates`, `make verify-schema`, …).
+
+Otherwise: a pull request has no tolerance on lines it changed. For each survivor, decide: **equivalent mutant**
 (no test could tell the code from the mutant) or **missing test**. A missing test gets the test written
 — usually the exact boundary on both sides, committed as `test(mutation): …`. Propose a
 `.mutation-equivalents` entry only with the exact line and a reason, and show it to the user; never add
@@ -43,6 +51,7 @@ one to make the run pass.
 
 A table of check → result → the evidence (the command and the decisive lines of its output). Then the
 filled-in sections of `.github/pull_request_template.md`: what and why with task IDs; red and green
-commit SHAs with the failing assertion; the mutation output; the verification output.
+commit SHAs with the failing assertion; the mutation output, or its `N/A` and the check that stood in;
+the verification output.
 
 **Do not open the pull request.** Opening, merging or closing one is the user's call — ask.
