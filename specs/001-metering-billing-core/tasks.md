@@ -9,11 +9,18 @@ is named, and it runs in CI.
 **Test-first pairs.** From Phase 2 on, every behavioural task is a pair sharing a number: **R###**
 (red — a tests-only commit that *fails*, for the reason it states) and then **T###** (green — the least
 code that makes it pass). The red task names its tests, derived from the contract clause that states
-the invariant rather than from code that does not exist yet. The order is checked mechanically
-(`scripts/verify-red-green.sh`, CI job `red-green`); a task that genuinely cannot be test-driven says
-so as `TDD-Exempt: <reason>`, and "hard to test" is never one ([docs/testing.md](../../docs/testing.md)).
-A conformance suite is itself held to the same standard: shown to fail against a deliberately broken
-implementation, or it has not been shown to test anything.
+the invariant rather than from code that does not exist yet, and it fails on an **assertion** — where the
+symbol under test does not exist yet, the test brings a double of its own (R060's unbuilt transport) so the
+red is not a compile error. A red is one invariant, or a few that move together: when one pair would need a
+dozen failing tests and a single large change, it is split (R083 is an ingress pair and three processor
+pairs). Two things are checked mechanically. The order of the **commits** is `scripts/verify-red-green.sh`
+(CI job `red-green`), which holds *every* red→green cycle on a branch to the rule, so a branch may carry
+several pairs. The order of **this list** is `scripts/check-task-pairs.sh` (inside
+`scripts/check-spec-drift.sh`, CI job `drift`): between the `pairs` markers every green has a red above
+it and every red a green; a measurement says it is its own red. A task that genuinely cannot be
+test-driven says so as `TDD-Exempt: <reason>`, and "hard to test" is never one
+([docs/testing.md](../../docs/testing.md)). A conformance suite is itself held to the same standard:
+shown to fail against a deliberately broken implementation, or it has not been shown to test anything.
 
 Phases 0–1 predate the rule. Their suites and code mostly landed together, so nothing recorded a red
 run; the [hardening record](#hardening-record) below says what was done about that afterwards, and what
@@ -21,7 +28,10 @@ it found.
 
 Moved when Phases 2–7 were paired (no ID was reused for a different task): **T069** → **R060** (first)
 plus **T069** (the closing check); **T082**/**T083**/**T101** → **R082**/**R083**/**R101**;
-**T127** → **R122**; **T125** now precedes the components it guards.
+**T127** → **R122**; **T125** now precedes the components it guards. Split afterwards, while none of it
+was built: **R063** → **R063** (error table) + **R063c** (idempotency) + **R063d** (route table);
+**R067** → **R067** (start-up) + **R067a** (shutdown); **R083** → **R083** (ingress) + **R083a**
+(grants) + **R083b** (refunds and disputes) + **R083c** (subscription state), with **T084** split to match.
 
 ---
 
@@ -89,14 +99,18 @@ plus **T069** (the closing check); **T082**/**T083**/**T101** → **R082**/**R08
 
 The equivalence suite comes first: it is the red for the whole phase, and the transports exist to make it pass.
 
-- [ ] **R060** **Equivalence suite (FR-044)** *(was T069 — moved first)*. `metering/contracts.MeterEquivalence`: the `Meter`-level behaviour of `LedgerContract` plus deferral and error identity, written once and parameterised by a `Meter` factory. Today only the in-process `app.Meter` can be plugged in, so the wire half fails to build — that failure is the recorded red. Every typed error in `domain/errors.go` must survive the wire: `errors.Is(err, domain.ErrIdemConflict)` after a round trip, not a string match.
+- [ ] **R060** **Equivalence suite (FR-044)** *(was T069 — moved first)*. `metering/contracts.MeterEquivalence`: the `Meter`-level behaviour of `LedgerContract` plus deferral and error identity, written once and parameterised by a `Meter` factory, and run in two modes — in-process (`app.Meter`) and over the wire. **The red is an assertion, not a compile error:** until the transports exist the wire mode is bound to a test-owned double that answers every call with `ErrNotImplemented`, so it fails on what it claims — every typed error in `domain/errors.go` must survive the wire, `errors.Is(err, domain.ErrIdemConflict)` after a round trip and not a string match. The in-process mode passes today and is the control: it shows the suite asserts nothing the engine does not already do.
 - [ ] **R061** gRPC status mapping, from [grpc-surface.md § Status mapping](./contracts/grpc-surface.md): one table test row per condition (code **and** `ErrorInfo.reason`); a test that enumerates every exported `Err*` in `domain` and fails on any with no row, so a new error cannot ship unmapped; a missing `idem_key` or `occurred_at` is `INVALID_ARGUMENT`, never a generated default; a `Scope.realm` outside the credential's is `PERMISSION_DENIED`; `Grant` and `Transfer` are refused for a `record`-only credential **at the RPC**; a deferred `Record` is `OK` with `deferred = true`; a descriptor test that no money-bearing message has a `float` or `double` field.
 - [ ] **T060** `api/meteringv1` proto per [metering-ports.md § Service surface](./contracts/metering-ports.md#service-surface-meteringservice-grpc-contract-locked). `TDD-Exempt: declarations only` — guarded by R061's descriptor test and `buf breaking` against `main`.
 - [ ] **T061** `grpcserver` with the fixed status mapping — makes **R061** green.
 - [ ] **R062** `grpcclient`: the inverse of R061 (every row, status → typed error, `errors.Is` holds); the caller's deadline is the deadline on the wire; a cancelled context settles nothing it did not already settle; `var _ ports.Meter = (*Client)(nil)`.
 - [ ] **T062** `grpcclient` — **wrapped to satisfy `ports.Meter`** (**FR-044**).
-- [ ] **R063** REST error table, from [rest-api.md § Errors](./contracts/rest-api.md#errors): a row per `(HTTP, code)` including `details` (`resets_at` on `409 limit_reached`, `upgrade_url` on `402`); missing `Idempotency-Key` is `400`; the same key and request returns the original outcome, the same key and a *different* request is `409 idempotency_conflict`; a body-supplied realm outside the credential's is `403 realm_mismatch`; `PAYMENT_LEGACY_429_FOR_LIMITS`; webhook routes carry no CORS headers and no auth middleware (a route-table test, so a JWT check added later fails it).
-- [ ] **T063** `resthandler` — every `/v1/*` route of [rest-api.md](./contracts/rest-api.md); `Idempotency-Key` is the key.
+- [ ] **R063** REST error table, from [rest-api.md § Errors](./contracts/rest-api.md#errors): a row per `(HTTP, code)` including `details` (`resets_at` on `409 limit_reached`, `upgrade_url` on `402`); a body-supplied realm outside the credential's is `403 realm_mismatch`; `PAYMENT_LEGACY_429_FOR_LIMITS`.
+- [ ] **T063** `resthandler` — every `/v1/*` route of [rest-api.md](./contracts/rest-api.md) with the error table above. Makes **R063** green.
+- [ ] **R063c** `Idempotency-Key` on the wire: a missing key is `400`; the same key and request returns the original outcome; the same key and a *different* request is `409 idempotency_conflict`, never a second effect.
+- [ ] **T063c** `Idempotency-Key` is the idempotency key of the operation behind the route. Makes **R063c** green.
+- [ ] **R063d** The route table (webhook invariant 11): webhook routes carry no CORS headers and no auth middleware. A test over the registry, and a planted route that adds a JWT check to a webhook path, which must be rejected — so a check added later fails the build.
+- [ ] **T063d** The route registry: `/v1/*` behind caller auth, `/webhooks/*` behind neither CORS nor auth. Makes **R063d** green.
 - [ ] **R063a** Admin API: a configuration write without `intelpay.actor` / `intelpay.reason` is refused; the audit row is written by the database trigger in the same transaction (integration — a write that bypasses the API is still audited); a card is published only after a test pricing, and a card that overflows, prices negative, or names an unregistered pricer is refused (**FR-049**).
 - [ ] **T063a** Admin API — configuration writes with `intelpay.actor`/`intelpay.reason`, card publication validated by a test pricing.
 - [ ] **R063b** Handler and document agree, in both directions: every registered route is in `api/openapi/v1.yaml` and every path in it is registered, so a route added without a document entry fails.
@@ -107,11 +121,13 @@ The equivalence suite comes first: it is the red for the whole phase, and the tr
 - [ ] **T065** Caller auth — mTLS/bearer, realm binding, `record`/`grant`/`admin` privileges (**FR-040**).
 - [ ] **R066** `/readyz` is `503` while migrations are behind head and while the shard count disagrees with `Config`; `/healthz` makes no dependency call; `/metrics` exports every name in `ports.Catalog`.
 - [ ] **T066** `/healthz`, `/readyz` (schema head + shard count), `/metrics`.
-- [ ] **R067** `cmd/paymentd`: reads the environment in `cmd/` only; refuses to start on each invalid `Config` that `Validate` refuses; a `Record` in flight at shutdown settles or is journalled, never lost; the Playwright `e2e` suite (already gated on `cmd/paymentd`) goes from skipped to real.
-- [ ] **T067** `cmd/paymentd`.
+- [ ] **R067** `cmd/paymentd` start-up: reads the environment in `cmd/` only; refuses to start on each invalid `Config` that `Validate` refuses (one table row per refusal); and the Playwright `e2e` suite, until now skipped while `cmd/paymentd` does not exist, is un-gated so it fails now — the wiring red for the whole binary.
+- [ ] **T067** `cmd/paymentd`: start-up and wiring. Makes **R067** green, and the `e2e` suite run instead of skip.
+- [ ] **R067a** `cmd/paymentd` shutdown, integration: a `Record` in flight when the process is told to stop settles or is journalled, never lost and never booked twice; the listener stops accepting before it drains.
+- [ ] **T067a** Graceful shutdown: stop accepting, drain in flight, flush the journal. Makes **R067a** green.
 - [ ] **R068** `cmd/payment-worker`: a worker killed mid-batch is replaced by another that resumes, and no intent is booked twice (the writer's two-writers scenario at process level, integration); shutdown releases shard ownership.
 - [ ] **T068** `cmd/payment-worker`.
-- [ ] **T069** Close the phase: **R060** runs in CI in both modes — in-process, and through `grpcclient` → `grpcserver` — with the same assertions, both green (**FR-044**).
+- [ ] **T069** Close the phase: **R060** runs in CI in both modes — in-process, and through `grpcclient` → `grpcserver` — with the same assertions, both green (**FR-044**). Replacing the double with the real pair is the only edit to test code; the assertions are untouched.
 
 ## Phase 3 — Payments
 
@@ -121,8 +137,14 @@ Contract-derived: the invariants and the test skeleton are in [payment-provider-
 - [ ] **T080** `billing/domain` — provider accounts, `Sub.LastEventAt`, payments with cumulative refunds and dispute state, normalized `EventObject`, `Ignored`.
 - [ ] **T081** `billing/ports` — `PaymentProvider` (incl. `ChargeSaved`, setup mode), `Catalog.PlanForPrice`, `Inbox`, `Payments`, `Subs.ApplyIfNewer`, `TaxStrategy`. `TDD-Exempt: declarations only` — guarded by `go-arch-lint`, `depguard` and the compile-time `var _ ports.X = …` in each adapter.
 - [ ] **R082** `ProviderContract`, from the skeleton: tampered body, missing and stale signature, a body signed for another account, verify-and-normalize with the provider's timestamp and a body hash, refund amounts normalized as **cumulative**, `Ignored`, checkout never grants (**FR-018, FR-019**). **The suite must have teeth:** run against a fake provider that passes, *and* against one deliberately broken fake per subtest (skips verification, ignores the timestamp, reports a per-event refund) — each must be rejected by name.
-- [ ] **R083** `IngressContract` + `ProcessorContract`, from the skeleton and every invariant it names: **verify before anything (1)** — a fake store records call order and nothing is touched before verification; **persist before acknowledging (5)**; **a replay answers 200 (6)**; **unverifiable is parked with its raw body, never dropped (14)**; a crash after ack still grants once; concurrent processors grant once; metadata cannot redirect a grant (4); partial refunds exact; a won dispute reverses; out-of-order subscription events; grace; a realm the account does not serve is ignored and counted (19); **only the processor writes subscription status (12)**; **a refund names its payment and never claws back what expiry took (20)** (**FR-016a, FR-020…026, SC-016, SC-017**). Same teeth requirement as R082.
-- [ ] **T084** `billing/app/ingress.go` + `processor.go` — stage 1 and stage 2 exactly as in the contract; the `billing.webhook.tick` sweep and unverifiable-retry — makes **R083** green.
+- [ ] **R083** `IngressContract` (stage 1), from the skeleton: **verify before anything (1)** — a fake store records call order and nothing is touched before verification; **persist before acknowledging (5)**; **a replay answers 200 (6)**; **unverifiable is parked with its raw body, never dropped (14)**, and re-verified later (**FR-018, FR-020**). Same teeth requirement as R082: run against a fake store that is broken in each of these ways and rejected by name.
+- [ ] **T084** `billing/app/ingress.go` — stage 1 exactly as in the contract, and the unverifiable-retry. Makes **R083** green.
+- [ ] **R083a** `ProcessorContract`, grants (stage 2): a crash after the acknowledgement still grants once; concurrent processors grant once; metadata cannot redirect a grant (**4**); credits are created only through `Meter.Grant` (**3**); a realm the account does not serve is ignored and counted (**19**) (**FR-019…022**, **SC-016**). Same teeth requirement.
+- [ ] **T084a** `billing/app/processor.go` — grants from the inbox with leases and retries. Makes **R083a** green.
+- [ ] **R083b** `ProcessorContract`, refunds and disputes: a partial refund revokes exactly and several equal one (**16**); a refund appends and never mutates (**8**); **a refund names its payment and never claws back what expiry took (20)**; a won dispute reverses, each phase keyed on the dispute id (**17**) (**FR-016a, FR-023**, **SC-017**). Same teeth requirement.
+- [ ] **T084b** Refunds and disputes in the processor, over `LotReader.LotsOf`. Makes **R083b** green.
+- [ ] **R083c** `ProcessorContract`, subscription state: out-of-order events converge to the newest (**15**); a failed payment holds entitlements until `GraceUntil` and then suspends (**13**); **only the processor writes subscription status (12)** (**FR-025, FR-026**). Same teeth requirement.
+- [ ] **T084c** Subscription state through `Subs.ApplyIfNewer`, grace, and the `billing.webhook.tick` sweep. Makes **R083c** green.
 - [ ] **R085** Checkout in payment, subscription and setup modes: `Meter.Grant` is never called by any of them, including on a simulated return-URL callback (invariant 2); the amount, currency and credit quantity come from `Catalog`, never from the request.
 - [ ] **T085** `billing/app/checkout.go` — payment, subscription and setup modes. Grants nothing.
 - [ ] **R086** Stripe, against **recorded** signed fixtures: `R082` run against the adapter; the timestamp tolerance exactly at its bound, one second inside and one outside; per-account secrets (a body signed with account B's secret fails on account A); signatures compared in constant time (`hmac.Equal`); grants keyed on payment/invoice id, so a redelivery is the same key.
