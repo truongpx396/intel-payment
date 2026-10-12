@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -313,7 +314,16 @@ func (e entry) match(segs []string) (map[string]string, bool) {
 }
 
 func (rt *router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	segs := split(r.URL.Path)
+	// Split the path as it was SENT: an idempotency key may contain an escaped '/', which is one segment.
+	segs := split(r.URL.EscapedPath())
+	for i, s := range segs {
+		u, err := url.PathUnescape(s)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "the path is not validly escaped")
+			return
+		}
+		segs[i] = u
+	}
 	var best *entry
 	var bestVals map[string]string
 	allow := map[string]bool{}

@@ -19,9 +19,13 @@ import (
 type Config struct {
 	Meter   ports.Meter
 	Balance ports.BalanceReader
-	Auth    auth.Authenticator
-	Clock   ports.Clock
-	Logger  *slog.Logger
+	// Ledger and Transfers back GET /v1/ledger and GET /v1/transfers/{idem_key}. A route whose reader is
+	// absent is not registered.
+	Ledger    ports.LedgerReader
+	Transfers ports.TransferReader
+	Auth      auth.Authenticator
+	Clock     ports.Clock
+	Logger    *slog.Logger
 
 	// Legacy429ForLimits answers 429 instead of 409 for a spent window, for a host mid-migration
 	// (PAYMENT_LEGACY_429_FOR_LIMITS). 429 means "you are calling too fast"; a spent budget is not a rate
@@ -74,6 +78,12 @@ func BuildRegistry(cfg Config) (*Registry, error) {
 		{Method: http.MethodGet, Path: "/v1/balance", Surface: V1, Privilege: auth.Record, Handler: h.balance},
 	} {
 		reg.Add(r)
+	}
+	if cfg.Ledger != nil {
+		reg.Add(Route{Method: http.MethodGet, Path: "/v1/ledger", Surface: V1, Privilege: auth.Record, Handler: h.ledger})
+	}
+	if cfg.Transfers != nil {
+		reg.Add(Route{Method: http.MethodGet, Path: "/v1/transfers/{idem_key}", Surface: V1, Privilege: auth.Grant, Handler: h.transferStatus})
 	}
 	return reg, nil
 }
