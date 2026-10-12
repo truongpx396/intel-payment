@@ -1,0 +1,12 @@
+# The wire contract (api/proto). Lint is BASIC, not STANDARD: the service surface is contract-locked
+# (metering-ports.md § Service surface), and STANDARD would demand renaming its RPC messages and enum
+# values. `buf breaking` against main is what protects a released shape (make proto-check).
+version: v2
+modules:
+  - path: api/proto
+lint:
+  use:
+    - BASIC
+breaking:
+  use:
+    - FILE

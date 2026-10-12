@@ -1,0 +1,145 @@
+// The wire contract of the metering engine: the SAME ports.Meter, over gRPC.
+//
+// Normative text: specs/001-metering-billing-core/contracts/metering-ports.md § Service surface and
+// grpc-surface.md. Money crosses as int64 — credits signed, never a float. `idem_key` is required on
+// every mutating RPC and `occurred_at` on Record; a missing one is INVALID_ARGUMENT, never a
+// generated default (a server-generated key would make every retry a new charge).
+//
+// Versioning: additive within v1; a breaking change is a new package (rest-api.md § Versioning).
+syntax = "proto3";
+
+package metering.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/truongpx396/intel-payment/api/meteringv1;meteringv1";
+
+// Scope is the billing subject within a realm. Opaque to the service.
+message Scope {
+  string realm = 1; // authenticated, never asserted: outside the credential's realm set it is PERMISSION_DENIED
+  string kind = 2;
+  string id = 3;
+}
+
+// Quantity is an integer count of a unit.
+message Quantity {
+  string unit = 1;
+  int64 amount = 2;
+}
+
+message Event {
+  Scope scope = 1;
+  string resource = 2;
+  string rate_key = 3; // pricing selector (model / tier / sku)
+  repeated Quantity quantities = 4;
+  string idem_key = 5; // REQUIRED — the exactly-once identity
+  google.protobuf.Timestamp occurred_at = 6; // REQUIRED, identical on every retry
+  map<string, string> attributes = 7; // audit only — never a cost input
+  map<string, string> subjects = 8; // kind → id: keys subject ceilings
+}
+
+// Window classifies a limit counter's reset behaviour. The zero value is BALANCE, as in the domain.
+enum Window {
+  BALANCE = 0;
+  DAILY = 1;
+  HOURLY = 2;
+  ROLLING = 3;
+  JOB = 4;
+}
+
+message Limit {
+  string name = 1;
+  string subject = 2;
+  string resource = 3;
+  string unit = 4;
+  int64 max = 5;
+  Window window = 6;
+  int64 dur_seconds = 7;
+  string tz = 8;
+  double warn_at = 9; // a fraction in [0,1], not money — the only floating-point field on the wire
+  string deny_code = 10; // "payment_required" | "limit_reached" | "account_blocked"
+  string max_entitlement = 11; // the entitlement key that sizes max (configuration; reported, never honoured on a caller's limit)
+}
+
+message Admission {
+  bool allowed = 1;
+  Limit exceeded = 2;
+  Limit warning = 3;
+  int64 headroom = 4;
+  bool blocked = 5;
+}
+
+message Receipt {
+  string idem_key = 1;
+  bool applied = 2;
+  bool deferred = 3; // accepted into the spend journal during an outage: it succeeded, it has not been applied yet
+  int64 delta = 4;
+  int64 balance = 5;
+  int64 seq = 6;
+  string rate_card_version = 7;
+  int64 writeoff = 8; // the shortfall a clamp policy floored on a negative grant
+}
+
+message AdmitRequest {
+  Scope scope = 1;
+  string resource = 2;
+  map<string, string> subjects = 3;
+  repeated Limit limits = 4; // can only tighten
+  int64 max_cost = 5; // 0 = unknown
+}
+
+message RecordRequest {
+  Event event = 1;
+}
+
+message GrantRequest {
+  Scope scope = 1;
+  string pool = 2;
+  int64 amount = 3;
+  string idem_key = 4;
+  string reason = 5;
+  google.protobuf.Timestamp expires_at = 6;
+  map<string, string> ref = 7;
+  string source_key = 8; // a clawback's reference to the grant it reverses
+}
+
+message BalanceRequest {
+  Scope scope = 1;
+}
+
+message BalanceReply {
+  map<string, int64> pools = 1;
+  int64 total = 2;
+}
+
+message TransferRequest {
+  Scope from = 1;
+  Scope to = 2;
+  string from_pool = 3;
+  string to_pool = 4;
+  int64 amount = 5;
+  string idem_key = 6;
+  string reason = 7;
+  int64 max_dest_balance = 8;
+  map<string, string> ref = 9;
+}
+
+message TransferReply {
+  string idem_key = 1;
+  bool applied = 2;
+  int64 amount = 3;
+  int64 from_balance = 4;
+  string status = 5; // "in_transit" | "settled"
+}
+
+service Metering {
+  // Admit is the gate. It reserves nothing — keep it co-located with the caller.
+  rpc Admit(AdmitRequest) returns (Admission);
+  // Record prices and settles; idempotent on event.idem_key.
+  rpc Record(RecordRequest) returns (Receipt);
+  rpc GetBalance(BalanceRequest) returns (BalanceReply);
+  // Grant mints or removes credits. PRIVILEGED: refused to a record-only credential at the RPC.
+  rpc Grant(GrantRequest) returns (Receipt);
+  // Transfer moves credits pool → allocation. PRIVILEGED.
+  rpc Transfer(TransferRequest) returns (TransferReply);
+}
