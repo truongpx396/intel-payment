@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/truongpx396/intel-payment/metering/adapters/driving/auth"
@@ -197,8 +198,13 @@ func (h *handler) record(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, "record", err)
 		return
 	}
+	key, err := idemKey(r, req.IdemKey)
+	if err != nil {
+		h.fail(w, r, "record", err)
+		return
+	}
 	e := domain.Event{
-		Resource: req.Resource, RateKey: req.RateKey, Subjects: subjectsOf(req.Subjects), IdemKey: r.Header.Get("Idempotency-Key"),
+		Resource: req.Resource, RateKey: req.RateKey, Subjects: subjectsOf(req.Subjects), IdemKey: key,
 		OccurredAt: at, Attributes: mapOrNil(req.Attributes),
 	}
 	for _, q := range req.Quantities {
@@ -234,8 +240,13 @@ func (h *handler) grant(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, "grant", required("scope"))
 		return
 	}
+	key, err := idemKey(r, req.IdemKey)
+	if err != nil {
+		h.fail(w, r, "grant", err)
+		return
+	}
 	g := domain.Grant{
-		Pool: domain.Pool(req.Pool), Amount: domain.Credits(req.Amount), IdemKey: r.Header.Get("Idempotency-Key"),
+		Pool: domain.Pool(req.Pool), Amount: domain.Credits(req.Amount), IdemKey: key,
 		Reason: req.Reason, SourceKey: req.SourceKey, Ref: mapOrNil(req.Ref),
 	}
 	if req.ExpiresAt != "" {
@@ -246,7 +257,6 @@ func (h *handler) grant(w http.ResponseWriter, r *http.Request) {
 		}
 		g.ExpiresAt = &at
 	}
-	var err error
 	if g.Scope, err = p.Resolve(req.Scope.domain()); err != nil {
 		h.fail(w, r, "grant", err)
 		return
@@ -277,11 +287,15 @@ func (h *handler) transfer(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, "transfer", required("to"))
 		return
 	}
+	key, err := idemKey(r, req.IdemKey)
+	if err != nil {
+		h.fail(w, r, "transfer", err)
+		return
+	}
 	t := domain.Transfer{
-		FromPool: domain.Pool(req.FromPool), ToPool: domain.Pool(req.ToPool), Amount: domain.Credits(req.Amount), IdemKey: r.Header.Get("Idempotency-Key"),
+		FromPool: domain.Pool(req.FromPool), ToPool: domain.Pool(req.ToPool), Amount: domain.Credits(req.Amount), IdemKey: key,
 		Reason: req.Reason, MaxDestBalance: domain.Credits(req.MaxDestBalance), Ref: mapOrNil(req.Ref),
 	}
-	var err error
 	if t.From, err = p.Resolve(req.From.domain()); err != nil {
 		h.fail(w, r, "transfer", err)
 		return
@@ -334,6 +348,24 @@ func (h *handler) balance(w http.ResponseWriter, r *http.Request) {
 	}
 	out.Total = int64(total)
 	writeJSON(w, http.StatusOK, out)
+}
+
+// idemKey is the operation's idem_key: the Idempotency-Key header, which is required, which says it once, and
+// which a body idem_key — if the body carries one — must agree with. A server-generated key would make every
+// retry a new charge, so there is no default.
+func idemKey(r *http.Request, bodyKey string) (string, error) {
+	vals := r.Header.Values("Idempotency-Key")
+	if len(vals) == 0 || strings.TrimSpace(vals[0]) == "" {
+		return "", fmt.Errorf("%w: the Idempotency-Key header is required: it is this operation's identity, and a retry carries the same one", domain.ErrInvalid)
+	}
+	if len(vals) > 1 {
+		return "", fmt.Errorf("%w: send exactly one Idempotency-Key header", domain.ErrInvalid)
+	}
+	key := strings.TrimSpace(vals[0])
+	if bodyKey != "" && bodyKey != key {
+		return "", fmt.Errorf("%w: the body's idem_key differs from the Idempotency-Key header: the header is the key", domain.ErrInvalid)
+	}
+	return key, nil
 }
 
 func required(field string) error { return fmt.Errorf("%w: %s is required", domain.ErrInvalid, field) }

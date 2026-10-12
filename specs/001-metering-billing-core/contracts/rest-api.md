@@ -146,7 +146,7 @@ The status table is the one table both transports read ([`wire.Table`](../../../
 
 ## Rules
 
-- **`Idempotency-Key` is required on every mutating request.** A retry with the same key and the same request returns the original outcome; the same key with a different request is `409 idempotency_conflict`.
+- **`Idempotency-Key` is required on every request that moves or spends credits** — `record`, `grant`, `transfer` — **and it is the operation's `idem_key`**: exactly one header, non-blank, and a body `idem_key` (optional) must agree with it. A retry with the same key and the same request returns the original outcome; the same key with a different request — a different `occurred_at` included — is `409 idempotency_conflict`. There is no default: a server-generated key would make every retry a new charge. `admit` and the reads have no operation behind them and need none; a configuration write is idempotent by its natural key (a `PUT` by name, a card by version).
 - **No browser ever holds a `/v1/*` credential.** The host proxies `/v1/credits` behind its own session.
 - **Realm comes from the credential.** A body-supplied realm outside the credential's realms is `403 realm_mismatch`.
 - **`grant` and `admin` are separate privileges from `record`,** at the transport, not just in code.
