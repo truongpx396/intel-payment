@@ -43,8 +43,13 @@ func NewPrometheus() (*Metrics, http.Handler, error) {
 // declareCatalog serves next's exposition followed by the declaration of every catalogued metric it left out.
 func declareCatalog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The declarations are appended to the body as text, so the body must be text: a compressed stream with
+		// plain lines stuck on its end is one no scraper can read. The exposition is small and served on a
+		// private network; it goes out uncompressed.
+		plain := r.Clone(r.Context())
+		plain.Header.Del("Accept-Encoding")
 		buf := &bufferedResponse{header: http.Header{}, code: http.StatusOK}
-		next.ServeHTTP(buf, r)
+		next.ServeHTTP(buf, plain)
 		body := buf.body.String()
 		if buf.code == http.StatusOK {
 			var missing strings.Builder

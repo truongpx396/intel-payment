@@ -37,14 +37,16 @@ func parseEntries(spec, what string, proof func(*entry, string) error) ([]entry,
 	var out []entry
 	seenCaller := map[string]bool{}
 	seenProof := map[string]string{}
-	for _, raw := range strings.Split(spec, ",") {
+	for i, raw := range strings.Split(spec, ",") {
 		raw = strings.TrimSpace(raw)
 		if raw == "" {
 			continue
 		}
 		f := strings.Split(raw, ":")
 		if len(f) != 4 {
-			return nil, fmt.Errorf("%s: %q needs four fields, <caller-id>:<proof>:<realms>:<privileges>", what, raw)
+			// By position, never by content: an entry that is not shaped like one may be a bare token, and a
+			// refusal is logged and pasted into tickets.
+			return nil, fmt.Errorf("%s: entry %d needs four fields, <caller-id>:<proof>:<realms>:<privileges>", what, i+1)
 		}
 		e := entry{callerID: f[0]}
 		if e.callerID == "" || strings.ContainsAny(e.callerID, " \t") {

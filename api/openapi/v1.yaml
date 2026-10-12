@@ -501,9 +501,10 @@ paths:
       tags: [platform]
       summary: The service may be sent traffic.
       description: |
-        Ready only at migration head, with the configured shard count and the hot tier reachable. A check that
-        does not finish within its bound is not ready, because a probe must answer. Registered only when the
-        host supplies a readiness check.
+        Ready only at migration head, with the configured shard count. It deliberately does not ask the hot
+        tier: while Redis is down `record` journals to Postgres and answers `202`, and a service pulled out of
+        rotation could not. A check that does not finish within its bound is not ready, because a probe must
+        answer. Registered only when the host supplies a readiness check.
       security: []
       responses:
         "200":

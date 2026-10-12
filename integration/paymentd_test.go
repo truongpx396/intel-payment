@@ -65,7 +65,7 @@ func paymentdBinary(t *testing.T) string {
 		paymentdPath = filepath.Join(paymentdDir, "paymentd")
 		out, err := exec.Command("go", "build", "-o", paymentdPath, "../cmd/paymentd").CombinedOutput()
 		if err != nil {
-			paymentdErr = fmt.Errorf("go build ./cmd/paymentd: %v\n%s", err, out)
+			paymentdErr = fmt.Errorf("go build ./cmd/paymentd: %w\n%s", err, out)
 		}
 	})
 	if paymentdErr != nil {
@@ -539,4 +539,23 @@ func issue(t *testing.T, ca *x509.Certificate, caKey *ecdsa.PrivateKey, cn strin
 	must(t, err)
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
 		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), leaf
+}
+
+// The bus is a choice (PAYMENT_BUS), and the one that is not the default has to be wired too.
+func TestPaymentdStartsOnTheJetStreamBusAndRefusesOneItCannotReach(t *testing.T) {
+	t.Parallel()
+	realm, dsn := seededRealm(t)
+	prefix := fmt.Sprintf("pdjs%d", seq.Add(1))
+	d := startPaymentd(t, paymentdEnv(realm, dsn, "PAYMENT_BUS", "nats_jetstream", "PAYMENT_BUS_URL", natsSrv.URL, "PAYMENT_SUBJECT_PREFIX", prefix))
+	base := d.httpURL(t)
+	awaitReady(t, d, &http.Client{Timeout: 10 * time.Second}, base)
+
+	r2, dsn2 := seededRealm(t)
+	bad := startPaymentd(t, paymentdEnv(r2, dsn2, "PAYMENT_BUS", "nats_jetstream", "PAYMENT_BUS_URL", "nats://127.0.0.1:1"))
+	if code := bad.waitExit(t, 30*time.Second); code == 0 {
+		t.Fatalf("paymentd exited 0 with a bus it cannot reach; logs:\n%s", bad.logs.String())
+	}
+	if out := bad.logs.String(); !strings.Contains(out, "PAYMENT_BUS_URL") {
+		t.Errorf("the refusal does not name the variable:\n%s", out)
+	}
 }

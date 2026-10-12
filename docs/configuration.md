@@ -135,7 +135,16 @@ or move money.
 | `PAYMENT_SERVICE_AUTH` | `bearer` | `none` \| `mtls` \| `bearer`. **`none` is permitted only on loopback or a Unix socket** |
 | `PAYMENT_SERVICE_TOKENS` | — | bearer mode: `<caller-id>:<sha256-hex>:<realms>:<privileges>,…` — realms and privileges (`record`, `grant`, `admin`) each joined with `+`. The **digest** of the token, never the token: a plaintext token, a short or non-hex digest, a caller or a token listed twice, a wildcard realm or an unknown privilege stops the service at start-up. Empty accepts no caller |
 | `PAYMENT_SERVICE_CERTS` | — | mTLS mode: `<caller-id>:<certificate common name>:<realms>:<privileges>,…` — same rules. The listener verifies the chain against the private CA; this maps the verified leaf's subject to a caller |
+| `PAYMENT_TLS_CERT_FILE` / `PAYMENT_TLS_KEY_FILE` | — | PEM files. With both, REST and gRPC serve TLS; one without the other stops the service at start-up. Required by `mtls` |
+| `PAYMENT_TLS_CLIENT_CA_FILE` | — | `mtls` only: the private CA a caller's certificate must chain to. A certificate is requested of every caller and verified when offered, so a probe with none can still reach `/healthz` and `/readyz`; `/v1/*` then refuses the call as `401` |
 | `PAYMENT_LEGACY_429_FOR_LIMITS` | `false` | Restores `429` instead of `409` for spent windows, for a host mid-migration |
+| `PAYMENT_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error`. Logs are JSON on stderr; `listening` reports the address each transport bound |
+
+An address is `host:port`, or `unix:/path` for a unix socket. `paymentd` reads all of this at start, checks the
+whole of it before it dials anything, and stops with exit code 2 naming **every** variable that is wrong (never
+echoing a credential). It then refuses to start against a schema that is not at head (`payment-migrate up` first)
+or a `PAYMENT_SHARDS` that disagrees with the books. `paymentd healthcheck` exits 0 only while `/readyz` answers
+200 — the container healthcheck, since the image has no `curl`.
 
 ### Provider secrets
 

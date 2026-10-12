@@ -36,8 +36,8 @@ type readyJSON struct {
 }
 
 // readyz says whether the service may be sent traffic: only at migration head, with the configured shard count
-// and the hot tier reachable (FR-042). A check that does not finish within its bound is not ready — a probe
-// must answer, or it cannot gate a rollout.
+// (FR-042). A check that does not finish within its bound is not ready — a probe must answer, or it cannot gate a
+// rollout.
 func (h *handler) readyz(w http.ResponseWriter, r *http.Request) {
 	timeout := h.cfg.ReadyTimeout
 	if timeout <= 0 {

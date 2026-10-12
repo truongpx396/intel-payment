@@ -158,7 +158,7 @@ Open, uncached (`Cache-Control: no-store`), outside the credential and CORS midd
 | Route | Answers | Calls a dependency |
 |---|---|---|
 | `GET /healthz` | `200 {"status":"ok"}` while the process runs | never — a liveness probe that checks Postgres turns its outage into a restart loop |
-| `GET /readyz` | `200 {"status":"ready","migrations":"head","shards":N}` only at migration head with the configured shard count and no problem found; otherwise `503 {"status":"not_ready",…,"problems":[…]}` naming each | yes, bounded (default 2 s): a check that does not finish is `503`, because a probe must answer |
+| `GET /readyz` | `200 {"status":"ready","migrations":"head","shards":N}` only at migration head with the configured shard count and no problem found — the hot tier is deliberately not asked, because while it is down `record` journals and answers `202`, which a service out of rotation could not; otherwise `503 {"status":"not_ready",…,"problems":[…]}` naming each | yes, bounded (default 2 s): a check that does not finish is `503`, because a probe must answer |
 | `GET /metrics` | the Prometheus text exposition | no |
 
 `/healthz` always exists. `/readyz` and `/metrics` exist only when the host supplies a readiness check or a metrics handler. `/metrics` declares **every** name of `ports.Catalog` — type and help — from the first scrape, not only after traffic: an alert written against a counter that has not moved yet must not be an alert on a name that does not exist.
