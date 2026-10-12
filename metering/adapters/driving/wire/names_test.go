@@ -1,6 +1,8 @@
 package wire_test
 
 import (
+	"errors"
+
 	"github.com/truongpx396/intel-payment/metering/adapters/driving/wire"
 	"github.com/truongpx396/intel-payment/metering/domain"
 )
@@ -34,7 +36,7 @@ var namesOf = map[string]error{
 func mappedSentinels() map[string]bool {
 	out := map[string]bool{}
 	for name, err := range namesOf {
-		if c, ok := wire.Classify(err); ok && c.Err == err {
+		if c, ok := wire.Classify(err); ok && errors.Is(c.Err, err) {
 			out[name] = true
 		}
 	}

@@ -57,4 +57,12 @@ expect_reject "depguard 3: layers use ports only (entitlement -> metering/app)" 
   "package entitlement
 import _ \"$mod/metering/app\""
 
+# A used import, not a blank one: golangci-lint reports one issue per line, so a blank import would be
+# rejected by revive and say nothing about whether depguard fired.
+expect_reject "depguard 5: api is a leaf (api -> metering/adapters/driving/auth)" lint \
+  api/zz_violation.go api \
+  "package api
+import \"$mod/metering/adapters/driving/auth\"
+var _ = auth.Record"
+
 [ "$fail" -eq 0 ] && echo "boundary verified" || { echo "boundary NOT verified"; exit 1; }

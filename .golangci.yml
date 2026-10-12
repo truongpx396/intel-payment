@@ -68,6 +68,16 @@ linters:
               desc: metering/ must stand alone — hosts hear about events through events/, which depends on metering
             - pkg: github.com/truongpx396/intel-payment/cmd
               desc: the core never imports its own wiring
+        # The wire contract is a leaf: generated code and its checks import protobuf and gRPC, never the
+        # engine. (go-arch-lint lets api reach metering-driving through dependency injection only.)
+        api-is-a-leaf:
+          list-mode: lax
+          files:
+            - '**/api/**'
+            - '!$test'
+          deny:
+            - pkg: github.com/truongpx396/intel-payment
+              desc: api/ is the wire contract — it imports nothing of the module it describes
         provider-sdk-containment:
           list-mode: lax
           files:
