@@ -23,9 +23,11 @@ type Config struct {
 	// absent is not registered.
 	Ledger    ports.LedgerReader
 	Transfers ports.TransferReader
-	Auth      auth.Authenticator
-	Clock     ports.Clock
-	Logger    *slog.Logger
+	// Credits backs GET /v1/credits, the whole CreditsSnapshot in one round trip.
+	Credits ports.CreditsReader
+	Auth    auth.Authenticator
+	Clock   ports.Clock
+	Logger  *slog.Logger
 
 	// Legacy429ForLimits answers 429 instead of 409 for a spent window, for a host mid-migration
 	// (PAYMENT_LEGACY_429_FOR_LIMITS). 429 means "you are calling too fast"; a spent budget is not a rate
@@ -81,6 +83,9 @@ func BuildRegistry(cfg Config) (*Registry, error) {
 	}
 	if cfg.Ledger != nil {
 		reg.Add(Route{Method: http.MethodGet, Path: "/v1/ledger", Surface: V1, Privilege: auth.Record, Handler: h.ledger})
+	}
+	if cfg.Credits != nil {
+		reg.Add(Route{Method: http.MethodGet, Path: "/v1/credits", Surface: V1, Privilege: auth.Record, Handler: h.credits})
 	}
 	if cfg.Transfers != nil {
 		reg.Add(Route{Method: http.MethodGet, Path: "/v1/transfers/{idem_key}", Surface: V1, Privilege: auth.Grant, Handler: h.transferStatus})

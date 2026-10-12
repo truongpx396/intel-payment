@@ -147,3 +147,21 @@ func decodeCursor(c string) (time.Time, string, error) {
 	}
 	return at, id, nil
 }
+
+// Granted is everything the books ever credited to the scope: every positive row, less the writeoffs —
+// forgiven debt is not a grant. A transfer in is a grant to its destination. The denominator of "12,480 left of
+// 15,000". A sum past int64 is an error, never a wrapped number.
+func (b *Books) Granted(ctx context.Context, s domain.Scope) (domain.Credits, error) {
+	if err := s.Validate(); err != nil {
+		return 0, err
+	}
+	s = s.Normalized()
+	var total int64
+	err := b.pool.QueryRow(ctx, `SELECT COALESCE(sum(delta), 0)::bigint FROM credit_ledger
+		WHERE realm = $1 AND scope_kind = $2 AND scope_id = $3 AND delta > 0 AND operation_type <> 'writeoff'`,
+		string(s.Realm), s.Kind, s.ID).Scan(&total)
+	if err != nil {
+		return 0, fmt.Errorf("postgres: sum granted: %w", err)
+	}
+	return domain.Credits(total), nil
+}
