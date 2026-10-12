@@ -35,6 +35,9 @@ func TestResetsAtIsTheEndOfTheCurrentWindow(t *testing.T) {
 		{"daily on a 23-hour day (clocks spring forward)", domain.Limit{Window: domain.Daily, TZ: "America/New_York"}, "2026-03-08T05:30:00Z", "2026-03-09T04:00:00Z"},
 		{"daily when the zone skips the calendar date (Samoa, 30 Dec 2011)", domain.Limit{Window: domain.Daily, TZ: "Pacific/Apia"}, "2011-12-30T09:30:00Z", "2011-12-30T10:00:00Z"},
 		{"hourly in UTC", domain.Limit{Window: domain.Hourly}, "2026-09-29T12:34:56Z", "2026-09-29T13:00:00Z"},
+		{"hourly: a fraction of a second does not move the boundary", domain.Limit{Window: domain.Hourly}, "2026-09-29T12:34:56.789123456Z", "2026-09-29T13:00:00Z"},
+		{"hourly: a fraction of a second in a half-hour zone", domain.Limit{Window: domain.Hourly, TZ: "Asia/Kolkata"}, "2026-09-29T12:20:00.5Z", "2026-09-29T12:30:00Z"},
+		{"daily: a fraction of a second does not move the boundary", domain.Limit{Window: domain.Daily}, "2026-09-29T23:59:59.999999999Z", "2026-09-30T00:00:00Z"},
 		{"hourly in a half-hour zone: the local hour ends at :30", domain.Limit{Window: domain.Hourly, TZ: "Asia/Kolkata"}, "2026-09-29T12:20:00Z", "2026-09-29T12:30:00Z"},
 		{"hourly in a 45-minute zone: 18:05 local ends at 19:00", domain.Limit{Window: domain.Hourly, TZ: "Asia/Kathmandu"}, "2026-09-29T12:20:00Z", "2026-09-29T13:15:00Z"},
 		{"hourly in the first 01:30 of a fall-back night", domain.Limit{Window: domain.Hourly, TZ: "America/New_York"}, "2026-11-01T05:30:00Z", "2026-11-01T06:00:00Z"},
@@ -100,16 +103,18 @@ func FuzzResetsAtIsTheNextLocalBoundary(f *testing.F) {
 		"Europe/London", "Australia/Lord_Howe", "Pacific/Chatham", "Pacific/Apia", "Pacific/Kiritimati"}
 	seeds := []struct {
 		sec  int64
+		ns   int64
 		zone uint8
 		hour bool
 	}{
-		{1790000000, 1, false}, {1790000000, 2, true}, {1793500000, 4, false}, {1793500000, 4, true}, {1793500000, 5, true},
-		{1325237400, 9, false}, {1325237400, 9, true}, {1790000000, 3, true}, {1790000000, 7, false}, {1790000000, 10, false},
+		{1790000000, 0, 1, false}, {1790000000, 0, 2, true}, {1793500000, 0, 4, false}, {1793500000, 0, 4, true}, {1793500000, 0, 5, true},
+		{1325237400, 0, 9, false}, {1325237400, 0, 9, true}, {1790000000, 0, 3, true}, {1790000000, 0, 7, false}, {1790000000, 0, 10, false},
+		{1790000000, 789123456, 0, true}, {1790000000, 999999999, 2, true}, {1790000000, 500000000, 1, false},
 	}
 	for _, s := range seeds {
-		f.Add(s.sec, s.zone, s.hour)
+		f.Add(s.sec, s.ns, s.zone, s.hour)
 	}
-	f.Fuzz(func(t *testing.T, sec int64, zone uint8, hourly bool) {
+	f.Fuzz(func(t *testing.T, sec, ns int64, zone uint8, hourly bool) {
 		const lo, hi = 946684800, 4102444800 // 2000 … 2100
 		if sec < lo || sec >= hi {
 			t.Skip()
@@ -125,7 +130,10 @@ func FuzzResetsAtIsTheNextLocalBoundary(f *testing.F) {
 			l.Window = domain.Hourly
 			key = func(t time.Time) string { return t.In(loc).Format("2006-01-02T15 -0700") }
 		}
-		now := time.Unix(sec, 0).UTC()
+		if ns < 0 || ns >= int64(time.Second) {
+			t.Skip()
+		}
+		now := time.Unix(sec, ns).UTC()
 
 		got, ok := l.ResetsAt(now)
 		if !ok {
