@@ -3,7 +3,7 @@ COMPOSE := docker compose -f deploy/docker-compose.yml
 MODULE  := github.com/truongpx396/intel-payment
 
 .DEFAULT_GOAL := help
-.PHONY: help build test test-integration fuzz mutation mutation-diff verify-red-green verify-tdd-gates verify-equivalence lint arch-lint verify-portability \
+.PHONY: help build test test-integration fuzz mutation mutation-diff verify-red-green verify-tdd-gates verify-equivalence verify-clients lint arch-lint verify-portability \
         verify-boundary verify-schema verify-hot-path verify-deploy e2e e2e-install up up-jetstream down down-volumes logs \
         migrate seed proto proto-tools proto-check fmt vuln secrets ci clean
 
@@ -42,6 +42,9 @@ verify-tdd-gates: ## Show the TDD gates refuse what they should (red-green cases
 
 verify-equivalence: ## Show the Meter equivalence suite rejects five broken transports, by name (needs Docker)
 	scripts/verify-equivalence-teeth.sh
+
+verify-clients: ## Generate the TypeScript and Python clients from api/openapi/v1.yaml; each compiles and round-trips an Admit (needs node >= 22, python >= 3.11, network)
+	go test -tags=clients -race -count=1 -timeout 10m ./integration/clients/
 
 fmt: ## Format
 	gofmt -l -w . && go mod tidy

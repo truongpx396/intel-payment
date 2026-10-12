@@ -33,7 +33,7 @@ code, docs or comments that imply otherwise.
 | `make fuzz` `FUZZTIME=20s` | After touching arithmetic, an encoding, or time logic |
 | `make mutation-diff` `REF=origin/main` | Before a PR that changes production Go in `metering/domain`, `metering/app` or the table pricer: do the tests fail when the lines you changed are wrong? For docs, specs, scripts, config, SQL, Lua or other Go it mutates nothing — skip it and say `N/A` ([when it applies](docs/testing.md#when-mutation-testing-applies)) |
 | `make verify-red-green` | Before a PR: a failing tests-only commit precedes the change (run on a branch) |
-| `make ci` | Before a PR: build, tests, fuzz, integration, lint, portability, boundary, vuln, hot path, deploy. Not `verify-schema`, e2e, or the two branch-history gates above |
+| `make ci` | Before a PR: build, tests, fuzz, integration, lint, portability, boundary, vuln, hot path, deploy. Not `verify-schema`, `verify-clients` (node + python + network), e2e, or the two branch-history gates above |
 | `make verify-schema` / `verify-hot-path` / `verify-deploy` | Changed a migration / the Redis Lua / the image or ACL |
 | `scripts/check-spec-drift.sh` | Changed any document or contract |
 

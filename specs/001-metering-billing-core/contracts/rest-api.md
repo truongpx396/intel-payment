@@ -1,6 +1,6 @@
 # Contract: REST API
 
-**Spec**: [../spec.md](../spec.md) | **Status**: Normative — the HTTP surface of the standalone service. The machine-readable form is `api/openapi/v1.yaml`, from which the TypeScript and Python clients are generated; CI fails if the handlers and the document disagree.
+**Spec**: [../spec.md](../spec.md) | **Status**: Normative — the HTTP surface of the standalone service. The machine-readable form is `api/openapi/v1.yaml`, from which the TypeScript and Python clients are generated; CI fails if the handlers and the document disagree. `resthandler` holds them together in both directions — every registered route is documented with its `x-privilege`, every documented path is registered, and real requests through the real handler validate, request and response, against the document — and `make verify-clients` generates both clients from it and round-trips an `Admit` through each.
 
 Three audiences, three authentication models, and the split matters more than the routes:
 

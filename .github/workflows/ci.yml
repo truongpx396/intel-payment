@@ -179,6 +179,21 @@ jobs:
         if: failure() && steps.svc.outputs.present == 'yes'
         run: docker compose -f deploy/docker-compose.yml logs --tail 200 || true
 
+  # The REST clients are generated from api/openapi/v1.yaml, so the document is held to the handler by the
+  # resthandler tests (every route, both directions, real traffic validated against it) and to its clients
+  # here: what is generated from it compiles and round-trips an Admit through the real handler.
+  clients:
+    name: generated clients (TypeScript · Python compile and round-trip an Admit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version: '1.26', cache: true }
+      - uses: actions/setup-node@v7
+        with: { node-version: 24 }
+      # The runner's own python3 (>= 3.11) and pip are enough: the script uses uv when present and venv otherwise.
+      - run: make verify-clients
+
   migrations:
     name: schema (apply · seed · assert · phase-2 draft)
     runs-on: ubuntu-latest

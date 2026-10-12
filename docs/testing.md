@@ -67,6 +67,7 @@ Write the test at the lowest tier that can express the invariant; move up only w
 | **Conformance suite** (`metering/contracts`) | *every* implementation of a port | what any `Pricer`, `Ledger`, `Bus`… must do — the suite is written before the second implementation |
 | **Integration** (`-tags=integration`) | real Redis, Postgres, NATS (Testcontainers) | the seams: guards, locks, the hot path, the writer, recovery |
 | **Consistency / chaos** | a hot tier that goes back in time | failover, truncated AOF, poison, drift |
+| **Generated clients** (`make verify-clients`) | the handler, over loopback | the REST document is a usable contract: the TypeScript and Python clients generated from `api/openapi/v1.yaml` compile and round-trip an `Admit`. The document is held to the route table by `resthandler`'s own tests |
 | **End-to-end** (`e2e/`, Playwright) | the deployed stack | the wiring: image, migrations, ACLs, transports |
 
 Failure paths get the most attention — replay, concurrency, cancellation, tampering, outage, drift, a

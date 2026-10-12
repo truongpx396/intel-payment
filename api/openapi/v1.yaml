@@ -1,0 +1,1075 @@
+openapi: 3.0.3
+info:
+  title: intel-payment metering API
+  version: 1.0.0
+  description: |
+    The REST surface of the metering engine: the same operations as the `metering.v1` gRPC service, with the
+    same refusals, over HTTP/JSON. The prose contract is `specs/001-metering-billing-core/contracts/rest-api.md`;
+    this document is its machine-readable form, and the TypeScript and Python clients are generated from it.
+
+    `metering/adapters/driving/resthandler` holds the handler to this document: every registered route is
+    here, every path here is registered, and real requests through the real handler validate — request and
+    response — against it. A change to a route changes this file in the same commit.
+
+    **Conventions.** Every amount and count is an integer (`int64`); a fractional number is refused, never
+    rounded. A timestamp is RFC 3339 with a zone. A request body is strict: an unknown field is refused,
+    because a ceiling that silently does not apply is the worst kind. A client MUST ignore unknown fields in a
+    response. Every error is the one `Error` shape.
+
+    **Authentication.** `/v1/*` takes a service credential — a bearer token, or a client certificate when the
+    server terminates mTLS — carrying a caller, its realms and its privileges (`x-privilege`: `record`, `grant`
+    or `admin`). No browser ever holds one. The platform routes (`/healthz`, `/readyz`, `/metrics`) take none.
+servers:
+  - url: /
+tags:
+  - name: metering
+    description: Admit before the expensive work, record after it.
+  - name: credits
+    description: Granting, moving and reading credits.
+  - name: admin
+    description: Configuration as data, every write attributed to a person and a reason.
+  - name: platform
+    description: Liveness, readiness and metrics. Open, uncached, no CORS.
+paths:
+  /v1/admit:
+    post:
+      operationId: admit
+      tags: [metering]
+      summary: Decide whether an operation may start.
+      description: |
+        Checks the scope's ceilings and balance before the work is done. An allowed operation is `200` with
+        the `Admission`; a refused one is the status of its ceiling (`402` balance, `409` window, `403`
+        blocked) carrying the error and the full `Admission`, so a client can read either.
+      x-privilege: record
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdmitRequest" }
+      responses:
+        "200":
+          description: Allowed. `warning` names a ceiling that is nearly spent.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Admission" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "402": { $ref: "#/components/responses/Refused" }
+        "403": { $ref: "#/components/responses/Refused" }
+        "409": { $ref: "#/components/responses/Refused" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/record:
+    post:
+      operationId: record
+      tags: [metering]
+      summary: Record what an operation used, exactly once.
+      description: |
+        Prices the quantities against the active rate card and debits the scope. `Idempotency-Key` is the
+        operation's identity: a retry with the same key and the same request returns the original outcome; the
+        same key with a different request — a different `occurred_at` included — is `409
+        idempotency_conflict`. When the hot tier is unavailable the event is journaled and the answer is `202`
+        with `deferred: true`: it succeeded and has not been applied yet.
+      x-privilege: record
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RecordRequest" }
+      responses:
+        "200":
+          description: Applied, or an idempotent replay of an applied event.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Receipt" }
+        "202":
+          description: Journaled and not yet applied.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Receipt" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/grant:
+    post:
+      operationId: grant
+      tags: [credits]
+      summary: Mint credits into a pool, or claw them back.
+      description: |
+        A positive amount mints, optionally expiring; a negative amount is a clawback (and may name the grant it
+        reverses in `source_key`). Never journaled when the hot tier is unavailable: answering "accepted" for a
+        mint that has not happened would let a caller believe credits exist that do not.
+      x-privilege: grant
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GrantRequest" }
+      responses:
+        "200":
+          description: Applied, or an idempotent replay.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Receipt" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/transfer:
+    post:
+      operationId: transfer
+      tags: [credits]
+      summary: Move credits between two scopes of one realm.
+      description: |
+        An atomic check-and-debit of the source's pool, refusing rather than overdrawing
+        (`409 insufficient_balance`). The writer completes the destination's side, so the outcome is both
+        sides, never one; `status` says whether that has happened yet.
+      x-privilege: grant
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TransferRequest" }
+      responses:
+        "200":
+          description: Accepted, or an idempotent replay.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TransferReceipt" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/transfers/{idem_key}:
+    get:
+      operationId: getTransfer
+      tags: [credits]
+      summary: Where a transfer is.
+      description: |
+        A transfer is accepted in the hot tier first and the books learn of it when the writer reaches it, so a
+        transfer accepted a moment ago may be `404 not_found` for a short while: try again.
+      x-privilege: grant
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: idem_key
+          in: path
+          required: true
+          schema: { type: string }
+          description: The transfer's `Idempotency-Key`.
+        - $ref: "#/components/parameters/ScopeRealm"
+      responses:
+        "200":
+          description: The transfer, in transit or settled.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TransferStatus" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/balance:
+    get:
+      operationId: getBalance
+      tags: [credits]
+      summary: A scope's balance, per pool and in total.
+      x-privilege: record
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ScopeKind"
+        - $ref: "#/components/parameters/ScopeID"
+        - $ref: "#/components/parameters/ScopeRealm"
+      responses:
+        "200":
+          description: The balance.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Balance" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/ledger:
+    get:
+      operationId: listLedger
+      tags: [credits]
+      summary: The booked rows of one scope, newest first, a page at a time.
+      x-privilege: record
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ScopeKind"
+        - $ref: "#/components/parameters/ScopeID"
+        - $ref: "#/components/parameters/ScopeRealm"
+        - $ref: "#/components/parameters/SubjectKind"
+        - $ref: "#/components/parameters/SubjectID"
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: A page. `next` is the cursor for the following page, or null at the end.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LedgerPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/credits:
+    get:
+      operationId: getCredits
+      tags: [credits]
+      summary: Everything a credits screen shows, in one round trip.
+      description: |
+        The balance with its pools, every ceiling with its usage and reset, and the newest ledger rows — in the
+        camelCase shape the credits UI consumes. A host proxies this behind its own session; no browser holds a
+        service credential.
+      x-privilege: record
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ScopeKind"
+        - $ref: "#/components/parameters/ScopeID"
+        - $ref: "#/components/parameters/ScopeRealm"
+        - $ref: "#/components/parameters/SubjectKind"
+        - $ref: "#/components/parameters/SubjectID"
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: days
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 366 }
+          description: Sizes the spend series. Accepted and checked so a request keeps its meaning when the series arrives; until then the series is absent.
+      responses:
+        "200":
+          description: The snapshot.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Credits" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/admin/rate-cards:
+    get:
+      operationId: listRateCards
+      tags: [admin]
+      summary: Every rate card of the realm, active and retired.
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Realm"
+      responses:
+        "200":
+          description: The cards.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/RateCard" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      operationId: publishRateCard
+      tags: [admin]
+      summary: Publish a rate card version.
+      description: |
+        A card is immutable once published; a price change is a new version. Every entry is test-priced at one
+        unit and at a thousand blocks before the card is accepted, and a card that fails is refused whole.
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Realm"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RateCardRequest" }
+      responses:
+        "201":
+          description: Published.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublishedRateCard" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/admin/limits/{name}:
+    parameters:
+      - $ref: "#/components/parameters/Name"
+      - $ref: "#/components/parameters/Realm"
+    get:
+      operationId: getLimit
+      tags: [admin]
+      summary: One configured ceiling.
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The limit.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LimitConfig" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    put:
+      operationId: putLimit
+      tags: [admin]
+      summary: Create or replace a ceiling.
+      description: The window is required — a default would make an unfinished limit a balance. `201` when it was created, `200` when it replaced one.
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LimitRequest" }
+      responses:
+        "200":
+          description: Replaced an existing limit.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LimitConfig" }
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LimitConfig" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    delete:
+      operationId: deleteLimit
+      tags: [admin]
+      summary: Remove a ceiling.
+      description: There is no body, so the actor and the reason travel in the query. Both are required.
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/Reason"
+      responses:
+        "204":
+          description: Removed.
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/admin/pools/{name}:
+    parameters:
+      - $ref: "#/components/parameters/Name"
+      - $ref: "#/components/parameters/Realm"
+    get:
+      operationId: getPool
+      tags: [admin]
+      summary: One credit pool.
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The pool.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PoolConfig" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    put:
+      operationId: putPool
+      tags: [admin]
+      summary: Create or replace a pool.
+      description: Lower `priority` is drawn first. `201` when it was created, `200` when it replaced one.
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PoolRequest" }
+      responses:
+        "200":
+          description: Replaced an existing pool.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PoolConfig" }
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PoolConfig" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /healthz:
+    get:
+      operationId: getHealth
+      tags: [platform]
+      summary: The process is up.
+      description: Calls no dependency — a liveness probe that checks Postgres turns its outage into a restart loop.
+      security: []
+      responses:
+        "200":
+          description: Alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [ok] }
+  /readyz:
+    get:
+      operationId: getReadiness
+      tags: [platform]
+      summary: The service may be sent traffic.
+      description: |
+        Ready only at migration head, with the configured shard count and the hot tier reachable. A check that
+        does not finish within its bound is not ready, because a probe must answer. Registered only when the
+        host supplies a readiness check.
+      security: []
+      responses:
+        "200":
+          description: Ready.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readiness" }
+        "503":
+          description: Not ready. `problems` names each thing that is wrong.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readiness" }
+  /metrics:
+    get:
+      operationId: getMetrics
+      tags: [platform]
+      summary: The Prometheus exposition.
+      description: |
+        Every name of the observability catalogue is declared — type and help — from the first scrape, not
+        only once it has seen traffic. Registered only when the host supplies a metrics handler. Reachability
+        is the network's to restrict; never expose it publicly.
+      security: []
+      responses:
+        "200":
+          description: The Prometheus text exposition format.
+          content:
+            text/plain:
+              schema: { type: string }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        A service credential. A deployment that terminates mTLS identifies the caller by its client
+        certificate instead; the privileges and realms it carries are the same.
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 1 }
+      description: |
+        This operation's identity, and its `idem_key`: exactly one header, non-blank, and a body `idem_key` (if
+        sent) must agree with it. There is no default — a server-generated key would make every retry a new charge.
+    ScopeKind:
+      name: scope_kind
+      in: query
+      required: true
+      schema: { type: string }
+    ScopeID:
+      name: scope_id
+      in: query
+      required: true
+      schema: { type: string }
+    ScopeRealm:
+      name: scope_realm
+      in: query
+      schema: { type: string }
+      description: The realm, when the credential spans several. Otherwise the credential's.
+    SubjectKind:
+      name: subject_kind
+      in: query
+      schema: { type: string }
+      description: Narrows to one member. Goes with `subject_id` — half a member would be read as everyone.
+    SubjectID:
+      name: subject_id
+      in: query
+      schema: { type: string }
+    PageLimit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200 }
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+      description: The previous page's `next`.
+    Realm:
+      name: realm
+      in: query
+      schema: { type: string }
+      description: The realm to configure, when the credential spans several. Otherwise the credential's.
+    Name:
+      name: name
+      in: path
+      required: true
+      schema: { type: string }
+    Actor:
+      name: actor
+      in: query
+      required: true
+      schema: { type: string, minLength: 1 }
+      description: The person making the change.
+    Reason:
+      name: reason
+      in: query
+      required: true
+      schema: { type: string, minLength: 1 }
+      description: Why.
+  responses:
+    BadRequest:
+      description: The request is malformed, names an unknown field, or fails validation. `invalid_request`, `missing_subject`, `uncountable_limit`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthenticated:
+      description: No credential, or one that is not valid. `unauthenticated`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: The credential lacks the privilege, or the realm is not one of its realms. `forbidden`, `realm_mismatch`, `cross_realm`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: No such thing. `not_found`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: The request conflicts with state. `idempotency_conflict` (the key was used for a different request), `insufficient_balance`, `already_exists`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TooLarge:
+      description: The body is over the size limit. `invalid_request`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unprocessable:
+      description: Understood and refused. `unpriceable`, `stale_event`, `amount_out_of_range`, `dest_balance_cap`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Refused:
+      description: |
+        An admission refused by a ceiling: `402 payment_required` (the balance is spent), `409 limit_reached` (a
+        window is spent; `error.details.resets_at` says when it opens), `403 account_blocked` (held pending an
+        operator). The body is the error AND the `Admission`, so a client that reads `.error.code` and one that
+        reads `.allowed` both find what they look for. A `403` for a missing privilege is a plain `Error`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/AdmissionRefusal" }
+    Internal:
+      description: A fault of the service. `internal`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unavailable:
+      description: A store the call needs is unavailable; retry with the same `Idempotency-Key`. `hot_store_unavailable`, `quota_unavailable`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Timeout:
+      description: The call did not finish in time. `deadline_exceeded`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, description: "Stable and machine-readable; the table is in rest-api.md." }
+            message: { type: string }
+            details:
+              type: object
+              additionalProperties: true
+              description: "For a refused admission: `limit`, `resets_at` (or `window` and `dur_seconds`), and `upgrade_url` when a plan exists to buy."
+    Scope:
+      type: object
+      required: [kind, id]
+      additionalProperties: false
+      properties:
+        realm: { type: string, description: "Omit to use the credential's realm." }
+        kind: { type: string }
+        id: { type: string }
+    Quantity:
+      type: object
+      required: [unit, amount]
+      additionalProperties: false
+      properties:
+        unit: { type: string }
+        amount: { type: integer, format: int64, minimum: 0 }
+    Subjects:
+      type: object
+      additionalProperties: { type: string }
+      description: The members the call is attributed to, by kind (for example `user` → an id).
+    Window:
+      type: string
+      enum: [balance, daily, hourly, rolling, job]
+    Limit:
+      type: object
+      required: [name, unit, window]
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        subject: { type: string, description: "The subject kind this ceiling counts; omit for the whole scope." }
+        resource: { type: string }
+        unit: { type: string }
+        max: { type: integer, format: int64 }
+        window: { $ref: "#/components/schemas/Window" }
+        dur_seconds: { type: integer, format: int64, minimum: 0, description: "A `rolling` window's length." }
+        tz: { type: string, description: "The zone a `daily` or `hourly` window resets in." }
+        warn_at: { type: number, description: "The near-limit fraction, 0 to 1." }
+        deny_code: { type: string, enum: [payment_required, limit_reached, account_blocked] }
+        max_entitlement: { type: string }
+    LimitView:
+      type: object
+      description: A limit as the engine reports it.
+      properties:
+        name: { type: string }
+        subject: { type: string }
+        resource: { type: string }
+        unit: { type: string }
+        max: { type: integer, format: int64 }
+        window: { $ref: "#/components/schemas/Window" }
+        dur_seconds: { type: integer, format: int64 }
+        tz: { type: string }
+        warn_at: { type: number }
+        deny_code: { type: string }
+        max_entitlement: { type: string }
+    AdmitRequest:
+      type: object
+      required: [scope]
+      additionalProperties: false
+      properties:
+        scope: { $ref: "#/components/schemas/Scope" }
+        resource: { type: string }
+        subjects: { $ref: "#/components/schemas/Subjects" }
+        limits:
+          type: array
+          items: { $ref: "#/components/schemas/Limit" }
+          description: Ceilings the caller adds to the configured ones for this call.
+        max_cost: { type: integer, format: int64, minimum: 0, description: "The most this operation may cost, in credits; the admission holds that much headroom." }
+    Admission:
+      type: object
+      required: [allowed, headroom, blocked]
+      properties:
+        allowed: { type: boolean }
+        exceeded: { $ref: "#/components/schemas/LimitView" }
+        warning: { $ref: "#/components/schemas/LimitView" }
+        headroom: { type: integer, format: int64 }
+        blocked: { type: boolean }
+    AdmissionRefusal:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details: { type: object, additionalProperties: true }
+        allowed: { type: boolean }
+        exceeded: { $ref: "#/components/schemas/LimitView" }
+        warning: { $ref: "#/components/schemas/LimitView" }
+        headroom: { type: integer, format: int64 }
+        blocked: { type: boolean }
+    RecordRequest:
+      type: object
+      required: [scope, rate_key, occurred_at]
+      additionalProperties: false
+      properties:
+        idem_key: { type: string, description: "Optional; if sent it must equal the `Idempotency-Key` header." }
+        scope: { $ref: "#/components/schemas/Scope" }
+        resource: { type: string }
+        rate_key: { type: string }
+        quantities:
+          type: array
+          items: { $ref: "#/components/schemas/Quantity" }
+        subjects: { $ref: "#/components/schemas/Subjects" }
+        occurred_at: { type: string, format: date-time, description: "Identical on every retry: a different value under the same key is a conflict." }
+        attributes:
+          type: object
+          additionalProperties: { type: string }
+    Receipt:
+      type: object
+      required: [idem_key, applied, deferred, delta, balance, seq, writeoff]
+      properties:
+        idem_key: { type: string }
+        applied: { type: boolean }
+        deferred: { type: boolean, description: "Journaled while the hot tier was unavailable; not applied yet." }
+        delta: { type: integer, format: int64 }
+        balance: { type: integer, format: int64 }
+        seq: { type: integer, format: int64 }
+        rate_card_version: { type: string }
+        writeoff: { type: integer, format: int64 }
+    GrantRequest:
+      type: object
+      required: [scope, amount, reason]
+      additionalProperties: false
+      properties:
+        idem_key: { type: string }
+        scope: { $ref: "#/components/schemas/Scope" }
+        pool: { type: string, description: "Omit for the default pool." }
+        amount: { type: integer, format: int64, description: "Positive mints; negative claws back. Never zero." }
+        reason: { type: string, minLength: 1 }
+        expires_at: { type: string, format: date-time, description: "Only a positive grant can expire." }
+        source_key: { type: string, description: "A clawback names the grant it reverses." }
+        ref:
+          type: object
+          additionalProperties: { type: string }
+    TransferRequest:
+      type: object
+      required: [from, to, amount, reason]
+      additionalProperties: false
+      properties:
+        idem_key: { type: string }
+        from: { $ref: "#/components/schemas/Scope" }
+        to: { $ref: "#/components/schemas/Scope" }
+        from_pool: { type: string }
+        to_pool: { type: string }
+        amount: { type: integer, format: int64, minimum: 1 }
+        reason: { type: string, minLength: 1 }
+        max_dest_balance: { type: integer, format: int64, minimum: 0, description: "Refuse if the destination would hold more than this afterwards. 0 means no cap." }
+        ref:
+          type: object
+          additionalProperties: { type: string }
+    TransferReceipt:
+      type: object
+      required: [idem_key, applied, amount, from_balance, status]
+      properties:
+        idem_key: { type: string }
+        applied: { type: boolean }
+        amount: { type: integer, format: int64 }
+        from_balance: { type: integer, format: int64 }
+        status: { type: string, enum: [in_transit, settled] }
+    TransferStatus:
+      type: object
+      required: [idem_key, status, from, to, from_pool, to_pool, amount, created_at]
+      properties:
+        idem_key: { type: string }
+        status: { type: string, enum: [in_transit, settled] }
+        from: { $ref: "#/components/schemas/Scope" }
+        to: { $ref: "#/components/schemas/Scope" }
+        from_pool: { type: string }
+        to_pool: { type: string }
+        amount: { type: integer, format: int64 }
+        created_at: { type: string, format: date-time }
+        settled_at: { type: string, format: date-time }
+    Balance:
+      type: object
+      required: [pools, total]
+      properties:
+        pools:
+          type: object
+          additionalProperties: { type: integer, format: int64 }
+        total: { type: integer, format: int64 }
+    LedgerEntry:
+      type: object
+      required: [id, created_at, pool, delta, operation_type, idem_key, seq, seq_from, event_count]
+      properties:
+        id: { type: string }
+        created_at: { type: string, format: date-time }
+        occurred_at: { type: string, format: date-time }
+        pool: { type: string }
+        delta: { type: integer, format: int64 }
+        operation_type: { type: string }
+        idem_key: { type: string }
+        rate_card_version: { type: string }
+        seq: { type: integer, format: int64 }
+        seq_from: { type: integer, format: int64 }
+        event_count: { type: integer }
+        resource: { type: string }
+        rate_key: { type: string }
+        quantities:
+          type: array
+          items: { $ref: "#/components/schemas/Quantity" }
+        subjects: { $ref: "#/components/schemas/Subjects" }
+        attributes:
+          type: object
+          additionalProperties: { type: string }
+        counterparty: { $ref: "#/components/schemas/Scope" }
+    LedgerPage:
+      type: object
+      required: [data, next]
+      properties:
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/LedgerEntry" }
+        next: { type: string, nullable: true }
+    Credits:
+      type: object
+      description: The credits UI's snapshot, in its own camelCase.
+      required: [scope, balance, limits, breakdown, ledger, ledgerNext]
+      properties:
+        scope: { $ref: "#/components/schemas/Scope" }
+        balance:
+          type: object
+          required: [remaining, granted, primaryLimitKey, pools]
+          properties:
+            remaining: { type: integer, format: int64 }
+            granted: { type: integer, format: int64 }
+            primaryLimitKey: { type: string }
+            pools:
+              type: array
+              items:
+                type: object
+                required: [key, label, remaining]
+                properties:
+                  key: { type: string }
+                  label: { type: string }
+                  remaining: { type: integer, format: int64 }
+                  appliesTo: { type: string }
+        limits:
+          type: array
+          items:
+            type: object
+            required: [key, label, used, cap, window, warnAtPct]
+            properties:
+              key: { type: string }
+              label: { type: string }
+              used: { type: integer, format: int64 }
+              cap: { type: integer, format: int64, nullable: true }
+              window: { type: string }
+              resetsAt: { type: string, format: date-time }
+              warnAtPct: { type: integer }
+              denyCode: { type: string }
+              scopeHint: { type: string }
+        breakdown:
+          type: array
+          items: { type: object }
+          description: Absent of rows until the usage rollup exists; never invented.
+        ledger:
+          type: array
+          items:
+            type: object
+            required: [id, operationType, delta, at, attributes, pool, idemKey, eventCount]
+            properties:
+              id: { type: string }
+              operationType: { type: string }
+              delta: { type: integer, format: int64 }
+              at: { type: string, format: date-time }
+              actor:
+                type: object
+                required: [label]
+                properties:
+                  label: { type: string }
+              attributes:
+                type: object
+                additionalProperties: { type: string }
+              pool: { type: string }
+              resource: { type: string }
+              rateKey: { type: string }
+              rateCardVersion: { type: string }
+              idemKey: { type: string }
+              eventCount: { type: integer }
+              quantities:
+                type: array
+                items: { $ref: "#/components/schemas/Quantity" }
+              subjects: { $ref: "#/components/schemas/Subjects" }
+        ledgerNext: { type: string, nullable: true }
+    RateEntry:
+      type: object
+      required: [rate_key, unit, credits_per_block, block_size]
+      additionalProperties: false
+      properties:
+        rate_key: { type: string }
+        unit: { type: string }
+        credits_per_block: { type: integer, format: int64 }
+        block_size: { type: integer, format: int64, minimum: 1 }
+        cost_micros_per_block: { type: integer, format: int64, description: "Upstream cost in USD micros — informational, for analytics only." }
+    RateCardRequest:
+      type: object
+      required: [actor, reason, version, entries]
+      additionalProperties: false
+      properties:
+        actor: { type: string, minLength: 1 }
+        reason: { type: string, minLength: 1 }
+        version: { type: string }
+        pricer: { type: string }
+        retire_previous: { type: boolean }
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/RateEntry" }
+    RateCard:
+      type: object
+      required: [version, pricer, active, published_at, entries]
+      properties:
+        version: { type: string }
+        pricer: { type: string }
+        active: { type: boolean }
+        published_at: { type: string, format: date-time }
+        retired_at: { type: string, format: date-time }
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/RateEntry" }
+    PublishedRateCard:
+      allOf:
+        - $ref: "#/components/schemas/RateCard"
+        - type: object
+          required: [published]
+          properties:
+            published: { type: boolean }
+    LimitRequest:
+      type: object
+      required: [actor, reason, unit, window]
+      additionalProperties: false
+      properties:
+        actor: { type: string, minLength: 1 }
+        reason: { type: string, minLength: 1 }
+        subject_kind: { type: string }
+        resource: { type: string }
+        unit: { type: string }
+        max: { type: integer, format: int64 }
+        max_entitlement: { type: string }
+        window: { $ref: "#/components/schemas/Window" }
+        dur_seconds: { type: integer, format: int64, minimum: 0 }
+        tz: { type: string }
+        warn_at: { type: number, description: "Defaults to 0.8." }
+        deny_code: { type: string, enum: [payment_required, limit_reached, account_blocked] }
+        sort_order: { type: integer }
+    LimitConfig:
+      type: object
+      required: [name, unit, max, window, warn_at, deny_code]
+      properties:
+        name: { type: string }
+        subject_kind: { type: string }
+        resource: { type: string }
+        unit: { type: string }
+        max: { type: integer, format: int64 }
+        max_entitlement: { type: string }
+        window: { $ref: "#/components/schemas/Window" }
+        dur_seconds: { type: integer, format: int64 }
+        tz: { type: string }
+        warn_at: { type: number }
+        deny_code: { type: string }
+        sort_order: { type: integer }
+    PoolRequest:
+      type: object
+      required: [actor, reason]
+      additionalProperties: false
+      properties:
+        actor: { type: string, minLength: 1 }
+        reason: { type: string, minLength: 1 }
+        priority: { type: integer }
+        applies_to:
+          type: array
+          items: { type: string }
+          description: The resources this pool may pay for; empty means any.
+        description: { type: string }
+    PoolConfig:
+      type: object
+      required: [name, priority]
+      properties:
+        name: { type: string }
+        priority: { type: integer }
+        applies_to:
+          type: array
+          items: { type: string }
+        description: { type: string }
+    Readiness:
+      type: object
+      required: [status, migrations, shards]
+      properties:
+        status: { type: string, enum: [ready, not_ready] }
+        migrations: { type: string, enum: [head, behind, unknown] }
+        shards: { type: integer }
+        problems:
+          type: array
+          items: { type: string }
