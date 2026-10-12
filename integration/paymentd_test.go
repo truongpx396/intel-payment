@@ -256,8 +256,8 @@ func seededRealm(t *testing.T) (realm, dsn string) {
 	return realm, dsn
 }
 
-// openScope opens the scope's shard in Redis the way the worker does at start, so the service has a hot account to serve.
-func openScope(t *testing.T, realm, dsn string, sc domain.Scope) {
+// scopeStore is the hot store and the books a test reads and arranges state through, beside the service under test.
+func scopeStore(t *testing.T, addr, realm, dsn string) (*hotredis.Store, *pgadapter.Books, metering.Config) {
 	t.Helper()
 	ctx := t.Context()
 	pool, err := pgadapter.Connect(ctx, dsn)
@@ -267,11 +267,31 @@ func openScope(t *testing.T, realm, dsn string, sc domain.Scope) {
 	must(t, err)
 	t.Cleanup(cfgStore.Close)
 	cfg := metering.Config{Realm: domain.Realm(realm), BalanceRedisURL: "redis://x", LedgerDSN: "postgres://x"}.WithDefaults()
-	rdb := hotredisClient(redis.Addr)
+	rdb := hotredisClient(addr)
 	t.Cleanup(func() { _ = rdb.Close() })
 	store, err := hotredis.New(rdb, hotredis.Options{Config: cfg, Pools: cfgStore, Limits: cfgStore, Clock: system.Clock{}})
 	must(t, err)
-	books := pgadapter.NewBooks(pool)
+	return store, pgadapter.NewBooks(pool), cfg
+}
+
+// hotBalance is the scope's balance across pools, read straight from Redis.
+func hotBalance(t *testing.T, addr, realm, dsn string, sc domain.Scope) domain.Credits {
+	t.Helper()
+	store, _, _ := scopeStore(t, addr, realm, dsn)
+	acct, err := store.Snapshot(t.Context(), sc)
+	must(t, err)
+	var sum domain.Credits
+	for _, v := range acct.Pools {
+		sum += v
+	}
+	return sum
+}
+
+// openScope opens the scope's shard in Redis the way the worker does at start, so the service has a hot account to serve.
+func openScope(t *testing.T, addr, realm, dsn string, sc domain.Scope) {
+	t.Helper()
+	ctx := t.Context()
+	store, books, cfg := scopeStore(t, addr, realm, dsn)
 	must(t, books.EnsureHotConfig(ctx, cfg.Shards))
 	sh := sc.Normalized().Shard(cfg.Shards)
 	rec, err := books.EnsureShard(ctx, sh)
@@ -315,7 +335,7 @@ func TestPaymentdServesMoneyThroughBothTransportsBehindACredential(t *testing.T)
 	t.Parallel()
 	realm, dsn := seededRealm(t)
 	sc := domain.Scope{Realm: domain.Realm(realm), Kind: "workspace", ID: fmt.Sprintf("w-%d", seq.Add(1))}
-	openScope(t, realm, dsn, sc)
+	openScope(t, redis.Addr, realm, dsn, sc)
 	d := startPaymentd(t, paymentdEnv(realm, dsn))
 	base := d.httpURL(t)
 	c := &http.Client{Timeout: 10 * time.Second}
@@ -429,7 +449,7 @@ func TestPaymentdWithMutualTLSVerifiesTheCallersCertificate(t *testing.T) {
 	pki := newPKI(t)
 	realm, dsn := seededRealm(t)
 	sc := domain.Scope{Realm: domain.Realm(realm), Kind: "workspace", ID: fmt.Sprintf("w-%d", seq.Add(1))}
-	openScope(t, realm, dsn, sc)
+	openScope(t, redis.Addr, realm, dsn, sc)
 	d := startPaymentd(t, paymentdEnv(realm, dsn,
 		"PAYMENT_SERVICE_AUTH", "mtls", "PAYMENT_SERVICE_TOKENS", "-",
 		"PAYMENT_SERVICE_CERTS", "billing:billing.internal:"+realm+":record+grant",

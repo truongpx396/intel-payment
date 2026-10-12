@@ -57,6 +57,9 @@ func TestTheDocumentedDefaultsApplyToTheLeastAnOperatorMustSay(t *testing.T) {
 	if s.HTTPAddr != ":8080" || s.GRPCAddr != ":9090" {
 		t.Errorf("listeners = %q and %q, documented defaults are :8080 and :9090", s.HTTPAddr, s.GRPCAddr)
 	}
+	if s.ShutdownTimeout != 30*time.Second {
+		t.Errorf("shutdown timeout = %v, documented default is 30s", s.ShutdownTimeout)
+	}
 	if s.Auth != "bearer" {
 		t.Errorf("auth = %q, want bearer", s.Auth)
 	}
@@ -113,15 +116,15 @@ func TestEveryVariableLandsInItsField(t *testing.T) {
 	}
 
 	tr := with(
-		"PAYMENT_HTTP_ADDR", "127.0.0.1:9000", "PAYMENT_GRPC_ADDR", "127.0.0.1:9001", "PAYMENT_LEGACY_429_FOR_LIMITS", "true",
+		"PAYMENT_HTTP_ADDR", "127.0.0.1:9000", "PAYMENT_GRPC_ADDR", "127.0.0.1:9001", "PAYMENT_LEGACY_429_FOR_LIMITS", "true", "PAYMENT_SHUTDOWN_TIMEOUT", "45s",
 		"PAYMENT_BUS", "nats_jetstream", "PAYMENT_BUS_URL", "nats://nats:4222", "PAYMENT_BUS_RETENTION", "72h",
 	)
 	s, err = parseSettings(getenv(tr))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.HTTPAddr != "127.0.0.1:9000" || s.GRPCAddr != "127.0.0.1:9001" || !s.Legacy429 {
-		t.Errorf("transport settings = %q %q legacy429=%v", s.HTTPAddr, s.GRPCAddr, s.Legacy429)
+	if s.HTTPAddr != "127.0.0.1:9000" || s.GRPCAddr != "127.0.0.1:9001" || !s.Legacy429 || s.ShutdownTimeout != 45*time.Second {
+		t.Errorf("transport settings = %q %q legacy429=%v shutdown=%v", s.HTTPAddr, s.GRPCAddr, s.Legacy429, s.ShutdownTimeout)
 	}
 	if s.Bus != "nats_jetstream" || s.BusURL != "nats://nats:4222" || s.BusRetention != 72*time.Hour {
 		t.Errorf("bus settings = %q %q %v", s.Bus, s.BusURL, s.BusRetention)
@@ -166,6 +169,8 @@ func TestEveryInvalidSettingIsRefusedAndNamesItsVariable(t *testing.T) {
 		{"a boolean that is not one", with("PAYMENT_REQUIRE_MAX_COST", "maybe"), []string{"PAYMENT_REQUIRE_MAX_COST"}},
 		{"a legacy-429 flag that is not a boolean", with("PAYMENT_LEGACY_429_FOR_LIMITS", "yes please"), []string{"PAYMENT_LEGACY_429_FOR_LIMITS"}},
 		{"a log level that is not one", with("PAYMENT_LOG_LEVEL", "chatty"), []string{"PAYMENT_LOG_LEVEL"}},
+		{"a shutdown timeout that is not a duration", with("PAYMENT_SHUTDOWN_TIMEOUT", "later"), []string{"PAYMENT_SHUTDOWN_TIMEOUT"}},
+		{"a shutdown timeout of nothing, which would drop what is in flight", with("PAYMENT_SHUTDOWN_TIMEOUT", "0s"), []string{"PAYMENT_SHUTDOWN_TIMEOUT"}},
 
 		// the bus
 		{"an unknown bus", with("PAYMENT_BUS", "kafka"), []string{"PAYMENT_BUS"}},
