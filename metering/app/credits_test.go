@@ -407,3 +407,58 @@ func TestASnapshotNeedsItsReadersAndAValidScope(t *testing.T) {
 		}
 	})
 }
+
+// A scope whose ceilings are all balances has no counter to read: the counters are not asked for.
+func TestNoCounterIsReadWhenNoCeilingHasOne(t *testing.T) {
+	t.Parallel()
+	usage := &fakeUsage{}
+	l := []domain.Limit{{Name: "scope_balance", Unit: domain.CreditUnit, Window: domain.Balance, DenyCode: domain.DenyPaymentRequired}}
+	_, c := snapshotRig(t, rigOpt{limits: l, usage: usage}, map[domain.Pool]domain.Credits{domain.GeneralPool: 5})
+	if got := ask(t, c, ports.SnapshotQuery{}); len(got.Limits) != 1 {
+		t.Fatalf("%+v", got.Limits)
+	}
+	if len(usage.calls) != 0 {
+		t.Fatalf("a read of the counters with nothing to count: %+v", usage.calls)
+	}
+}
+
+// The overdraft a balance is into, at its edges: one credit short, and as far short as an int64 can say.
+func TestTheOverdraftAtItsEdges(t *testing.T) {
+	t.Parallel()
+	l := []domain.Limit{{Name: "scope_balance", Unit: domain.CreditUnit, Max: 100, Window: domain.Balance, DenyCode: domain.DenyPaymentRequired}}
+	for name, tc := range map[string]struct {
+		balance domain.Credits
+		used    int64
+	}{
+		"one credit into the overdraft": {-1, 1},
+		"as far as an int64 goes":       {domain.Credits(math.MinInt64), math.MaxInt64},
+		"one short of that":             {domain.Credits(math.MinInt64 + 1), math.MaxInt64},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, c := snapshotRig(t, rigOpt{limits: l}, map[domain.Pool]domain.Credits{domain.GeneralPool: tc.balance})
+			if got := ask(t, c, ports.SnapshotQuery{}).Limits[0].Used; got != tc.used {
+				t.Fatalf("used = %d, want %d", got, tc.used)
+			}
+		})
+	}
+}
+
+func TestPoolsTheRealmNoLongerHasAreListedByName(t *testing.T) {
+	t.Parallel()
+	_, c := snapshotRig(t, rigOpt{}, map[domain.Pool]domain.Credits{domain.GeneralPool: 1, "zeta": 2, "alpha": 3, "mid": 4})
+	snap := ask(t, c, ports.SnapshotQuery{})
+	var keys []string
+	for _, p := range snap.Balance.Pools {
+		keys = append(keys, p.Key)
+	}
+	want := []string{"general", "alpha", "mid", "zeta"}
+	if len(keys) != len(want) {
+		t.Fatalf("%v", keys)
+	}
+	for i := range want {
+		if keys[i] != want[i] {
+			t.Fatalf("a stable order a panel can rely on: %v, want %v", keys, want)
+		}
+	}
+}

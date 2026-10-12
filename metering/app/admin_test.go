@@ -399,3 +399,90 @@ func TestNewAdminNeedsItsParts(t *testing.T) {
 		t.Fatal("an invalid config")
 	}
 }
+
+// The test pricing reaches the sizes it claims to: one unit, and a thousand blocks — unless a thousand blocks
+// would wrap, in which case the block itself.
+func TestTheLargestQuantityTestPricedIsAThousandBlocks(t *testing.T) {
+	t.Parallel()
+	const wraps = (int64(1) << 62) / 1000
+	for name, tc := range map[string]struct{ block, wantMax int64 }{
+		"a small block":                             {1_000_000, 1_000_000_000},
+		"the largest block that scales":             {wraps, wraps * 1000},
+		"one past it: a thousand blocks would wrap": {wraps + 1, wraps + 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var mu sync.Mutex
+			var seen []int64
+			recorder := badPricer{func(c domain.RateCard, e domain.Event) (domain.Price, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				seen = append(seen, e.Quantities[0].Amount)
+				return domain.Price{Credits: 1, RateCardVersion: c.Version}, nil
+			}}
+			a, _ := newAdmin(t, ports.PricerRegistry{"table": table.New(0), "rec": recorder})
+			pub := ports.CardPublication{Version: "v2", Pricer: "rec", Entries: []domain.RateEntry{{RateKey: "k", Unit: "u", CreditsPerBlock: 1, BlockSize: tc.block}}}
+			if _, err := a.PublishRateCard(context.Background(), who, "acme", pub); err != nil {
+				t.Fatal(err)
+			}
+			if len(seen) != 2 || seen[0] != 1 || seen[1] != tc.wantMax {
+				t.Fatalf("priced %v, want [1 %d]", seen, tc.wantMax)
+			}
+		})
+	}
+}
+
+func TestASortOrderOfZeroIsAWholeNumberAndAccepted(t *testing.T) {
+	t.Parallel()
+	zero := 0
+	a, store := newAdmin(t, nil)
+	l := domain.Limit{Name: "first", Unit: domain.CreditUnit, Max: 1, Window: domain.Daily, DenyCode: domain.DenyLimitReached}
+	if _, err := a.PutLimit(context.Background(), who, "acme", ports.LimitConfig{Limit: l, SortOrder: &zero}); err != nil || len(store.limits) != 1 {
+		t.Fatalf("first place is sort_order 0: %v", err)
+	}
+}
+
+// The bounds are inclusive where the message says so: a person of exactly 200 bytes and a reason of exactly 1000
+// are accepted, and the pricing bounds are the maximum operation itself and zero.
+func TestTheBoundsOnWhoWhyAndPriceAreWhereTheyAreSaid(t *testing.T) {
+	t.Parallel()
+	t.Run("an actor of 200 bytes and a reason of 1000 are accepted", func(t *testing.T) {
+		t.Parallel()
+		a, store := newAdmin(t, nil)
+		ch := ports.ConfigChange{Actor: strings.Repeat("a", 200), Reason: strings.Repeat("r", 1000)}
+		if _, err := a.PutPool(context.Background(), ch, "acme", ports.PoolConfig{Pool: domain.PoolDef{Name: "promo", Priority: 1}}); err != nil || store.writes != 1 {
+			t.Fatalf("%v", err)
+		}
+	})
+	priced := func(credits domain.Credits) ports.PricerRegistry {
+		return ports.PricerRegistry{"table": table.New(0), "fixed": badPricer{func(c domain.RateCard, _ domain.Event) (domain.Price, error) {
+			return domain.Price{Credits: credits, RateCardVersion: c.Version}, nil
+		}}}
+	}
+	pub := ports.CardPublication{Version: "v2", Pricer: "fixed", Entries: entries}
+	t.Run("a free card is a card: a price of zero is accepted", func(t *testing.T) {
+		t.Parallel()
+		a, store := newAdmin(t, priced(0))
+		if _, err := a.PublishRateCard(context.Background(), who, "acme", pub); err != nil || store.writes != 1 {
+			t.Fatalf("%v", err)
+		}
+	})
+	t.Run("a price of exactly the maximum operation is accepted, one more is not", func(t *testing.T) {
+		t.Parallel()
+		a, store := newAdmin(t, priced(domain.MaxOperationAmount))
+		if _, err := a.PublishRateCard(context.Background(), who, "acme", pub); err != nil || store.writes != 1 {
+			t.Fatalf("%v", err)
+		}
+		a, store = newAdmin(t, priced(domain.MaxOperationAmount+1))
+		if _, err := a.PublishRateCard(context.Background(), who, "acme", pub); !errors.Is(err, domain.ErrAmountOutOfRange) || store.writes != 0 {
+			t.Fatalf("%v", err)
+		}
+	})
+	t.Run("a price of minus one is refused", func(t *testing.T) {
+		t.Parallel()
+		a, store := newAdmin(t, priced(-1))
+		if _, err := a.PublishRateCard(context.Background(), who, "acme", pub); !errors.Is(err, domain.ErrUnpriceable) || store.writes != 0 {
+			t.Fatalf("%v", err)
+		}
+	})
+}
