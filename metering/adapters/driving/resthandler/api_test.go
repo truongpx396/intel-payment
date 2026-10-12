@@ -120,6 +120,8 @@ type apiOpts struct {
 	upgrade   func(context.Context, domain.Scope) string
 	maxBody   int64
 	logs      io.Writer
+	ready     ports.Readiness
+	metrics   http.Handler
 }
 
 type api struct {
@@ -146,6 +148,7 @@ func newAPI(t *testing.T, stub *stubMeter, o apiOpts) *api {
 		}),
 		Ledger: o.ledger, Transfers: o.transfers, Credits: o.credits, Admin: o.admin,
 		Legacy429ForLimits: o.legacy429, UpgradeURL: o.upgrade, MaxBodyBytes: o.maxBody,
+		Ready: o.ready, Metrics: o.metrics,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -45,6 +45,7 @@ func productionTable(t *testing.T) *resthandler.Registry {
 	stub := &stubMeter{}
 	reg, err := resthandler.BuildRegistry(resthandler.Config{
 		Meter: stub, Balance: stub, Clock: contracts.NewFakeClock(epoch), Ledger: &stubReads{}, Transfers: &stubReads{}, Credits: &stubCredits{}, Admin: &stubAdmin{},
+		Ready: &stubReady{}, Metrics: http.NotFoundHandler(),
 		Auth: auth.AuthenticatorFunc(func(context.Context, auth.Credential) (auth.Principal, error) {
 			return auth.Principal{}, auth.ErrUnauthenticated
 		}),
