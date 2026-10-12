@@ -256,7 +256,7 @@ func TestLimitsAreCreatedReplacedReadAndDeletedByName(t *testing.T) {
 		must(t, err)
 		return *l.SortOrder
 	}
-	if !(order("a_first") < order("b_second") && order("b_second") < order("c_third")) {
+	if order("a_first") >= order("b_second") || order("b_second") >= order("c_third") {
 		t.Fatalf("a new limit goes last: %d %d %d", order("a_first"), order("b_second"), order("c_third"))
 	}
 	// Replace keeps its place unless told otherwise.
