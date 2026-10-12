@@ -6,8 +6,10 @@
 #   red-green   a proper red→green branch passes; production code without a failing test-only commit
 #               before it is refused; so are a "red" commit that already passes, test and code squeezed
 #               into one commit, and a tip that never turns green; an exemption needs a reason;
-#               a build failure counts as red but says so
-#   status      ROADMAP.md must state each spec's task count as its tasks.md has it: a task ticked without
+#               a build failure counts as red but says so; and every red→green cycle on a branch is held
+#               to the same rule, not only the first — a later change with no red of its own, a later red
+#               that already passes, and a later red whose tip never turns green are each refused
+#   status     ROADMAP.md must state each spec's task count as its tasks.md has it: a task ticked without
 #               the roadmap, and a "not started" claim that came back, are each refused
 #   mutation    a planted survivor (the boundary tests of the pricer deleted) is refused, by name
 #
@@ -113,6 +115,63 @@ expect "red by build failure passes, and says to stub the symbol" 0 "build faile
 
 branch i; write_test '1 << 51'; git add "$testfile"; git commit -qm "test(red): the ceiling is 2^51"; echo "// tweak" >>metering/domain/credits.go; git commit -qam "fix(green): forgot the change"
 expect "a red commit whose tip never turns green is refused" 1 "does not pass the tests" "$vrg" base
+
+# A branch may hold several red→green cycles (a stack of task pairs), and the gate must hold each one to
+# the rule, not only the first: "a failing test-only commit ahead of every production change"
+# (constitution, quality gates). Each cycle pins a FLOOR under the ceiling — at least 2^51, then at least
+# 2^52 — so the second change does not invalidate the first test, as it would if each asserted equality.
+testfile2=metering/domain/scratch_gate_two_test.go
+write_floor_test() { # <file> <test name> <floor expression>
+  cat >"$1" <<GO
+package domain_test
+
+import (
+	"testing"
+
+	"github.com/truongpx396/intel-payment/metering/domain"
+)
+
+func $2(t *testing.T) {
+	t.Parallel()
+	if domain.MaxOperationAmount < $3 {
+		t.Fatalf("got %d", domain.MaxOperationAmount)
+	}
+}
+GO
+}
+bump_again() { perl -pi -e 's/MaxOperationAmount Credits = 1 << 51/MaxOperationAmount Credits = 1 << 52/' metering/domain/credits.go; }
+first_cycle() {
+  write_floor_test "$testfile" TestScratchGate '1 << 51'; git add "$testfile"; git commit -qm "test(red): the ceiling is at least 2^51"
+  bump; git commit -qam "fix(green): raise the ceiling"
+}
+second_red() { # <floor expression> [subject]
+  write_floor_test "$testfile2" TestScratchGateTwo "$1"; git add "$testfile2"; git commit -qm "${2:-test(red): the ceiling is at least $1}"
+}
+
+branch m; first_cycle
+second_red '1 << 52'; bump_again; git commit -qam "fix(green): raise it again"
+expect "two red→green cycles on one branch pass, each red shown" 0 "red, then green" "$vrg" base
+
+branch n; first_cycle; bump_again; git commit -qam "fix(green): raise it again, with no new red"
+expect "a second change with no red of its own is refused" 1 "no test\(red\) commit since" "$vrg" base
+
+branch o; first_cycle
+second_red '1 << 51'; bump_again; git commit -qam "fix(green): raise it again"
+expect "a second 'red' that already passes is refused" 1 "PASSES" "$vrg" base
+
+branch p; first_cycle
+second_red '1 << 52'; echo "// tweak" >>metering/domain/credits.go; git commit -qam "fix(green): forgot the change"
+expect "a second red whose tip never turns green is refused" 1 "does not pass the tests" "$vrg" base
+
+branch q; first_cycle; echo "// tidy" >>metering/domain/credits.go; git commit -qam "refactor: tidy"
+expect "a refactor after green needs no red of its own" 0 "red, then green" "$vrg" base
+
+branch r; first_cycle; echo "// tidy" >>metering/domain/credits.go; git commit -qam "refactor: tidy"; bump_again; git commit -qam "fix(green): raise it again"
+expect "a refactor does not buy the next change its red" 1 "no test\(red\) commit since" "$vrg" base
+
+branch s; first_cycle
+second_red '1 << 51' "test(mutation): pin the ceiling"
+expect "a test(mutation) commit after green is not mistaken for a red" 0 "red, then green" "$vrg" base
 
 # ---------------------------------------------------------------- status drift
 # The scratch copy of the script is the one that runs: it judges the repository it lives in.
