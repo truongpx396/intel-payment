@@ -14,29 +14,20 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5/stdlib"
-	"github.com/nats-io/nats.go"
-	goredis "github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
+	"github.com/truongpx396/intel-payment/cmd/internal/envcfg"
+	"github.com/truongpx396/intel-payment/cmd/internal/wiring"
 	"github.com/truongpx396/intel-payment/metering"
 	pgarchive "github.com/truongpx396/intel-payment/metering/adapters/driven/archive/postgres"
-	"github.com/truongpx396/intel-payment/metering/adapters/driven/natsjetstream"
 	otelmetrics "github.com/truongpx396/intel-payment/metering/adapters/driven/otel"
 	pgadapter "github.com/truongpx396/intel-payment/metering/adapters/driven/postgres"
-	"github.com/truongpx396/intel-payment/metering/adapters/driven/pricing/llmtoken"
-	"github.com/truongpx396/intel-payment/metering/adapters/driven/pricing/seat"
-	"github.com/truongpx396/intel-payment/metering/adapters/driven/pricing/storagebyte"
-	pricingtable "github.com/truongpx396/intel-payment/metering/adapters/driven/pricing/table"
-	hotredis "github.com/truongpx396/intel-payment/metering/adapters/driven/redis"
-	"github.com/truongpx396/intel-payment/metering/adapters/driven/redisstreams"
 	"github.com/truongpx396/intel-payment/metering/adapters/driven/system"
 	"github.com/truongpx396/intel-payment/metering/adapters/driving/grpcserver"
 	"github.com/truongpx396/intel-payment/metering/adapters/driving/resthandler"
 	"github.com/truongpx396/intel-payment/metering/app"
 	"github.com/truongpx396/intel-payment/metering/ports"
-	"github.com/truongpx396/intel-payment/migrate"
 )
 
 // serve parses the settings, wires the engine to its stores and runs both transports until ctx is done.
@@ -150,44 +141,12 @@ func wire(ctx context.Context, s settings, log *slog.Logger) (*service, error) {
 		}
 	}()
 
-	pool, err := pgadapter.Connect(ctx, cfg.LedgerDSN)
-	if err != nil {
-		return nil, fmt.Errorf("the ledger database is not reachable (PAYMENT_LEDGER_DSN): %w", err)
-	}
-	svc.closers = append(svc.closers, pool.Close)
-
-	// Before money is served: the schema is at head, and the books were written under this shard count.
-	ms, err := migrate.Embedded()
+	st, err := wiring.Open(ctx, cfg, 0)
 	if err != nil {
 		return nil, err
 	}
-	db := stdlib.OpenDBFromPool(pool)
-	svc.closers = append(svc.closers, func() { _ = db.Close() })
-	if st, err := migrate.Check(ctx, db, ms); err != nil {
-		return nil, fmt.Errorf("the schema is not at head (at %04d, head is %04d): run payment-migrate up before starting: %w", st.Current, st.Head, err)
-	}
-	books, journal := pgadapter.NewBooks(pool), pgadapter.NewJournal(pool)
-	if err := books.EnsureHotConfig(ctx, cfg.Shards); err != nil {
-		return nil, err
-	}
-
-	config, err := pgadapter.NewConfigStore(ctx, pool, pgadapter.ConfigOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("configuration cache: %w", err)
-	}
-	svc.closers = append(svc.closers, config.Close)
-
-	rdb, err := hotredis.Connect(cfg.BalanceRedisURL)
-	if err != nil {
-		return nil, errors.New("PAYMENT_BALANCE_REDIS_URL is not a redis:// or redis+cluster:// URL")
-	}
-	svc.closers = append(svc.closers, func() { _ = rdb.Close() })
-	store, err := hotredis.New(rdb, hotredis.Options{Config: cfg, Pools: config, Limits: config, Clock: system.Clock{}})
-	if err != nil {
-		return nil, err
-	}
-
-	bus, closeBus, err := newBus(ctx, s, rdb)
+	svc.closers = append(svc.closers, st.Close)
+	bus, closeBus, err := wiring.NewBus(ctx, envcfg.Bus{Kind: s.Bus, URL: s.BusURL, Retention: s.BusRetention}, cfg, st.Redis)
 	if err != nil {
 		return nil, err
 	}
@@ -197,32 +156,28 @@ func wire(ctx context.Context, s settings, log *slog.Logger) (*service, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	limit := cfg.MaxOperationAmount
-	pricers := ports.PricerRegistry{
-		"table": pricingtable.New(limit), llmtoken.Name: llmtoken.New(limit), seat.Name: seat.New(limit), storagebyte.Name: storagebyte.New(limit),
-	}
+	pricers := wiring.Pricers(cfg.MaxOperationAmount)
 	deps := app.Deps{
-		Pricers: pricers, Balance: store, Books: books, Limits: config, Pools: config, RateCards: config, Journal: journal, Bus: bus,
-		Usage: store, Ledger: books, Clock: system.Clock{}, IDs: &system.IDs{}, Metrics: metrics,
+		Pricers: pricers, Balance: st.Hot, Books: st.Books, Limits: st.Config, Pools: st.Config, RateCards: st.Config, Journal: st.Journal, Bus: bus,
+		Usage: st.Hot, Ledger: st.Books, Clock: system.Clock{}, IDs: &system.IDs{}, Metrics: metrics,
 	}
 	if cfg.LedgerGranularity == metering.GranularityRollup {
-		deps.Archive = pgarchive.New(pool)
+		deps.Archive = pgarchive.New(st.Pool)
 	}
 	engine, err := app.NewService(cfg, deps)
 	if err != nil {
 		return nil, err
 	}
-	var writer ports.ConfigWriter = pgadapter.NewConfigWriter(pool) // the engine is given the port, never the adapter
+	var writer ports.ConfigWriter = pgadapter.NewConfigWriter(st.Pool) // the engine is given the port, never the adapter
 	admin, err := app.NewAdmin(cfg, pricers, writer)
 	if err != nil {
 		return nil, err
 	}
 
 	handler, err := resthandler.New(resthandler.Config{
-		Meter: engine, Balance: engine, Credits: engine, Ledger: books, Transfers: books, Admin: admin,
+		Meter: engine, Balance: engine, Credits: engine, Ledger: st.Books, Transfers: st.Books, Admin: admin,
 		Auth: s.Authenticator, Clock: system.Clock{}, Logger: log, Legacy429ForLimits: s.Legacy429,
-		Ready: readiness{db: db, ms: ms, books: books, shards: cfg.Shards}, Metrics: metricsHandler,
+		Ready: readiness{db: st.DB, ms: st.Migrations, books: st.Books, shards: cfg.Shards}, Metrics: metricsHandler,
 	})
 	if err != nil {
 		return nil, err
@@ -248,33 +203,6 @@ func wire(ctx context.Context, s settings, log *slog.Logger) (*service, error) {
 	rpc.Register(svc.grpc)
 	ok = true
 	return svc, nil
-}
-
-// newBus builds the bus warn/blocked events go to, and the function that closes it.
-func newBus(ctx context.Context, s settings, rdb goredis.UniversalClient) (ports.Bus, func(), error) {
-	cfg := s.Engine
-	switch s.Bus {
-	case busJetStream:
-		nc, err := nats.Connect(s.BusURL, nats.Name("paymentd"), nats.Timeout(5*time.Second))
-		if err != nil {
-			return nil, nil, errors.New("PAYMENT_BUS_URL: the NATS server is not reachable")
-		}
-		b, err := natsjetstream.NewBus(ctx, nc, natsjetstream.BusOptions{
-			Clock: system.Clock{}, Prefix: cfg.SubjectPrefix, Retention: s.BusRetention, AckWait: cfg.AckWait, MaxAttempts: cfg.MaxAttempts,
-		})
-		if err != nil {
-			nc.Close()
-			return nil, nil, err
-		}
-		return b, nc.Close, nil
-	default:
-		host, _ := os.Hostname()
-		b, err := redisstreams.NewBus(rdb, redisstreams.BusOptions{
-			Clock: system.Clock{}, Prefix: cfg.SubjectPrefix, Consumer: fmt.Sprintf("paymentd-%s-%d", host, os.Getpid()),
-			AckWait: cfg.AckWait, MaxAttempts: cfg.MaxAttempts,
-		})
-		return b, func() {}, err
-	}
 }
 
 // serverTLS is the listeners' TLS configuration, or nil when none is configured. Callers are asked for a

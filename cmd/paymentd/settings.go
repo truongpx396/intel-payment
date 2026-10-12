@@ -34,9 +34,6 @@ const (
 	authNone   = "none"
 	authMTLS   = "mtls"
 	authBearer = "bearer"
-
-	busStreams   = envcfg.BusStreams
-	busJetStream = envcfg.BusJetStream
 )
 
 // parseSettings reads and checks the whole environment. Every problem is reported at once, each naming the
