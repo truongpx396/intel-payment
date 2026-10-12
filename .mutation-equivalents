@@ -144,3 +144,10 @@ mutator = "CONDITIONALS_BOUNDARY"
 col = 27
 line = 'return configured[i].Name < configured[j].Name'
 why = "pool names are unique within a realm (the primary key), so two configured pools never compare equal and < and <= agree"
+
+[[equivalent]]
+file = "metering/app/credits.go"
+mutator = "CONDITIONALS_BOUNDARY"
+col = 59
+line = 'sort.Slice(strays, func(i, j int) bool { return strays[i] < strays[j] })'
+why = "strays are the keys of a map, so no two are equal and < and <= agree"
