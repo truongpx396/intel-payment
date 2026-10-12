@@ -34,7 +34,7 @@ else**, and saying so is more useful than pretending otherwise:
 
 **Status: in progress — the foundation and the metering core are built and verified; the transports, payments, entitlements, operational surface and UI are not.** → [specs/001-metering-billing-core](specs/001-metering-billing-core/)
 
-Tasks: 83 of 151 done (specs/001-metering-billing-core/tasks.md) — counted by `scripts/check-spec-drift.sh`, which fails CI when this line and the task list disagree.
+Tasks: 85 of 151 done (specs/001-metering-billing-core/tasks.md) — counted by `scripts/check-spec-drift.sh`, which fails CI when this line and the task list disagree.
 
 Prepaid credits in pools, exact rational pricing, the admission gate with subject- and plan-sized
 ceilings, the single durable writer with a per-scope sequence watermark, cluster-safe hot-path
@@ -50,9 +50,10 @@ OpenTelemetry adapters; the pricers; and the conformance suites that every one o
 (`PricerContract`, `LedgerContract`, `LedgerWriterContract`, `ConsistencyContract`, `BusContract`) —
 all in CI.
 
-**Not yet a service.** There is no `cmd/paymentd` or `cmd/payment-worker` and no gRPC or REST
-transport, so `make up` starts the infrastructure and migrates it but serves nothing (Phase 2 of the
-task list). The engine is usable today only as an embedded Go library.
+**A service for the metering core.** `cmd/paymentd` serves it over gRPC and REST behind a service credential
+(mTLS or bearer), with an OpenAPI document and clients generated from it, and `cmd/payment-worker` is the sole
+durable writer; `make up` runs both beside Postgres and Redis, and the Playwright suite passes against the built
+image. It serves metering only — no payments, no webhook ingress, no entitlements.
 
 **How it is being built:** test-first, with the evidence checked — a failing tests-only commit ahead
 of every production change, fuzz targets for arithmetic, encodings and time, and mutation testing of
@@ -98,12 +99,12 @@ Tracked openly rather than discovered later.
 
 | Gap | Phase | Note |
 |---|---|---|
-| **No service yet** | 1 | The engine is built and verified as a library, but nothing serves it: no gRPC or REST transport, no `paymentd` or `payment-worker` binary, no payments, entitlements, operational surface or UI. `make up` cannot serve traffic until Phase 2 lands. The Go Redis adapter loads `hot_path.lua` unchanged, so the cluster-mode verification of the reference functions stays meaningful |
+| **Metering only** | 1 | `paymentd` and `payment-worker` serve the metering engine; there are no payments, webhook ingress, entitlements, operational surface or UI yet (`billing/`, `entitlement/`, `events/` are stubs). `payment-worker` drains the Redis outbox only — the JetStream intent path exists in the engine and is refused by the binary — and holds one Postgres connection per shard it owns. The Go Redis adapter loads `hot_path.lua` unchanged, so the cluster-mode verification of the reference functions stays meaningful |
 | Post-paid invoicing | 2 | Designed, not built |
 | Coupons, discounts, trials, quantity subscriptions | 2 | Designed in 002; absent from 001 |
 | Invoice generation | 2 | Phase 1 collects payments; it issues no invoices |
 | Revenue recognition, GL export | 3 | Not designed. Export instead |
-| Client libraries | 1 | **Designed, not built**: a wrapped Go client, and TypeScript and Python clients generated from `api/openapi/v1.yaml` and the protos (T063b) |
+| Client libraries | 1 | Built: a wrapped Go client (`grpcclient`), and TypeScript and Python clients generated from `api/openapi/v1.yaml` — each checked to compile and round-trip an `Admit` by `make verify-clients`. Not published to any registry |
 | Active-active multi-region | — | **Out of scope by decision** ([D45](specs/001-metering-billing-core/design-decisions.md)): one home region, Postgres replicated to a DR region, Redis rebuilt from the books |
 | GDPR erasure story | 1 | Holds `billing_email` and `actor_id`. Ledger rows must survive an erasure request for audit, so the answer is pseudonymization rather than deletion — designed nowhere yet |
 | Load tested | 1 | The [scale envelope](specs/001-metering-billing-core/plan.md#scale-envelope) states targets; none is a measurement until T130 |

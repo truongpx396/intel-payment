@@ -20,8 +20,21 @@ curl -sf localhost:8080/readyz   # {"status":"ready","migrations":"head","shards
 ```
 
 `/readyz` fails while the schema is behind head or the configured shard count disagrees with
-`hot_config`, so wire it as the rollout gate. **Order:** migrate → `payment-worker` → `paymentd`.
-The worker is the sole durable writer and opens the shards on first start.
+`hot_config`, so wire it as the rollout gate. It does not ask Redis: while the hot tier is down `Record`
+journals to Postgres and answers `202`, which a service pulled out of rotation could not. **Order:** migrate →
+`payment-worker` → `paymentd`. The worker is the sole durable writer and opens the shards on first start.
+
+**Stopping.** `paymentd` on `SIGTERM` closes its listeners at once and answers the calls it already took (a
+`Record` settles or is journalled) up to `PAYMENT_SHUTDOWN_TIMEOUT`; past that it cuts the rest, exits 1 and says so,
+and the caller retries with the same `Idempotency-Key`, which is booked once. `payment-worker` finishes the batch in
+hand, then releases each shard by name, so a replica takes them over within `PAYMENT_OWNERSHIP_RETRY`. Set the
+orchestrator's kill grace period above `PAYMENT_SHUTDOWN_TIMEOUT`. A worker that is killed instead of stopped loses
+its locks with its connections; whatever it had been handed and not acknowledged is claimed by the next worker after
+`PAYMENT_BUS_ACK_WAIT`, and booked once.
+
+**Connections.** A worker holds one PostgreSQL connection per shard it owns. At the default 256 shards one worker
+needs ~272; the compose Postgres is started with `max_connections=400`. Run replicas to divide the shards, or lower
+`PAYMENT_SHARDS` before the first start (it cannot be changed afterwards without a reshard).
 
 ---
 

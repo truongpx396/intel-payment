@@ -88,7 +88,24 @@ or move money.
 | `PAYMENT_RECONCILE_FULL_SWEEP_INTERVAL` | `24h` | Every scope |
 | `PAYMENT_RECONCILE_TOLERANCE` | `0` | `\|drift\|` at **equal sequence numbers** above this pages. In-flight intents are never drift, so `0` is the right value, not a noisy one |
 | `PAYMENT_GAP_TIMEOUT` | `2m` | A sequence gap older than this pages |
-| `PAYMENT_TRANSFER_REDRIVE` | `30s` | A transfer in transit longer than this is re-driven |
+| `PAYMENT_TRANSFER_REDRIVE` | `30s` | A transfer in transit longer than this is re-driven (`payment-worker`) |
+
+### Worker (`payment-worker`)
+
+The worker reads every engine variable above, and these. It does not read the transport or auth variables.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `PAYMENT_DRAIN_INTERVAL` | `250ms` | How long a shard with nothing to book waits before it looks again. A shard with work does not wait. Must be positive. Idle load is roughly `PAYMENT_SHARDS` shards × a few round trips per interval |
+| `PAYMENT_OWNERSHIP_RETRY` | `2s` | How often shards it does not own are tried, and the locks it holds are checked. A stopped or dead worker's shards are taken over within about this long. Must be positive |
+| `PAYMENT_JOURNAL_REPLAY_INTERVAL` | `5s` | How often usage journalled during a hot-tier outage is replayed. Must be positive |
+| `PAYMENT_SHUTDOWN_TIMEOUT` | `30s` | How long a stop waits for the batch in hand. Must be positive |
+| `PAYMENT_WORKER_ADDR` | `:9091` | `/healthz` and `/metrics` for the worker process — the outbox, suspense and transfer gauges are exported here, not by `paymentd` |
+
+`PAYMENT_BUS=nats_jetstream` is refused by the worker: it drains the Redis outbox. **A worker holds one PostgreSQL
+connection for every shard it owns** (a session advisory lock lives on its connection), so `PAYMENT_SHARDS` bounds
+its connection use — the pool is sized `PAYMENT_SHARDS` + 16 — and the server's `max_connections` must allow it (the
+compose stack sets 400 for the default 256). Replicas divide the shards, so each needs only its share.
 | `PAYMENT_TRANSFER_TRANSIT_ALARM` | `5m` | …and longer than this pages |
 
 ### Hot-path safety

@@ -168,6 +168,11 @@ func startProcess(t *testing.T, name string, env map[string]string, args ...stri
 	}
 	go func() { d.err = cmd.Wait(); close(d.exited) }()
 	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("%s logs:\n%s", name, d.logs.String())
+		}
+	})
+	t.Cleanup(func() {
 		select {
 		case <-d.exited:
 			return
@@ -292,6 +297,9 @@ func scopeStore(t *testing.T, addr, realm, dsn string) (*hotredis.Store, *pgadap
 	must(t, err)
 	t.Cleanup(cfgStore.Close)
 	cfg := metering.Config{Realm: domain.Realm(realm), BalanceRedisURL: "redis://x", LedgerDSN: "postgres://x"}.WithDefaults()
+	if n, found, err := pgadapter.NewBooks(pool).HotConfig(ctx); err == nil && found {
+		cfg.Shards = n // the deployment under test may have been told a shard count other than the default
+	}
 	rdb := hotredisClient(addr)
 	t.Cleanup(func() { _ = rdb.Close() })
 	store, err := hotredis.New(rdb, hotredis.Options{Config: cfg, Pools: cfgStore, Limits: cfgStore, Clock: system.Clock{}})

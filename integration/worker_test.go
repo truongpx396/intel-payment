@@ -24,6 +24,13 @@ import (
 
 const lockClass = 0x494D5357 // the advisory-lock class of shard ownership ("IMSW")
 
+// workerGrant is large enough that no record in these tests overdraws it: an overdraw books a write-off row, which
+// is right and is not what they are about.
+const workerGrant = 100_000
+
+// Every worker test has a Redis of its own (dedicatedRedis): the outbox streams are keyed by shard alone, so
+// workers of two tests sharing a server would take each other's intents.
+
 func workerEnv(realm, dsn string, kv ...string) map[string]string {
 	m := paymentdEnv(realm, dsn,
 		"PAYMENT_SHARDS", "8", "PAYMENT_DRAIN_BATCH", "5", "PAYMENT_BUS_ACK_WAIT", "1s",
@@ -84,7 +91,7 @@ func bookedFor(t *testing.T, pool *pgxpool.Pool, realm string, sc domain.Scope) 
 	t.Helper()
 	var b booked
 	must(t, pool.QueryRow(context.Background(), `
-		SELECT count(*), count(*) FILTER (WHERE operation_type = 'usage'), count(DISTINCT idem_key), coalesce(sum(delta), 0)
+		SELECT count(*), count(*) FILTER (WHERE rate_key = 'gpt'), count(DISTINCT idem_key), coalesce(sum(delta), 0)
 		FROM credit_ledger WHERE realm = $1 AND scope_kind = $2 AND scope_id = $3`, realm, sc.Kind, sc.ID).Scan(&b.rows, &b.usage, &b.distinctKeys, &b.sum))
 	return b
 }
@@ -93,7 +100,7 @@ func bookedFor(t *testing.T, pool *pgxpool.Pool, realm string, sc domain.Scope) 
 func grantWhenReady(t *testing.T, c *http.Client, base, scopeJSON string) {
 	t.Helper()
 	eventually(t, 30*time.Second, "the grant to be accepted", func() bool {
-		code, _ := httpDo(t, c, "POST", base+"/v1/grant", serviceToken, `{"scope":`+scopeJSON+`,"amount":1000,"reason":"purchase"}`, "Idempotency-Key", "g-1")
+		code, _ := httpDo(t, c, "POST", base+"/v1/grant", serviceToken, `{"scope":`+scopeJSON+`,"amount":100000,"reason":"purchase"}`, "Idempotency-Key", "g-1")
 		return code == 200
 	})
 }
@@ -112,10 +119,12 @@ func record(t *testing.T, c *http.Client, base, scopeJSON, key string) int64 {
 func TestAWorkerBooksWhatPaymentdAccepted(t *testing.T) {
 	t.Parallel()
 	realm, dsn := seededRealm(t)
+	rd := dedicatedRedis(t)
+	rdURL := "redis://" + rd + "/0"
 	pool := ledgerPool(t, dsn)
-	w := startWorker(t, workerEnv(realm, dsn))
+	w := startWorker(t, workerEnv(realm, dsn, "PAYMENT_BALANCE_REDIS_URL", rdURL))
 	awaitOwning(t, pool, w, 8)
-	d := startPaymentd(t, paymentdEnv(realm, dsn, "PAYMENT_SHARDS", "8"))
+	d := startPaymentd(t, paymentdEnv(realm, dsn, "PAYMENT_BALANCE_REDIS_URL", rdURL, "PAYMENT_SHARDS", "8"))
 	base := d.httpURL(t)
 	c := &http.Client{Timeout: 10 * time.Second}
 	awaitReady(t, d, c, base)
@@ -131,10 +140,10 @@ func TestAWorkerBooksWhatPaymentdAccepted(t *testing.T) {
 	// The books catch up with the hot tier: a grant and three usages, once each, summing to what the service said.
 	eventually(t, 30*time.Second, "the worker to book the grant and three records", func() bool { return bookedFor(t, pool, realm, sc).rows == 4 })
 	b := bookedFor(t, pool, realm, sc)
-	if b.usage != 3 || b.distinctKeys != 4 || b.sum != 1000+spent {
-		t.Errorf("booked %+v, want 1 grant and 3 usages under 4 distinct keys summing to %d", b, 1000+spent)
+	if b.usage != 3 || b.distinctKeys != 4 || b.sum != workerGrant+spent {
+		t.Errorf("booked %+v, want 1 grant and 3 usages under 4 distinct keys summing to %d", b, workerGrant+spent)
 	}
-	if hot := hotBalance(t, redis.Addr, realm, dsn, sc); int64(hot) != b.sum {
+	if hot := hotBalance(t, rd, realm, dsn, sc); int64(hot) != b.sum {
 		t.Errorf("the hot balance is %d and the books say %d: the two stores disagree", hot, b.sum)
 	}
 }
@@ -142,11 +151,13 @@ func TestAWorkerBooksWhatPaymentdAccepted(t *testing.T) {
 func TestAWorkerKilledMidBatchIsReplacedAndNothingIsBookedTwice(t *testing.T) {
 	t.Parallel()
 	realm, dsn := seededRealm(t)
+	rd := dedicatedRedis(t)
+	rdURL := "redis://" + rd + "/0"
 	pool := ledgerPool(t, dsn)
-	env := workerEnv(realm, dsn)
+	env := workerEnv(realm, dsn, "PAYMENT_BALANCE_REDIS_URL", rdURL)
 	a := startWorker(t, env)
 	awaitOwning(t, pool, a, 8)
-	d := startPaymentd(t, paymentdEnv(realm, dsn, "PAYMENT_SHARDS", "8"))
+	d := startPaymentd(t, paymentdEnv(realm, dsn, "PAYMENT_BALANCE_REDIS_URL", rdURL, "PAYMENT_SHARDS", "8"))
 	base := d.httpURL(t)
 	c := &http.Client{Timeout: 10 * time.Second}
 	awaitReady(t, d, c, base)
@@ -186,15 +197,15 @@ func TestAWorkerKilledMidBatchIsReplacedAndNothingIsBookedTwice(t *testing.T) {
 	eventually(t, 30*time.Second, "the replacement to book the six records", func() bool { return bookedFor(t, pool, realm, sc).usage == 6 })
 
 	got := bookedFor(t, pool, realm, sc)
-	if got.rows != 7 || got.distinctKeys != 7 || got.sum != 1000+spent {
-		t.Errorf("booked %+v, want the grant and six usages once each under 7 distinct keys, summing to %d", got, 1000+spent)
+	if got.rows != 7 || got.distinctKeys != 7 || got.sum != workerGrant+spent {
+		t.Errorf("booked %+v, want the grant and six usages once each under 7 distinct keys, summing to %d", got, workerGrant+spent)
 	}
 	var idem int
 	must(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM usage_idem WHERE realm = $1 AND scope_id = $2`, realm, sc.ID).Scan(&idem))
 	if idem != 6 {
 		t.Errorf("%d usage guards, want 6", idem)
 	}
-	if hot := hotBalance(t, redis.Addr, realm, dsn, sc); int64(hot) != got.sum {
+	if hot := hotBalance(t, rd, realm, dsn, sc); int64(hot) != got.sum {
 		t.Errorf("the hot balance is %d and the books say %d: the two stores disagree", hot, got.sum)
 	}
 }
@@ -202,14 +213,20 @@ func TestAWorkerKilledMidBatchIsReplacedAndNothingIsBookedTwice(t *testing.T) {
 func TestAWorkerThatIsToldToStopReleasesItsShards(t *testing.T) {
 	t.Parallel()
 	realm, dsn := seededRealm(t)
+	rd := dedicatedRedis(t)
+	rdURL := "redis://" + rd + "/0"
 	pool := ledgerPool(t, dsn)
-	env := workerEnv(realm, dsn)
+	env := workerEnv(realm, dsn, "PAYMENT_BALANCE_REDIS_URL", rdURL)
 	a := startWorker(t, env)
 	awaitOwning(t, pool, a, 8)
 	b := startWorker(t, env) // a second replica owns nothing while the first holds everything
+	b.listening(t, "ops")
 	time.Sleep(time.Second)
-	if locks, sessions := shardsOwned(t, pool); locks != 8 || sessions != 1 {
-		t.Fatalf("%d shard locks held by %d sessions, want 8 by 1: ownership is exclusive", locks, sessions)
+	if locks, _ := shardsOwned(t, pool); locks != 8 {
+		t.Fatalf("%d shard locks held, want 8", locks)
+	}
+	if n := strings.Count(b.logs.String(), `"msg":"shard acquired"`); n != 0 {
+		t.Fatalf("the second replica took %d shards the first still holds: ownership is exclusive", n)
 	}
 
 	must(t, a.cmd.Process.Signal(syscall.SIGTERM))
@@ -221,17 +238,19 @@ func TestAWorkerThatIsToldToStopReleasesItsShards(t *testing.T) {
 	}
 	// The second replica takes everything over.
 	awaitOwning(t, pool, b, 8)
-	if _, sessions := shardsOwned(t, pool); sessions != 1 {
-		t.Errorf("%d sessions hold the shards, want the replica's 1", sessions)
-	}
+	eventually(t, 10*time.Second, "the replica to say it holds all eight", func() bool {
+		return strings.Count(b.logs.String(), `"msg":"shard acquired"`) == 8
+	})
 }
 
 func TestAWorkerRefusesToStartAgainstASchemaThatIsNotAtHeadOrAShardCountThatDisagrees(t *testing.T) {
 	t.Parallel()
 	realm, dsn := seededRealm(t)
+	rd := dedicatedRedis(t)
+	rdURL := "redis://" + rd + "/0"
 	pool := ledgerPool(t, dsn)
 	must(t, pgadapter.NewBooks(pool).EnsureHotConfig(t.Context(), 64))
-	w := startWorker(t, workerEnv(realm, dsn, "PAYMENT_SHARDS", "128"))
+	w := startWorker(t, workerEnv(realm, dsn, "PAYMENT_BALANCE_REDIS_URL", rdURL, "PAYMENT_SHARDS", "128"))
 	if code := w.waitExit(t, 30*time.Second); code == 0 {
 		t.Fatalf("the worker exited 0 with the wrong shard count; logs:\n%s", w.logs.String())
 	}
@@ -243,8 +262,10 @@ func TestAWorkerRefusesToStartAgainstASchemaThatIsNotAtHeadOrAShardCountThatDisa
 func TestAWorkerServesItsHealthAndMetricsOnItsOwnAddress(t *testing.T) {
 	t.Parallel()
 	realm, dsn := seededRealm(t)
+	rd := dedicatedRedis(t)
+	rdURL := "redis://" + rd + "/0"
 	pool := ledgerPool(t, dsn)
-	w := startWorker(t, workerEnv(realm, dsn))
+	w := startWorker(t, workerEnv(realm, dsn, "PAYMENT_BALANCE_REDIS_URL", rdURL))
 	awaitOwning(t, pool, w, 8)
 	base := "http://" + w.listening(t, "ops")
 	c := &http.Client{Timeout: 10 * time.Second}

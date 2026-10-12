@@ -8,8 +8,9 @@ passing without running the check and showing its real output.**
 
 Status is derived, not asserted: [ROADMAP.md](ROADMAP.md) states task counts that CI checks against
 `specs/*/tasks.md`. Read it rather than trusting this file. As of writing, the metering core is built and
-verified, and there is **no gRPC/REST transport and no `paymentd`/`payment-worker` binary** — do not write
-code, docs or comments that imply otherwise.
+verified and served by `cmd/paymentd` (gRPC and REST) and `cmd/payment-worker` (the durable writer), but
+`billing/`, `entitlement/` and `events/` are still `doc.go` stubs — there are no payments, no webhook ingress,
+no entitlements and no UI. Do not write code, docs or comments that imply otherwise.
 
 ## Layout
 
