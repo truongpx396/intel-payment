@@ -70,27 +70,16 @@ func (l Limit) WriteBucket(now time.Time) (Bucket, error) {
 		if err != nil {
 			return Bucket{}, err
 		}
-		t := now.In(loc)
-		next := time.Date(t.Year(), t.Month(), t.Day()+1, 0, 0, 0, 0, loc)
-		// A zone can skip a calendar date (Samoa went from 29 to 31 December 2011). Midnight of a date
-		// that does not exist resolves to an instant already behind us, and a negative TTL deletes the
-		// counter at once — the day's ceiling would never bind. Take the next local midnight that is ahead.
-		if !next.After(now) {
-			next = time.Date(t.Year(), t.Month(), t.Day()+2, 0, 0, 0, 0, loc)
-		}
-		return Bucket{Key: t.Format("20060102"), TTL: next.Sub(now) + counterMargin}, nil
+		end := l.dailyEnd(now, loc)
+		return Bucket{Key: now.In(loc).Format("20060102"), TTL: end.Sub(now) + counterMargin}, nil
 	case Hourly:
 		loc, err := l.Location()
 		if err != nil {
 			return Bucket{}, err
 		}
-		t := now.In(loc)
+		end := hourlyEnd(now, loc)
 		// The zone offset is part of the key: on the day clocks fall back, "01:00" happens twice.
-		next := time.Date(t.Year(), t.Month(), t.Day(), t.Hour()+1, 0, 0, 0, loc)
-		if !next.After(now) {
-			next = now.Truncate(time.Hour).Add(time.Hour)
-		}
-		return Bucket{Key: t.Format("2006010215Z0700"), TTL: next.Sub(now) + counterMargin}, nil
+		return Bucket{Key: now.In(loc).Format("2006010215Z0700"), TTL: end.Sub(now) + counterMargin}, nil
 	case Rolling:
 		w := l.rollingWidth()
 		return Bucket{Key: strconv.FormatInt(now.UnixNano()/int64(w), 10), TTL: l.Dur + w}, nil
@@ -98,6 +87,48 @@ func (l Limit) WriteBucket(now time.Time) (Bucket, error) {
 		return Bucket{Key: "-", TTL: DefaultJobTTL}, nil
 	}
 	return Bucket{}, fmt.Errorf("%w: a %s limit has no counter", ErrInvalid, l.Window)
+}
+
+// ResetsAt is the instant the limit's counter starts over: the end of the current calendar window, in the
+// limit's own zone. It is the same instant WriteBucket's lifetime counts to (less its margin), so what a
+// caller is told and what the books do are one fact. Only Daily and Hourly have one; a balance does not
+// reset, a rolling window slides and a job budget ends with the job — for those, and for a zone that
+// cannot be loaded, ok is false.
+func (l Limit) ResetsAt(now time.Time) (at time.Time, ok bool) {
+	if l.Window != Daily && l.Window != Hourly {
+		return time.Time{}, false
+	}
+	loc, err := l.Location()
+	if err != nil {
+		return time.Time{}, false
+	}
+	if l.Window == Daily {
+		return l.dailyEnd(now, loc), true
+	}
+	return hourlyEnd(now, loc), true
+}
+
+// dailyEnd is the next local midnight that is ahead of now.
+func (Limit) dailyEnd(now time.Time, loc *time.Location) time.Time {
+	t := now.In(loc)
+	next := time.Date(t.Year(), t.Month(), t.Day()+1, 0, 0, 0, 0, loc)
+	// A zone can skip a calendar date (Samoa went from 29 to 31 December 2011). Midnight of a date
+	// that does not exist resolves to an instant already behind us, and a negative TTL deletes the
+	// counter at once — the day's ceiling would never bind. Take the next local midnight that is ahead.
+	if !next.After(now) {
+		next = time.Date(t.Year(), t.Month(), t.Day()+2, 0, 0, 0, 0, loc)
+	}
+	return next
+}
+
+// hourlyEnd is the instant the hourly bucket's key changes. The key is the local hour AND the zone offset,
+// so on the night clocks fall back the first 01:xx and the second 01:xx are different windows: the window
+// is the sixty minutes from the start of the local hour, and it ends there — not at the next wall-clock
+// hour, which would be an hour after the counter really started over.
+func hourlyEnd(now time.Time, loc *time.Location) time.Time {
+	t := now.In(loc)
+	sinceStart := time.Duration(t.Minute())*time.Minute + time.Duration(t.Second())*time.Second + time.Duration(t.Nanosecond())
+	return now.Add(time.Hour - sinceStart)
 }
 
 func (l Limit) rollingWidth() time.Duration {
