@@ -25,7 +25,7 @@ Conventions: `Idempotency-Key` required on every mutating request, and it **is**
 | POST | `/v1/grant` | `grant` | Mint/remove credits in a pool. `{scope, pool?, amount, reason, expires_at?, source_key?, ref?}` → `Receipt`. `source_key` is allowed only on a negative `amount` and names the grant it reverses |
 | POST | `/v1/transfer` | `grant` | Pool → allocation. `{from, to, from_pool?, to_pool?, amount, reason, max_dest_balance?}` → `{applied, status: in_transit, from_balance}` |
 | GET | `/v1/transfers/{idem_key}` | `grant` | `{status: in_transit\|settled, …}` |
-| GET | `/v1/balance` | `record` | `?scope_kind=&scope_id=` → `{pools: {general: …, promo: …}, total}` — the hot copy |
+| GET | `/v1/balance` | `record` | `?scope_kind=&scope_id=` (and `&scope_realm=` when the credential spans several) → `{pools: {general: …, promo: …}, total}` — the hot copy. A cold account is rebuilt from the books, as `Admit` does; an outage is an error, never a zero |
 | GET | `/v1/credits` | `record` | The whole **`CreditsSnapshot`** in one round trip ([credits-ui-ports.md](./credits-ui-ports.md)). `?days=` on the series, `?cursor=&limit=` on the ledger |
 | GET | `/v1/ledger` | `record` | Booked rows, cursor-paginated: `delta`, `pool`, `operation_type`, `idem_key`, `rate_card_version`, `seq`, `event_count` |
 
@@ -103,22 +103,38 @@ One shape everywhere:
 
 | HTTP | `code` | When |
 |---|---|---|
-| 400 | `invalid_request` | malformed body, missing `Idempotency-Key` or `occurred_at`, negative quantity |
+| 400 | `invalid_request` | malformed body, an unknown field, money that is not an integer, a missing `Idempotency-Key` or `occurred_at`, a realm the credential cannot resolve (it spans several and the scope names none), negative quantity |
 | 400 | `missing_subject` | a configured subject limit applies and the call does not carry that subject |
+| 400 | `uncountable_limit` | a window limit the caller supplied that no configured limit backs |
 | 400 | `invalid_signature` | webhook verification failed. **A security event**, never `2xx` |
-| 401 | `unauthenticated` | missing/invalid service credential |
+| 401 | `unauthenticated` | missing/invalid service credential (`WWW-Authenticate: Bearer`) |
 | 403 | `forbidden` | valid credential, wrong privilege — e.g. `record` calling `/v1/grant` |
 | 403 | `realm_mismatch` | the credential's realms do not include the scope's realm |
+| 403 | `cross_realm` | a transfer between two realms: a mint and a burn, never a transfer |
 | 403 | `account_blocked` | the scope is held by `block_and_flag` pending an operator |
-| 402 | `payment_required` | a `Balance` limit is exhausted. Carries an `upgrade_url` when a plan exists |
-| 409 | `limit_reached` | a windowed limit (daily/hourly/rolling/job) is exhausted — "wait", distinct from 402's "buy more". Carries `resets_at` |
+| 402 | `payment_required` | a `Balance` limit is exhausted. Carries `details.limit`, and `details.upgrade_url` when a plan exists |
+| 404 | `not_found` | no such route (with or without a credential: whether a route exists is not for strangers to probe) |
+| 405 | `method_not_allowed` | the path exists and does not answer this method (`Allow` says which) |
+| 409 | `limit_reached` | a windowed limit (daily/hourly/rolling/job) is exhausted — "wait", distinct from 402's "buy more". Carries `details.limit` and, for a daily or hourly limit, `details.resets_at` (the instant its counter starts over, in the limit's own zone); a rolling or job limit names `details.window` and `details.dur_seconds` instead |
 | 409 | `idempotency_conflict` | the `Idempotency-Key` was already used for a **different** request. Never silently a no-op |
 | 409 | `insufficient_balance` | a transfer would overdraw its source |
+| 413 | `invalid_request` | the body is over the cap (1 MiB) |
 | 422 | `unpriceable` | no rate for the `rate_key`/`unit`, or the card names an unregistered pricer. Fails closed |
 | 422 | `stale_event` | `occurred_at` is older than the dedup window (or too far in the future). Retrying will not help |
 | 422 | `amount_out_of_range` | a single operation above `MaxOperationAmount` |
-| 429 | `rate_limited` | transport-level throttling of the caller itself |
-| 503 | `hot_store_unavailable` | `Admit` under `fail_closed` with the shard unavailable (`Record` defers instead) |
+| 422 | `dest_balance_cap` | a transfer would leave its destination above `max_dest_balance` |
+| 429 | `rate_limited` | transport-level throttling of the caller itself *(not built)* |
+| 499 | `cancelled` | the caller went away; the engine saw it go |
+| 500 | `internal` | anything the table does not name. The message is fixed text; the error is in the operator's log |
+| 503 | `hot_store_unavailable` | `Admit` under `fail_closed` with the shard unavailable; any `Grant` or `Transfer` while the hot tier is (`Record` defers instead). A cold shard, a frozen shard, a full outbox and a cold account are all this to a REST caller |
+| 503 | `quota_unavailable` | a limit sized by an entitlement that could not be resolved. Never treated as "unlimited" |
+| 504 | `deadline_exceeded` | the caller's deadline passed |
+
+The status table is the one table both transports read ([`wire.Table`](../../../metering/adapters/driving/wire/conditions.go)): a gRPC `ErrorInfo.reason` and a REST `code` are columns of the same row, and a test enumerates the exported errors of `domain/errors.go` and fails on any without one. A 5xx message is fixed text — the error chain names the topology (a dial address, a DSN), and goes to the operator's log, whole.
+
+**A refused `Admit` is a decision, and over REST it is the status above with the error envelope *and* the Admission's own fields beside it** — `{ "error": {…}, "allowed": false, "exceeded": {…}, "headroom": 0, "blocked": false }` — so a client that reads `.error.code` and one that reads `.allowed` both find what they look for. An allowed `Admit` is `200` with `{allowed, warning?, headroom, blocked}`. A deferred `Record` is `202` with `deferred: true`: it succeeded, and has not been applied yet.
+
+**Requests are decoded strictly.** An unknown field is a typo that would silently not apply, and a ceiling that silently does not apply is the worst kind — so it is `400`, naming the field. Money is an integer: a fraction, an exponent, a string or a number past `int64` is not an amount. A limit supplied by the caller must name its `window`; a default would make an unfinished limit a balance. `occurred_at` and `expires_at` are RFC 3339 *with a zone*; one without is ambiguous, and an ambiguous `occurred_at` is a retry that cannot be told from a new event. A request's `Content-Type` is not consulted.
 
 > **`409 limit_reached` vs the original host's `429`.** `429` means "you are calling too fast" and invites a retry with backoff; a spent budget is not a rate problem. Back off on `429`, show the reset time on `409`, offer an upgrade on `402`. `PAYMENT_LEGACY_429_FOR_LIMITS=true` restores the old code for a host mid-migration.
 
