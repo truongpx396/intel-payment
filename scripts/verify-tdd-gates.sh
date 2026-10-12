@@ -232,6 +232,11 @@ expect "a measurement that says it is its own red passes" 0 "task pairing holds"
 branch pair-unarmed; perl -pi -e 's/^<!-- pairs:(start|end) -->\n//' "$tasks"; git commit -qam "the markers go"
 expect "a task list whose markers are gone is refused, not silently passed" 1 "not armed" "$pairs"
 
+# A new spec's list that has no markers and no R### tasks must not be skipped quietly: that is a list that
+# never adopted the rule, and "skipped" is how an unarmed guard looks from the outside.
+branch pair-never-adopted; mkdir -p specs/999-new; printf '# Tasks\n\n- [ ] **T001** Build it.\n' >specs/999-new/tasks.md; git add specs/999-new; git commit -qm "a spec with a plain task list"
+expect "a task list that never adopted the rule is refused, not skipped" 1 "specs/999-new/tasks.md.*not armed" "$pairs"
+
 branch pair-drift; plant '- [ ] **T999** A behaviour nobody wrote a test for.'
 expect "the drift check runs the pairing check" 1 "T999.*has no red" "$drift"
 

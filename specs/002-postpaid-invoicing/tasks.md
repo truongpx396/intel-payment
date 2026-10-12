@@ -6,6 +6,7 @@
 
 > **Gate**: do not start this until [001](../001-metering-billing-core/tasks.md) Phases 0–3 are implemented and passing. Post-paid rates the ledger 001 produces; building it first means rating a schema that does not exist yet.
 
+<!-- pairs:start -->
 ## Phase A — Schema & settlement model
 - [ ] **T201** Move [`draft-migrations/0101_postpaid_invoicing.sql`](./draft-migrations/0101_postpaid_invoicing.sql) into `migrations/` as the next number **in the same change as the Phase 2 code** — never before (D38). Forward-only: there is no down migration.
 - [x] **T202** The finalize-immutability triggers on `invoices`/`invoice_lines` and on credit notes. Enforced in the database, not the application. *In the draft; verified by `scripts/schema-assertions-002.sql` in CI.*
@@ -44,6 +45,7 @@
 - [ ] **T243** Attempt to mutate a finalized invoice through every path; all must fail (**SC-104**).
 - [ ] **T244** **Hand-check a real period against a spreadsheet** with someone who would notice being overcharged. Not a unit test — the thing unit tests cannot do.
 - [ ] **T245** Gapless-number audit across a simulated year including rollbacks and voids.
+<!-- pairs:end -->
 
 ## Definition of done
 Same as [001](../001-metering-billing-core/tasks.md) — including red before green, properties for arithmetic, and mutation of the lines touched — plus: no invoice in any test corpus presents arithmetic that does not close, and no rating result differs between two runs.
