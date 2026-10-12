@@ -23,7 +23,8 @@ section with one line, which CI reads: `TDD-Exempt: <reason>`.
 
 - [ ] An invariant over arithmetic, an encoding or time has a **property / fuzz target** (seeds include the boundary cases)
 - [ ] Failure paths are tested, not just the happy one: replay, concurrency, outage, tampering, refund past spend
-- [ ] `scripts/mutation.sh --diff origin/main` output pasted; each survivor is fixed with a test, or is an **equivalent mutant** listed with a reason in `.mutation-equivalents`
+- [ ] The branch changes production Go in `metering/domain`, `metering/app` or the table pricer: `scripts/mutation.sh --diff origin/main` output pasted; each survivor is fixed with a test, or is an **equivalent mutant** listed with a reason in `.mutation-equivalents`
+- [ ] Otherwise: `N/A: <what this changes>` — and the check that proves it instead (`check-spec-drift.sh`, `make verify-tdd-gates`, `make verify-schema`, …). Do not paste a "no changed lines" pass; it measured nothing ([docs/testing.md](../docs/testing.md#when-mutation-testing-applies))
 
 ```text
 <paste>

@@ -86,7 +86,9 @@ e2e: ## Run the e2e suite against E2E_BASE_URL (default: the local `make up` sta
 	cd e2e && E2E_BASE_URL=$${E2E_BASE_URL:-http://localhost:8080} npx playwright test
 
 # verify-red-green and mutation-diff read the branch's history, so they run on a branch, not here: run
-# `make verify-red-green mutation-diff` before opening a pull request. verify-schema needs an empty DB.
+# `make verify-red-green mutation-diff` before opening a pull request — mutation-diff only when the branch
+# changes production Go in a mutation target (docs/testing.md, "When mutation testing applies").
+# verify-schema needs an empty DB.
 ci: build test fuzz test-integration lint verify-portability verify-boundary verify-tdd-gates vuln verify-hot-path verify-deploy ## Everything CI runs on every change
 
 ## ---- run ------------------------------------------------------------------

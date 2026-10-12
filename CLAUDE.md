@@ -31,7 +31,7 @@ code, docs or comments that imply otherwise.
 | `make test-integration` | Anything touching an adapter, the writer, recovery, migrations (Docker) |
 | `make lint` | `golangci-lint` (depguard boundary rules) + `go-arch-lint` |
 | `make fuzz` `FUZZTIME=20s` | After touching arithmetic, an encoding, or time logic |
-| `make mutation-diff` `REF=origin/main` | Before a PR: do the tests fail when the lines you changed are wrong? |
+| `make mutation-diff` `REF=origin/main` | Before a PR that changes production Go in `metering/domain`, `metering/app` or the table pricer: do the tests fail when the lines you changed are wrong? For docs, specs, scripts, config, SQL, Lua or other Go it mutates nothing — skip it and say `N/A` ([when it applies](docs/testing.md#when-mutation-testing-applies)) |
 | `make verify-red-green` | Before a PR: a failing tests-only commit precedes the change (run on a branch) |
 | `make ci` | Before a PR: build, tests, fuzz, integration, lint, portability, boundary, vuln, hot path, deploy. Not `verify-schema`, e2e, or the two branch-history gates above |
 | `make verify-schema` / `verify-hot-path` / `verify-deploy` | Changed a migration / the Redis Lua / the image or ACL |
@@ -63,7 +63,8 @@ code, docs or comments that imply otherwise.
   History is PR merges, and the red-green gate can only judge a branch.
 - Commit subjects: `test(red): …`, `fix(green): …`, `feat(green): …`, `refactor: …`, `test(mutation): …`,
   `docs: …`, `chore: …`. Open PRs from `.github/pull_request_template.md`: red/green evidence plus the
-  pasted output of `make ci` and `make mutation-diff`.
+  pasted output of `make ci` and, when the branch changes Go in a mutation target, `make mutation-diff`
+  (otherwise `N/A: <what it changes>` and the check that proves it — never a vacuous "no changed lines" pass).
 - **Ask first** before opening, merging or closing a PR, or force-pushing anything — settings prompt for
   these. For a stack of PRs, merge **bottom-up** (lowest into `main`, retarget the next) or squash;
   merging the top one first turns every PR page into the compounded diff.

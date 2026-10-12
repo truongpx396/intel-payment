@@ -111,6 +111,39 @@ make mutation-diff     # only the lines changed since REF (committed or not) —
 make mutation          # every target, against its thresholds — nightly, and before a release
 ```
 
+### When mutation testing applies
+
+gremlins mutates **Go**, and `scripts/mutation.sh` knows three packages: `metering/domain`,
+`metering/adapters/driven/pricing/table` and `metering/app`. `make mutation-diff` judges the lines a
+branch changed **in those packages** and nowhere else. For any other change it mutates nothing: it prints
+`no changed lines since <ref>` for each target and exits 0 in about a second. That pass measured
+nothing, so it is not evidence — do not run it for such a change, do not paste it into a pull request,
+and do not describe it as "passed". Say `N/A` and name the check that does prove the change:
+
+| The branch changes | Mutation | What proves it instead |
+|---|---|---|
+| docs, specs, `ROADMAP.md`, task lists, `.specify/` | no | `scripts/check-spec-drift.sh` (retired terms, status counts, task pairing) and the CI `docs` link check |
+| a gate or helper script (`scripts/*.sh`), the `Makefile`, the CI workflow | no | `make verify-tdd-gates` — each gate shown to refuse what it should, by planting the defect |
+| `CLAUDE.md`, `.claude/`, other configuration | no | review, and `check-spec-drift.sh` for dangling links |
+| a migration | no | `make verify-schema` |
+| the Redis Lua | no | `make verify-hot-path` |
+| the `Dockerfile`, compose file or Redis ACL | no | `make verify-deploy` |
+| lint or architecture rules | no | `make verify-boundary` |
+| Go **outside** the three targets (adapters, `billing/`, …) | it would report "no changed lines" — not evidence | the unit and conformance suites and `make test-integration`; mutating those tiers is task T135 |
+| production Go **inside** the three targets | **yes, always** — no tolerance on the lines changed | `make mutation-diff` |
+
+To decide, ask the diff, not your sense of the change:
+
+```sh
+git diff --name-only origin/main...HEAD -- metering/domain metering/app metering/adapters/driven/pricing/table | grep -v '_test.go$'
+```
+
+No output means the branch touches no production line a mutant could sit on. The exemption is by what the
+branch changes, never by effort: one changed line in a target package puts the whole branch under the
+rule. `make verify-red-green` has the same shape — on a branch with no production Go, SQL or Lua it
+answers `nothing to drive`, which is its result, not a skipped check. The constitution's "the lines the
+change touched surviving mutation" is unchanged; a change that touches no such line has none to survive.
+
 Reading a survivor:
 
 - **Equivalent mutant** — `a > b` → `a >= b` where `a == b` cannot change the result. No test can
