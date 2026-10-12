@@ -96,21 +96,47 @@ func runService(ctx context.Context, s settings, log *slog.Logger) error {
 		} else {
 			err = svc.http.Serve(httpLn)
 		}
-		errc <- fmt.Errorf("http: %w", err)
+		if !errors.Is(err, http.ErrServerClosed) {
+			errc <- fmt.Errorf("http: %w", err)
+		}
 	}()
-	go func() { errc <- fmt.Errorf("grpc: %w", svc.grpc.Serve(grpcLn)) }()
+	go func() {
+		if err := svc.grpc.Serve(grpcLn); err != nil {
+			errc <- fmt.Errorf("grpc: %w", err)
+		}
+	}()
 
 	select {
 	case <-ctx.Done():
-		log.Info("stopping")
-		_ = svc.http.Close()
-		svc.grpc.Stop()
-		return nil
+		log.Info("stopping", "timeout", s.ShutdownTimeout.String())
+		return svc.drain(s.ShutdownTimeout)
 	case err := <-errc:
 		_ = svc.http.Close()
 		svc.grpc.Stop()
 		return err
 	}
+}
+
+// drain stops the service the way a deploy needs: both listeners stop taking new calls at once, then the calls
+// already taken are answered — a Record in flight settles, or the engine journals it, and is never dropped. A
+// stop that waited for ever would hold a deploy hostage, so past timeout it cuts what is left and says so; the
+// caller of a cut call got an error and retries with the same Idempotency-Key, which is booked once.
+func (s *service) drain(timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	done := make(chan struct{}, 2)
+	go func() { _ = s.http.Shutdown(ctx); done <- struct{}{} }()
+	go func() { s.grpc.GracefulStop(); done <- struct{}{} }()
+	for range 2 {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			_ = s.http.Close()
+			s.grpc.Stop()
+			return fmt.Errorf("calls were still in flight after %v and were cut: raise PAYMENT_SHUTDOWN_TIMEOUT if deploys outlast it", timeout)
+		}
+	}
+	return nil
 }
 
 // wire connects the stores, checks what must be true before money is served, and builds both transports.

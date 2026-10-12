@@ -35,6 +35,7 @@ type settings struct {
 	TLSClientCAFile    string
 	Legacy429          bool
 	LogLevel           slog.Level
+	ShutdownTimeout    time.Duration // how long a stop waits for the calls in flight
 }
 
 const (
@@ -121,6 +122,11 @@ func parseSettings(getenv func(string) string) (settings, error) {
 
 	s.HTTPAddr, s.GRPCAddr = r.strOr("PAYMENT_HTTP_ADDR", ":8080"), r.strOr("PAYMENT_GRPC_ADDR", ":9090")
 	r.boolean("PAYMENT_LEGACY_429_FOR_LIMITS", &s.Legacy429)
+	s.ShutdownTimeout = 30 * time.Second
+	r.duration("PAYMENT_SHUTDOWN_TIMEOUT", &s.ShutdownTimeout)
+	if s.ShutdownTimeout == 0 {
+		r.fail("PAYMENT_SHUTDOWN_TIMEOUT", "must be positive: a stop that waits for nothing drops the calls in flight")
+	}
 	if v := r.str("PAYMENT_LOG_LEVEL"); v != "" {
 		if err := s.LogLevel.UnmarshalText([]byte(v)); err != nil {
 			r.fail("PAYMENT_LOG_LEVEL", fmt.Sprintf("must be debug, info, warn or error, got %q", v))

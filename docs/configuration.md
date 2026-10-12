@@ -138,6 +138,7 @@ or move money.
 | `PAYMENT_TLS_CERT_FILE` / `PAYMENT_TLS_KEY_FILE` | — | PEM files. With both, REST and gRPC serve TLS; one without the other stops the service at start-up. Required by `mtls` |
 | `PAYMENT_TLS_CLIENT_CA_FILE` | — | `mtls` only: the private CA a caller's certificate must chain to. A certificate is requested of every caller and verified when offered, so a probe with none can still reach `/healthz` and `/readyz`; `/v1/*` then refuses the call as `401` |
 | `PAYMENT_LEGACY_429_FOR_LIMITS` | `false` | Restores `429` instead of `409` for spent windows, for a host mid-migration |
+| `PAYMENT_SHUTDOWN_TIMEOUT` | `30s` | How long a stop waits for the calls in flight. On `SIGTERM` both listeners stop taking new calls at once, then what was taken is answered (a `Record` settles or is journalled); past this bound the rest is cut, the exit code is 1, and the log says calls were in flight — their callers retry with the same `Idempotency-Key`, which is booked once. Must be positive. Set it above the longest deploy-time call (`PAYMENT_RECORD_TIMEOUT` is the usual bound) and below the orchestrator's kill grace period |
 | `PAYMENT_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error`. Logs are JSON on stderr; `listening` reports the address each transport bound |
 
 An address is `host:port`, or `unix:/path` for a unix socket. `paymentd` reads all of this at start, checks the
