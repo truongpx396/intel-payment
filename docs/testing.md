@@ -14,13 +14,16 @@ loop with evidence at each step, and machinery that makes the evidence checkable
    if they must, the step was a behaviour change and goes back to red.
 
 A failing test is red **for the right reason** when an *assertion* fails and its message names the
-invariant. A compile error is a weaker red: add the smallest stub (`return 0`, `panic("unimplemented")`)
-so the test runs and fails on what it claims. `scripts/verify-red-green.sh` accepts a build failure but
-says so.
+invariant. A compile error is a weaker red, and `scripts/verify-red-green.sh` accepts it but says so —
+a red commit touches tests only, so a stub of a *new production symbol* cannot ride in it. Where the
+seam is a port, give the test a double of its own so it fails on what it claims: a conformance suite run
+against a test-owned stub that answers `ErrNotImplemented` (R060's unbuilt transport, a stub rater that
+rates everything at zero). Where the symbol itself is the new API, the build failure is the red; say so
+in the commit message.
 
 ## Commit shape
 
-One branch, three kinds of commit, in this order:
+A branch carries one or more cycles, each three kinds of commit in this order:
 
 | Commit | Touches | The suite |
 |---|---|---|
@@ -33,6 +36,14 @@ a branch that changes production code there must be a tests-only commit **before
 production change, the tests it adds must **fail** when that commit is checked out, and the branch
 tip must pass them. A test written after the code cannot satisfy this — at the commit where it
 appears the code is already right, the test passes, and the script says so.
+
+**Every cycle is held to this, not only the first** — the constitution asks for a failing test-only
+commit "ahead of every production change". After the first production change, a test-only commit counts
+as a red only if its subject says `test(red):` (a `test(mutation):` commit is test-after and is never
+mistaken for one); each later production change needs a red of its own since the previous production
+change, each such red is checked out and must fail, and the tip must pass them all. A `refactor:` commit
+needs none — and does not buy the next change one. A branch can therefore carry a stack of task pairs
+(R### → T###, R### → T###); an unredded second change is refused with the commit named.
 
 **Production code** is Go that ships, `migrations/*.sql` and `*.lua`. **Test code** is `_test.go`,
 `testdata/`, `e2e/`, the conformance suites under `contracts/`, and the fixture packages
@@ -141,7 +152,8 @@ with no reason — and accepts an exact one.
 |---|---|---|
 | build, vet, tests (`-race -shuffle`), every conformance suite | `go` | every change |
 | integration (real Redis, Postgres) | `go` | every change |
-| a failing test-only commit precedes the change | `red-green` | pull requests |
+| a failing test-only commit precedes every production change | `red-green` | pull requests |
+| the task lists are test-first: every green has a red above it, every red a green | `drift` | every change |
 | properties hold on the seed corpus and a short search | `fuzz` | every change |
 | the tests fail when the lines this PR changed are wrong | `mutation` | pull requests |
 | deep fuzz (10 min/target); mutation over whole targets | `fuzz`, `mutation` | nightly |
