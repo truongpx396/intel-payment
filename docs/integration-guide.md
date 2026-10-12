@@ -170,6 +170,27 @@ retries of one logical operation and the key distinct between operations. A requ
 fresh UUID per attempt turns every retry into a new charge, and `time.Now()` at retry time turns a
 late retry into a `stale_event` refusal. Retry within `PAYMENT_USAGE_IDEM_WINDOW` (72 h by default).
 
+### Promotions, expiring credits and refunds
+
+**A promo is a grant into a pool.** Grant into a `promo` pool whose priority is below `general`'s, so it is
+spent first. Key the grant `promo:<campaign>:<scope>`: the durable guard is unique per realm, so a code
+redeemed twice — or by two requests at once — mints once, and the second is a replay that changes nothing.
+Two things stay yours: validating the code (does it exist, is it open, is this customer eligible) and any
+**campaign-wide** cap. The engine counts balances, not redemptions, so "the first 1,000 redemptions" is a
+counter in your own store, taken before you call `Grant`.
+
+**Credits that expire.** With `PAYMENT_CREDIT_EXPIRY=lots_fefo`, pass `ExpiresAt` on the grant. Each grant is
+a lot, and the lot that lapses soonest is spent first — so a monthly allotment is used before a top-up that
+never lapses, whichever was granted first.
+
+**A refund names its payment.** Put the `IdemKey` of the grant that payment made in `SourceKey` on the
+negative grant: the books empty that payment's lot first, so what the customer keeps has the expiry it was
+bought with. Before choosing how much to claw back, ask `LotReader.LotsOf(scope, pool, key)`: `Remaining` is
+what is still there and `Expired` is what the customer has already lost to expiry — do not claw that back
+a second time. The amount is yours to choose; a refund past what was spent falls to
+`NegativeBalancePolicy`. The payment processor (`billing/`, not built yet) is specified to do all of this
+([payment-provider-ports.md](../specs/001-metering-billing-core/contracts/payment-provider-ports.md), invariant 20).
+
 ---
 
 ## 6. Wire the surfaces
@@ -200,6 +221,7 @@ Run all of these in a provider sandbox before a real card touches it:
 - [ ] A purchase — credits appear only after the webhook; a **replayed** webhook changes nothing.
 - [ ] **Kill `payment-worker` right after a webhook is acknowledged** — the grant still lands, once.
 - [ ] Partial refunds — the credits revoked are exact; a dispute won gives them back.
+- [ ] With credit expiry on, a refund of **one of two** payments — that payment's lot empties and the other keeps its expiry.
 - [ ] A **tampered** webhook — `400`, counted as a security event.
 - [ ] A failed renewal — grace holds access, then suspends.
 - [ ] **Kill Redis mid-traffic** — your fail policy holds, usage is deferred not lost, and shards rebuild from the books.

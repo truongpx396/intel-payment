@@ -51,7 +51,7 @@ func TestTheExpirerReportsThroughTheMetricsItWasGiven(t *testing.T) {
 	rec := &metricRecorder{}
 	scope := domain.Scope{Realm: "t1", Kind: "workspace", ID: "w1"}
 	lots := []ports.Lot{{ID: "lot-1", Scope: scope, Pool: domain.GeneralPool, Remaining: 40}}
-	cfg := metering.Config{BalanceRedisURL: "redis://x", LedgerDSN: "postgres://x", CreditExpiry: metering.ExpiryLotsFIFO}
+	cfg := metering.Config{BalanceRedisURL: "redis://x", LedgerDSN: "postgres://x", CreditExpiry: metering.ExpiryLotsFEFO}
 	bal := &coldOnce{}
 	e, err := NewExpirer(cfg, Deps{Balance: bal, Books: dueBooks{lots: lots}, Clock: fixedClock(time.Unix(1_700_000_000, 0)), Metrics: rec})
 	if err != nil {
@@ -73,7 +73,7 @@ func TestAnExpiryRemovesTheLotsRemainderCappedAndKeyedOnTheLot(t *testing.T) {
 	t.Parallel()
 	scope := domain.Scope{Realm: "t1", Kind: "workspace", ID: "w1"}
 	lots := []ports.Lot{{ID: "lot-1", Scope: scope, Pool: "promo", Remaining: 40}}
-	cfg := metering.Config{BalanceRedisURL: "redis://x", LedgerDSN: "postgres://x", CreditExpiry: metering.ExpiryLotsFIFO}
+	cfg := metering.Config{BalanceRedisURL: "redis://x", LedgerDSN: "postgres://x", CreditExpiry: metering.ExpiryLotsFEFO}
 	bal := &coldOnce{}
 	e, err := NewExpirer(cfg, Deps{Balance: bal, Books: dueBooks{lots: lots}, Clock: fixedClock(time.Unix(1_700_000_000, 0))})
 	if err != nil {

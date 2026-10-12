@@ -84,6 +84,34 @@ func FuzzChargeFingerprintSeparatesFields(f *testing.F) {
 	})
 }
 
+// A clawback's reason and the grant it names are two fields: the same strings split differently across
+// them must never encode alike, or a refund key reused against another payment would replay silently.
+// The encoding is also held to an independent reference — built by hand from the documented form — so
+// the property cannot be satisfied by an encoding that is merely injective but not the established one.
+func FuzzGrantFingerprintSeparatesReasonAndSource(f *testing.F) {
+	f.Add("ab", "c", "a", "bc")
+	f.Add("refund", "", "", "refund")
+	f.Add("r", "3:src", "r", "") // a source that looks like the field tag
+	f.Add("r", "", "r", "")      // no source: the encoding every existing grant has
+	f.Add("x", "y", "x", "y")
+	f.Fuzz(func(t *testing.T, reason1, source1, reason2, source2 string) {
+		org := domain.Scope{Realm: "t1", Kind: "org", ID: "o1"}
+		a := domain.Grant{Scope: org, Amount: -40, Reason: reason1, SourceKey: source1}
+		b := domain.Grant{Scope: org, Amount: -40, Reason: reason2, SourceKey: source2}
+		same := reason1 == reason2 && source1 == source2
+		if (a.Fingerprint() == b.Fingerprint()) != same {
+			t.Fatalf("(%q,%q) vs (%q,%q): same=%v but fingerprints say %v", reason1, source1, reason2, source2, same, a.Fingerprint() == b.Fingerprint())
+		}
+		canonical := "5:grant" + "9:t1/org:o1" + "7:general" + "3:-40" + lp(reason1) + "0:"
+		if source1 != "" {
+			canonical += "3:src" + lp(source1)
+		}
+		if got, want := a.Fingerprint(), sha(canonical); got != want {
+			t.Fatalf("(%q,%q): the canonical form changed:\n got %s\nwant %s", reason1, source1, got, want)
+		}
+	})
+}
+
 // A retry that lists the same quantities in another order is the same request. That includes an
 // event that names one unit twice: the pricer sums them, so their order carries no meaning either.
 func FuzzChargeFingerprintIgnoresQuantityOrder(f *testing.F) {

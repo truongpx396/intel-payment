@@ -124,7 +124,7 @@ Postgres rows behind an admin API, so launching a price, a ceiling, a pool or a 
 | `LedgerGranularity` | `event` · `rollup` | `event` | One ledger row per event, or per batch with per-event detail archived — the path past one Postgres's write budget |
 | `AdmitFailPolicy` | `fail_closed` · `fail_open` | `fail_closed` | Hot store down: refuse, or serve and meter on recovery |
 | `NegativeBalancePolicy` | `allow_debt` · `clamp_to_zero` · `block_and_flag` | `clamp_to_zero` | What a refund past consumed credits does |
-| `CreditExpiry` | `off` · `lots_fifo` | `off` | Whether grants expire |
+| `CreditExpiry` | `off` · `lots_fefo` | `off` | Whether grants expire; the lot that lapses soonest is spent first |
 | `PlanChangePolicy` | `at_period_end` · `immediate_prorate` · `immediate_no_prorate` | `at_period_end` | Mid-period upgrades |
 | `TaxStrategy` | `provider_managed` · `external_hook` · `none` | `provider_managed` | **Who** computes tax |
 | Dunning | grace days, suspend-after | `7` / `14` | How long a failed payment keeps access |

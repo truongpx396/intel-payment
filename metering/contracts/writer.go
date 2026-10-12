@@ -2,6 +2,7 @@ package contracts
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -16,7 +17,7 @@ import (
 type WriterOptions struct {
 	LedgerOptions
 	Rollup      bool           // LedgerGranularity=rollup (needs an archive)
-	Lots        bool           // CreditExpiry=lots_fifo
+	Lots        bool           // CreditExpiry=lots_fefo
 	Tolerance   domain.Credits // ReconcileTolerance
 	MaxAttempts int            // deliveries before an intent is parked; 0 = the default
 	// Dedicated asks for a hot tier no other test shares. A behaviour that bumps a shard's
@@ -57,6 +58,9 @@ type WriterHarness struct {
 
 	// The books.
 	Watermark func(t *testing.T, s domain.Scope) ports.Watermark
+	Lots      func(t *testing.T, s domain.Scope) []ports.Lot // the scope's credit lots, oldest grant first
+	// LotsOf is the books' read side (ports.LotReader): where one grant's credits stand.
+	LotsOf    func(t *testing.T, s domain.Scope, pool domain.Pool, sourceKey string) []ports.Lot
 	Suspense  func(t *testing.T, s domain.Scope) []ports.Suspense
 	Rows      func(t *testing.T, s domain.Scope) []ports.LedgerRow
 	ShardGen  func(t *testing.T, s domain.Scope) int64
@@ -748,6 +752,210 @@ func LedgerWriterContract(t *testing.T, newHarness func(t *testing.T, o WriterOp
 		}
 		if n := h.Expire(t); n != 0 {
 			t.Fatalf("an expired lot is not expired again: %d", n)
+		}
+	})
+
+	// lotLeft is what the books say one grant's lot still holds.
+	lotLeft := func(t *testing.T, h WriterHarness, s domain.Scope, sourceKey string) domain.Credits {
+		t.Helper()
+		for _, l := range h.Lots(t, s) {
+			if l.SourceKey == sourceKey {
+				return l.Remaining
+			}
+		}
+		t.Fatalf("no lot was opened for grant %q: %+v", sourceKey, h.Lots(t, s))
+		return 0
+	}
+
+	sub("lots: credits that expire are spent before credits that never do, whatever the grant order", func(t *testing.T) {
+		h, s := newHarness(t, WriterOptions{Lots: true}), ws()
+		h.need(t, "Expire", h.Expire != nil)
+		h.need(t, "Lots", h.Lots != nil)
+		soon := h.Clock.Now().Add(time.Hour)
+		grant(t, h, s, "", 5000, "topup") // granted FIRST, never expires
+		_, err := h.Ledger.Grant(ctx, domain.Grant{Scope: s, Amount: 1000, IdemKey: "monthly", Reason: "subscription_grant", ExpiresAt: &soon})
+		mustNoErr(t, err)
+		debit(t, h, charge(s, 300, "spend"))
+		h.Drain(t)
+
+		if got := lotLeft(t, h, s, "monthly"); got != 700 {
+			t.Fatalf("the spend is drawn from the allotment that will lapse, not the top-up that will not: monthly lot holds %d, want 700", got)
+		}
+		if got := lotLeft(t, h, s, "topup"); got != 5000 {
+			t.Fatalf("the top-up is untouched while an expiring lot can pay: %d", got)
+		}
+
+		// The consequence the customer sees: only what was genuinely unspent lapses.
+		h.Clock.Advance(2 * time.Hour)
+		if n := h.Expire(t); n != 1 {
+			t.Fatalf("expired %d lots", n)
+		}
+		h.Drain(t)
+		if !h.HasRow(t, s, "expiry", -700) {
+			t.Fatalf("the allotment lapses at its unspent 700, not at 1000: %+v", h.Rows(t, s))
+		}
+		if got := hot(t, h, s); got != 5000 {
+			t.Fatalf("the customer keeps the whole top-up: hot %d, want 5000", got)
+		}
+	})
+
+	// ------------------------------------------------------- clawback and lots --
+
+	// A refund names the grant it reverses (Grant.SourceKey). Credits are fungible in the balance, but
+	// not in the lots: which lot a clawback empties decides what the customer is left holding and when
+	// it lapses.
+	sub("lots: a refund takes the credits of the payment it refunds, and the rest lapse on their own schedule", func(t *testing.T) {
+		h, s := newHarness(t, WriterOptions{Lots: true}), ws()
+		h.need(t, "Expire", h.Expire != nil)
+		h.need(t, "Lots", h.Lots != nil)
+		soon := h.Clock.Now().Add(time.Hour)
+		// pay-1 expires, so by expiry order alone the refund would empty IT, and the customer would keep
+		// the 1000 credits that the refunded payment bought.
+		_, err := h.Ledger.Grant(ctx, domain.Grant{Scope: s, Amount: 1000, IdemKey: "pay-1", Reason: "purchase", ExpiresAt: &soon})
+		mustNoErr(t, err)
+		grant(t, h, s, "", 1000, "pay-2")
+		refund := domain.Grant{Scope: s, Amount: -1000, IdemKey: "refund:pay-2", Reason: "refund", SourceKey: "pay-2"}
+		rc, err := h.Ledger.Grant(ctx, refund)
+		mustNoErr(t, err)
+		if !rc.Applied {
+			t.Fatalf("the refund was not applied: %+v", rc)
+		}
+		h.Drain(t)
+
+		if got := lotLeft(t, h, s, "pay-2"); got != 0 {
+			t.Fatalf("the refunded payment's lot is emptied: %d left", got)
+		}
+		if got := lotLeft(t, h, s, "pay-1"); got != 1000 {
+			t.Fatalf("an unrelated payment's lot is untouched by the refund: %d left, want 1000", got)
+		}
+		carried := false
+		for _, in := range h.Intents(t, s) {
+			carried = carried || (in.IdemKey == refund.IdemKey && in.Payload.SourceKey == "pay-2")
+		}
+		if !carried {
+			t.Fatalf("the intent must carry the grant it reverses, or the writer cannot find the lot: %+v", h.Intents(t, s))
+		}
+
+		// What the customer kept still lapses on schedule: the refund did not move its expiry.
+		h.Clock.Advance(2 * time.Hour)
+		if n := h.Expire(t); n != 1 {
+			t.Fatalf("expired %d lots", n)
+		}
+		h.Drain(t)
+		if !h.HasRow(t, s, "expiry", -1000) || hot(t, h, s) != 0 || h.Booked(t, s, domain.GeneralPool) != 0 {
+			t.Fatalf("pay-1 lapsed whole and the books agree with the hot tier: hot %d booked %d", hot(t, h, s), h.Booked(t, s, domain.GeneralPool))
+		}
+	})
+
+	sub("lots: a refund larger than its payment's lot takes the shortfall from the others, soonest-expiring first", func(t *testing.T) {
+		h, s := newHarness(t, WriterOptions{Lots: true}), ws()
+		h.need(t, "Lots", h.Lots != nil)
+		in1h, in2h := h.Clock.Now().Add(time.Hour), h.Clock.Now().Add(2*time.Hour)
+		for _, g := range []domain.Grant{
+			{Scope: s, Amount: 1000, IdemKey: "a", Reason: "purchase", ExpiresAt: &in1h},
+			{Scope: s, Amount: 1000, IdemKey: "b", Reason: "purchase", ExpiresAt: &in2h},
+			{Scope: s, Amount: 1000, IdemKey: "pay", Reason: "purchase"},
+		} {
+			_, err := h.Ledger.Grant(ctx, g)
+			mustNoErr(t, err)
+		}
+		_, err := h.Ledger.Grant(ctx, domain.Grant{Scope: s, Amount: -1500, IdemKey: "refund:pay", Reason: "refund", SourceKey: "pay"})
+		mustNoErr(t, err)
+		h.Drain(t)
+		if lotLeft(t, h, s, "pay") != 0 || lotLeft(t, h, s, "a") != 500 || lotLeft(t, h, s, "b") != 1000 {
+			t.Fatalf("pay emptied, then the soonest-expiring lot: pay %d a %d b %d", lotLeft(t, h, s, "pay"), lotLeft(t, h, s, "a"), lotLeft(t, h, s, "b"))
+		}
+		agree(t, h, s)
+	})
+
+	sub("lots: a refund delivered twice, and at once, empties its lot once", func(t *testing.T) {
+		h, s := newHarness(t, WriterOptions{Lots: true}), ws()
+		h.need(t, "Lots", h.Lots != nil)
+		grant(t, h, s, "", 1000, "pay-1")
+		grant(t, h, s, "", 1000, "pay-2")
+		refund := domain.Grant{Scope: s, Amount: -400, IdemKey: "refund:pay-2", Reason: "refund", SourceKey: "pay-2"}
+		var applied atomic.Int64
+		var wg sync.WaitGroup
+		for i := 0; i < 6; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				rc, err := h.Ledger.Grant(ctx, refund)
+				if err != nil {
+					t.Errorf("a redelivered refund is a replay, not an error: %v", err)
+					return
+				}
+				if rc.Applied {
+					applied.Add(1)
+				}
+			}()
+		}
+		wg.Wait()
+		if applied.Load() != 1 {
+			t.Fatalf("the refund applied %d times, want exactly once", applied.Load())
+		}
+		h.Drain(t)
+		if lotLeft(t, h, s, "pay-2") != 600 || lotLeft(t, h, s, "pay-1") != 1000 {
+			t.Fatalf("one refund of 400 leaves pay-2 at 600: pay-2 %d pay-1 %d", lotLeft(t, h, s, "pay-2"), lotLeft(t, h, s, "pay-1"))
+		}
+		agree(t, h, s)
+	})
+
+	sub("a refund key reused for a different source grant is a conflict, never a silent replay", func(t *testing.T) {
+		h, s := newHarness(t, WriterOptions{}), ws()
+		grant(t, h, s, "", 1000, "pay-1")
+		grant(t, h, s, "", 1000, "pay-2")
+		_, err := h.Ledger.Grant(ctx, domain.Grant{Scope: s, Amount: -100, IdemKey: "refund-1", Reason: "refund", SourceKey: "pay-1"})
+		mustNoErr(t, err)
+		_, err = h.Ledger.Grant(ctx, domain.Grant{Scope: s, Amount: -100, IdemKey: "refund-1", Reason: "refund", SourceKey: "pay-2"})
+		if !errors.Is(err, domain.ErrIdemConflict) {
+			t.Fatalf("the same key aimed at another payment is a different request: want ErrIdemConflict, got %v", err)
+		}
+	})
+
+	sub("naming the source of a refund costs nothing when credits do not expire", func(t *testing.T) {
+		h, s := newHarness(t, WriterOptions{}), ws() // CreditExpiry=off: there are no lots to draw from
+		grant(t, h, s, "", 1000, "pay-1")
+		_, err := h.Ledger.Grant(ctx, domain.Grant{Scope: s, Amount: -400, IdemKey: "refund:pay-1", Reason: "refund", SourceKey: "pay-1"})
+		mustNoErr(t, err)
+		h.Drain(t)
+		if !h.HasRow(t, s, "refund", -400) || h.Booked(t, s, domain.GeneralPool) != 600 || hot(t, h, s) != 600 {
+			t.Fatalf("a refund books exactly as before: hot %d booked %d", hot(t, h, s), h.Booked(t, s, domain.GeneralPool))
+		}
+	})
+
+	sub("lots: the books say where a payment's credits stand, before they lapse and after", func(t *testing.T) {
+		h, s := newHarness(t, WriterOptions{Lots: true}), ws()
+		h.need(t, "Expire", h.Expire != nil)
+		h.need(t, "LotsOf", h.LotsOf != nil)
+		soon := h.Clock.Now().Add(time.Hour)
+		_, err := h.Ledger.Grant(ctx, domain.Grant{Scope: s, Amount: 1000, IdemKey: "pay-1", Reason: "purchase", ExpiresAt: &soon})
+		mustNoErr(t, err)
+		debit(t, h, charge(s, 300, "spend"))
+		h.Drain(t)
+		one := func(t *testing.T) ports.Lot {
+			t.Helper()
+			ls := h.LotsOf(t, s, domain.GeneralPool, "pay-1")
+			if len(ls) != 1 {
+				t.Fatalf("one grant opens one lot: %+v", ls)
+			}
+			return ls[0]
+		}
+		if l := one(t); l.Granted != 1000 || l.Remaining != 700 || l.Expired != 0 || l.ExpiredAt != nil {
+			t.Fatalf("1000 granted, 300 spent: %+v", l)
+		}
+
+		h.Clock.Advance(2 * time.Hour)
+		if n := h.Expire(t); n != 1 {
+			t.Fatalf("expired %d lots", n)
+		}
+		h.Drain(t)
+		l := one(t)
+		if l.Remaining != 0 || l.Expired != 700 || l.ExpiredAt == nil {
+			t.Fatalf("the 700 that lapsed are recorded as lapsed, not as spent: %+v", l)
+		}
+		if got := l.Granted - l.Remaining - l.Expired; got != 300 {
+			t.Fatalf("what neither remains nor lapsed was consumed: %d, want 300", got)
 		}
 	})
 

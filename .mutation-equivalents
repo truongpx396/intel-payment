@@ -27,6 +27,13 @@ line = 'if g.ExpiresAt != nil && g.Amount < 0 {'
 why = "a zero amount was already refused by the check above, so < and <= agree here"
 
 [[equivalent]]
+file = "metering/domain/receipt.go"
+mutator = "CONDITIONALS_BOUNDARY"
+col = 34
+line = 'if g.SourceKey != "" && g.Amount > 0 {'
+why = "a zero amount was already refused by the check above, so > and >= agree here"
+
+[[equivalent]]
 file = "metering/domain/window.go"
 mutator = "CONDITIONALS_BOUNDARY"
 col = 6

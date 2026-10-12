@@ -105,6 +105,22 @@ func TestIntentFromFieldsRefusesMalformedEntries(t *testing.T) {
 	}
 }
 
+// SourceKey says "take this from the lot that grant opened", which only means something for credits
+// leaving. On a grant that ADDS credits it is a mistake the caller should hear about, not a field to ignore.
+func TestOnlyAClawbackCanNameTheGrantItReverses(t *testing.T) {
+	t.Parallel()
+	s := domain.Scope{Realm: "t1", Kind: "org", ID: "o1"}
+	clawback := domain.Grant{Scope: s, IdemKey: "refund:pay-2", Amount: -40, Reason: "refund", SourceKey: "pay-2"}
+	if err := clawback.Validate(); err != nil {
+		t.Errorf("a refund naming the payment it reverses is the point of the field: %v", err)
+	}
+	minting := clawback
+	minting.Amount = 40
+	if err := minting.Validate(); !errors.Is(err, domain.ErrInvalid) {
+		t.Errorf("a grant that adds credits has no source to take them from: want ErrInvalid, got %v", err)
+	}
+}
+
 func TestChargeGrantTransferValidation(t *testing.T) {
 	t.Parallel()
 	s := domain.Scope{Realm: "t1", Kind: "org", ID: "o1"}

@@ -203,4 +203,40 @@ DO $$ BEGIN
 END $$;
 ROLLBACK;
 
+-- ------------------------------------------------ credit lots: what they hold, and how they are drawn
+DO $$ BEGIN
+  PERFORM 1 FROM information_schema.columns
+   WHERE table_name = 'credit_lots' AND column_name = 'expired_credits' AND data_type = 'bigint' AND is_nullable = 'NO';
+  IF NOT FOUND THEN RAISE EXCEPTION 'FAIL: credit_lots.expired_credits (BIGINT NOT NULL) is how a lot says what lapsed'; END IF;
+  PERFORM pg_temp.ok('a lot records the credits expiry took out of it, so "spent" and "lapsed" are told apart');
+
+  -- 100 granted cannot be 60 still held AND 50 lapsed: the lot would hold more than it was ever given.
+  BEGIN
+    INSERT INTO credit_lots (realm, scope_kind, scope_id, granted, remaining, expired_credits, source_idem_key)
+    VALUES ('verify', 'workspace', 'lots-check', 100, 60, 50, 'k');
+    RAISE EXCEPTION 'FAIL: a lot was accepted that holds 60 and lapsed 50 of only 100 granted';
+  EXCEPTION WHEN check_violation THEN
+    PERFORM pg_temp.ok('a lot cannot hold and have lapsed more than it was granted');
+  END;
+  -- and the exact split is legal.
+  INSERT INTO credit_lots (realm, scope_kind, scope_id, granted, remaining, expired_credits, source_idem_key)
+  VALUES ('verify', 'workspace', 'lots-check', 100, 40, 60, 'k2');
+  DELETE FROM credit_lots WHERE scope_id = 'lots-check';
+
+  -- Draw order is soonest expiry, then grant date. The partial index serves exactly that scan; without
+  -- it every spend sorts every live lot the scope has.
+  PERFORM 1 FROM pg_indexes WHERE tablename = 'credit_lots' AND indexname = 'credit_lots_fefo_idx'
+     AND indexdef LIKE '%(realm, scope_kind, scope_id, pool, expires_at, created_at, id)%'
+     AND indexdef LIKE '%WHERE%remaining > 0%expired_at IS NULL%';
+  IF NOT FOUND THEN RAISE EXCEPTION 'FAIL: credit_lots_fefo_idx must order by (expires_at, created_at, id) over live lots'; END IF;
+  PERFORM pg_temp.ok('the lot draw order is served by an index over live lots');
+
+  -- A refund asks where a payment's credits stand, and those lots may already have lapsed — which the
+  -- live-lot index above does not cover. Without this one the question scans the scope's lot history.
+  PERFORM 1 FROM pg_indexes WHERE tablename = 'credit_lots' AND indexname = 'credit_lots_source_idx'
+     AND indexdef LIKE '%(realm, scope_kind, scope_id, pool, source_idem_key)%';
+  IF NOT FOUND THEN RAISE EXCEPTION 'FAIL: credit_lots_source_idx must find a grant''s lots by key, lapsed or not'; END IF;
+  PERFORM pg_temp.ok('a grant''s lots are found by key without scanning the scope''s lot history');
+END $$;
+
 DO $$ BEGIN RAISE NOTICE 'baseline assertions passed'; END $$;

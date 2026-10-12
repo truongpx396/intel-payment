@@ -10,7 +10,7 @@ import (
 )
 
 // Expirer pre-applies credit expiry on the hot tier (`billing.expiry.tick`, FR-016). Under
-// CreditExpiry=lots_fifo each grant is a lot; a lot past its expiry still holding a remainder is
+// CreditExpiry=lots_fefo each grant is a lot; a lot past its expiry still holding a remainder is
 // removed from the hot balance at the remainder the books hold AT THE WATERMARK — an upper bound,
 // because usage still in flight may have consumed some of the lot since. The writer books the
 // EXACT remainder when it reaches the intent and trues up the difference through suspense.
@@ -43,7 +43,7 @@ func NewExpirer(cfg metering.Config, d Deps) (*Expirer, error) {
 // Tick expires up to limit due lots and returns how many it issued. With CreditExpiry=off it does
 // nothing: a system that silently destroys something a customer paid for must have been asked to.
 func (e *Expirer) Tick(ctx context.Context, limit int) (int, error) {
-	if e.cfg.CreditExpiry != metering.ExpiryLotsFIFO {
+	if e.cfg.CreditExpiry != metering.ExpiryLotsFEFO {
 		return 0, nil
 	}
 	lots, err := e.d.Books.DueLots(ctx, e.d.Clock.Now(), limit)

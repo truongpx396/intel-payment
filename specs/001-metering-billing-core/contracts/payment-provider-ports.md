@@ -409,7 +409,7 @@ Inbox.Lease(n) → for each event, in provider CreatedAt order per customer:
                              Subs.ApplyIfNewer(past_due, GraceUntil = now + DunningGraceDays);
                              an auto top-up failure increments consecutive_failures (§ Auto top-up)
        payment_refunded    → revoke := clawback(payment, object.AmountRefunded)     (§ Partial refunds)
-                             Meter.Grant{pool: payment.Pool, amount: −revoke,
+                             Meter.Grant{pool: payment.Pool, amount: −revoke, source_key: payment.IdemKey,
                                          idem_key: "refund:" + provider_refund_id, reason: refund}
                              Payments.Upsert(refunded_minor, credits_revoked, status)
        subscription_*      → sub, at := FetchSubscription(id)    ← the provider's CURRENT state
@@ -440,6 +440,21 @@ Computing the *cumulative* figure and subtracting what was already revoked means
 refunds revoke exactly what one refund of the same total would — no rounding drift, never more than
 was granted, and a replayed refund event revokes nothing further. `refunded_minor ≤ amount_minor`
 and `credits_revoked ≤ credits_granted` are database constraints.
+
+**What expiry already took (invariant 20).** Under `CreditExpiry=lots_fefo` the payment's credits are a
+lot, and the lot may have lapsed unspent. Revoking those credits again would take them from the customer
+twice — once by expiry, once by the refund — out of whatever other purchase still holds credits. So before
+it computes `this_refund` the processor asks `LotReader.LotsOf(scope, payment.Pool, payment.IdemKey)` and
+caps the cumulative figure at what expiry has not taken:
+
+```text
+revoke_total = min(revoke_total, credits_granted − Σ lot.Expired)
+```
+
+Credits the customer *spent* are still revoked: what a refund past the spend does is
+`NegativeBalancePolicy`'s decision (metering invariant 12), not the processor's. The clawback names the
+payment it reverses (`source_key`), so the books empty that payment's own lot before any other. With expiry
+off there are no lots, `LotsOf` is empty and the cap is a no-op.
 
 ### Dispute lifecycle
 
@@ -501,6 +516,7 @@ provider's reference.
 17. **A chargeback is reversible.** Funds withdrawn claws back; funds reinstated grants back exactly what was clawed; each is keyed on the dispute id and phase.
 18. **Auto top-up is bounded and still webhook-fulfilled.** At most `max_per_day` distinct idempotent charges per scope per day; repeated failure disables it and tells the host; credits arrive only on the verified payment.
 19. **An account touches only its realms.** A verified event whose customer resolves to a realm outside the account's `realms` is ignored and counted as a security event.
+20. **A refund never claws back what expiry already took.** The clawback names the payment it reverses (`source_key`) and is capped at `credits_granted − Σ lot.Expired`, read from `LotReader.LotsOf`; credits that were spent are still revoked and fall to `NegativeBalancePolicy`.
 
 ---
 
@@ -590,6 +606,13 @@ func ProcessorContract(t *testing.T, p ports.WebhookProcessor, fx Fixtures) {
 		fx.Persisted(fx.Refunded("pay-4", 666)); _ = p.Tick(ctx)   // a replayed report
 		if got := fx.Payments.Row("pay-4").CreditsRevoked; got != 6_660_000 { t.Fatalf("revoked %d, want 6,660,000", got) }
 		if fx.Payments.Row("pay-4").Amount.MinorUnits != 1000 { t.Fatal("the original amount was mutated") }
+	})
+	t.Run("a refund does not claw back credits that expiry already took", func(t *testing.T) {
+		fx.GivenSucceededPayment("pay-7", 1000, 10_000_000)
+		fx.GivenLapsed("pay-7", 10_000_000)                          // its lot expired unspent: Σ lot.Expired = granted
+		fx.Persisted(fx.Refunded("pay-7", 1000)); _ = p.Tick(ctx)
+		if got := fx.Payments.Row("pay-7").CreditsRevoked; got != 0 { t.Fatalf("revoked %d credits the customer had already lost (invariant 20)", got) }
+		if fx.Meter.Grants("refund:pay-7") != 0 && fx.Meter.LastGrant().SourceKey != "pay-7" { t.Fatal("a clawback must name the payment it reverses") }
 	})
 	t.Run("a won dispute reverses its chargeback", func(t *testing.T) {
 		fx.GivenSucceededPayment("pay-5", 1000, 10_000_000)

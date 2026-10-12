@@ -7,7 +7,7 @@ The normative surface of `intel-payment`. Read them in this order.
 | [metering-ports.md](./metering-ports.md) | **The engine.** `Realm`/`Scope`/`Subjects`/`Pool`, the `Pricer`/`Ledger`/`Meter`/`LedgerWriter` ports, 18 invariants, the settlement and money policies, the hexagonal layout, the machine-enforced boundary, the observability contract |
 | [hot-path-consistency.md](./hot-path-consistency.md) | **The mechanism.** How the Redis hot tier and the Postgres books stay consistent: the cluster-safe key layout, the intent, the per-scope sequence watermark, suspense, two-phase transfers, recovery, idempotency lifetimes, reconcile |
 | [reference/hot_path.lua](./reference/hot_path.lua) | The reference Redis Functions — executable, verified on Redis in cluster mode by [`scripts/verify-hot-path.sh`](../../../scripts/verify-hot-path.sh) |
-| [payment-provider-ports.md](./payment-provider-ports.md) | **The fiat boundary.** `PaymentProvider`, provider accounts, the webhook inbox, refunds, disputes, auto top-up, 19 invariants |
+| [payment-provider-ports.md](./payment-provider-ports.md) | **The fiat boundary.** `PaymentProvider`, provider accounts, the webhook inbox, refunds, disputes, auto top-up, 20 invariants |
 | [entitlement-ports.md](./entitlement-ports.md) | **What a plan unlocks besides credits** — and the `QuotaSource` that sizes plan-dependent ceilings. 10 invariants |
 | [outbound-events.md](./outbound-events.md) | **How hosts hear what happened.** Signed webhooks and a cursor feed, never the internal bus |
 | [credits-ui-ports.md](./credits-ui-ports.md) | **The browser half.** `CreditsSource`/`LimitView`/`LedgerColumn`/`PlanCatalog`/`CheckoutSource`, 14 invariants |

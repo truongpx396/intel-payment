@@ -73,7 +73,7 @@ Published by an **external scheduler** onto `billing:ticks`; the `worker` group 
 | `billing.journal.tick` | replays pending `spend_journal` rows through the hot function | 10 s |
 | `billing.webhook.tick` | processes `received`/`failed` inbox rows due for (re)processing; retries `unverifiable` verification | 10 s |
 | `billing.outbound.tick` | delivers pending outbound webhooks with backoff | 5 s |
-| `billing.expiry.tick` | expires credit lots, pre-applying the upper bound ([§3](./hot-path-consistency.md#3-the-durable-writer-ordered-batched-idempotent)) | hourly, under `lots_fifo` |
+| `billing.expiry.tick` | expires credit lots, pre-applying the upper bound ([§3](./hot-path-consistency.md#3-the-durable-writer-ordered-batched-idempotent)) | hourly, under `lots_fefo` |
 | `billing.dunning.tick` | suspends subscriptions past `GraceUntil` | hourly |
 | `billing.subdrift.tick` | `FetchSubscription` for locally active subscriptions; repairs divergence — **the backstop for a missed webhook** | daily |
 | `billing.partitions.tick` | creates ledger (monthly) and dedup/archive (daily) partitions ahead of need; alarms on rows in a DEFAULT partition | daily |

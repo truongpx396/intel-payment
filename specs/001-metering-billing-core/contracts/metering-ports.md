@@ -247,7 +247,14 @@ type Grant struct {
 	Amount    Credits    // positive to add; NEGATIVE for refund/chargeback — NegativeBalancePolicy applies
 	IdemKey   string     // REQUIRED; unique per realm: one provider payment mints once, for one scope
 	Reason    string     // "purchase" | "subscription_grant" | "signup_grant" | "promo" | "refund" | "chargeback" | "chargeback_reversal" | "admin_adjustment"
-	ExpiresAt *time.Time // the lot's expiry under CreditExpiry=lots_fifo
+	ExpiresAt *time.Time // the lot's expiry under CreditExpiry=lots_fefo
+	// SourceKey is, on a NEGATIVE grant, the IdemKey of the grant it reverses — the payment a refund
+	// refunds. Under lots_fefo the books draw that grant's lot first and take any shortfall from the
+	// rest in expiry order, so what the customer keeps has the expiry it was bought with. It changes
+	// neither the amount nor the balance, and is ignored when credits do not expire. It is part of the
+	// fingerprint (the same key aimed at another payment is a conflict) but only when set, so a grant
+	// that names none keeps the encoding it always had. Only a clawback may name one.
+	SourceKey string
 	Ref       map[string]string
 }
 
@@ -318,8 +325,30 @@ jobs"* — and neither can be expressed by lot expiry order. A scope therefore h
   admit an LLM call.
 - **Grants name a pool** (`plans.pool`, `Grant.Pool`). A refund or chargeback claws back from the
   pool the payment granted into, and `NegativeBalancePolicy` applies per pool.
-- **Expiry** (`lots_fifo`) is per pool; **transfers** name a source and a destination pool.
+- **Expiry** (`lots_fefo`) is per pool; **transfers** name a source and a destination pool.
 - A realm that defines no pools has one balance per scope, exactly as before: `general`.
+
+### Credit lots
+
+Under `CreditExpiry=lots_fefo` each positive grant opens a **lot** in its pool, with the expiry the grant
+named (none = never lapses). Lots are the books' record of *which* credits a balance is made of; the hot
+tier knows only the pool's balance and never reads a lot.
+
+- **Draw order.** Within a pool a debit takes the lot that lapses soonest first, lots that never lapse
+  last, ties in grant order. A customer who tops up (never lapses) and is then given a monthly allotment
+  (lapses) spends the allotment first. Drawing by grant date instead spends the top-up and lets the
+  allotment lapse unspent: credits the customer was entitled to use, destroyed.
+- **A clawback takes its own grant's lot.** A refund names the payment it refunds as `Grant.SourceKey`;
+  the books empty that grant's lot first and take any shortfall in the order above. The amount and the
+  pool balance are unchanged — only which credits remain, and so when they lapse.
+- **Lapsed is not spent.** A lot records what expiry took out of it (`expired_credits`) apart from what
+  was consumed, so `granted = remaining + expired + consumed` always holds.
+- **Where a grant's credits stand** is `LotReader.LotsOf(scope, pool, sourceKey)`: the lots that grant
+  opened, lapsed ones included. It is the read side billing consults before deciding how much of a
+  payment a refund can still take back; `Remaining` is exact at the watermark, so usage still in flight
+  makes it an upper bound.
+- A key identifies a lot only within an operation kind: a grant and a transfer that share a key string
+  open one lot each, which is why `LotsOf` returns a list.
 
 ---
 
@@ -599,6 +628,7 @@ type ReconcileRun struct {
 16. **No usage is dropped by an outage.** When the hot tier is unavailable, `Record` writes the event to the spend journal and returns `Deferred`; the journal is replayed through the hot path on recovery. `fail_open` therefore means *served before it is metered*, never *served unmetered*.
 17. **A ceiling is never silently skipped.** A configured subject limit whose subject the call omits is refused, and a limit whose size comes from an entitlement fails with `AdmitFailPolicy` — not open — when that entitlement cannot be resolved.
 18. **Configuration changes are audited by the database.** Every write to rate cards, limits, pools, plans, prices, provider accounts, entitlements and endpoints writes an `audit_log` row and a cache-invalidation notification in the same transaction, whether it came through the admin API or through `psql`.
+19. **Lots decide which credits remain, never how many.** Under `lots_fefo` a pool is drawn lot by lot, the lot that lapses soonest first; a lot records what expiry removed (`expired_credits`) apart from what was consumed, so `granted = remaining + expired + consumed`; and a clawback that names the grant it reverses (`Grant.SourceKey`) empties that grant's lot before any other. None of it changes a pool's balance or the amount of any operation.
 
 ---
 
@@ -974,7 +1004,8 @@ message AdmitRequest    { Scope scope = 1; string resource = 2; map<string,strin
 message RecordRequest   { Event event = 1; }
 message GrantRequest    { Scope scope = 1; string pool = 2; int64 amount = 3; string idem_key = 4;
                           string reason = 5; google.protobuf.Timestamp expires_at = 6;
-                          map<string,string> ref = 7; }
+                          map<string,string> ref = 7;
+                          string source_key = 8; }   // a clawback's reference to the grant it reverses
 message BalanceRequest  { Scope scope = 1; }
 message BalanceReply    { map<string,int64> pools = 1; int64 total = 2; }
 message TransferRequest { Scope from = 1; Scope to = 2; string from_pool = 3; string to_pool = 4;
@@ -1253,7 +1284,7 @@ type CreditExpiry string
 
 const (
 	ExpiryOff      CreditExpiry = "off"       // default — a grant never expires
-	ExpiryLotsFIFO CreditExpiry = "lots_fifo" // credit_lots per pool; oldest lot consumed and expired first
+	ExpiryLotsFEFO CreditExpiry = "lots_fefo" // credit_lots per pool; the lot that lapses soonest is spent first, lots that never lapse last
 )
 
 // AdmitFailPolicy is what Admit does when the hot store is unreachable or the shard is frozen.
@@ -1403,7 +1434,7 @@ func (c Config) Validate() error {
 	oneOf("LedgerGranularity", string(c.LedgerGranularity), "event", "rollup")
 	oneOf("AdmitFail", string(c.AdmitFail), "fail_closed", "fail_open")
 	oneOf("NegativeBalance", string(c.NegativeBalance), "allow_debt", "clamp_to_zero", "block_and_flag")
-	oneOf("CreditExpiry", string(c.CreditExpiry), "off", "lots_fifo")
+	oneOf("CreditExpiry", string(c.CreditExpiry), "off", "lots_fefo")
 	if c.HotIdemTTL > c.UsageIdemWindow {
 		errs = append(errs, errors.New("HotIdemTTL must not exceed UsageIdemWindow: a hot guard may never outlive the durable one"))
 	}
@@ -1537,7 +1568,7 @@ Copy-paste and tick once per realm. [docs/integration-guide.md](../../../docs/in
 - [ ] **Multi-step work capped** — any job that spends across several steps carries a `Job` limit and a `job` subject.
 - [ ] **Allocation model decided (if a pool is shared)** — `Transfer` for parent-buys/child-draws, with `MaxDestBalance` set.
 - [ ] **Negative-balance policy chosen** — matching how the host actually handles a refund past spend.
-- [ ] **Credit expiry decided** — `off` or `lots_fifo`; if on, the expiry tick is scheduled.
+- [ ] **Credit expiry decided** — `off` or `lots_fefo`; if on, the expiry tick is scheduled, and refunds name the payment they reverse (`Grant.SourceKey`).
 - [ ] **Grant path (if monetized)** — the [`PaymentProvider`](./payment-provider-ports.md) adapters, or `Meter.Grant` from the host's own top-up flow.
 - [ ] **Entitlements mapped (if the plan sells more than credits)** — via [`entitlement-ports.md`](./entitlement-ports.md), not plan-code branches.
 - [ ] **Events consumed** — the host subscribes to signed webhooks or polls the event feed ([outbound-events.md](./outbound-events.md)); it never connects to this service's Redis.
