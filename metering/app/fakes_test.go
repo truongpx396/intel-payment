@@ -31,7 +31,9 @@ type fakeBalance struct {
 	grant    func(domain.Grant) (domain.Receipt, error)
 	transfer func(domain.Transfer) (domain.TransferReceipt, error)
 	rehyd    func(domain.Scope, ports.RehydrateState) (ports.RehydrateOutcome, error)
+	balance  func(domain.Scope) (map[domain.Pool]domain.Credits, error)
 
+	balanced []domain.Scope
 	admitted []domain.AdmitRequest
 	debited  []domain.Charge
 	rehydOn  []ports.RehydrateState
@@ -49,6 +51,13 @@ func (f *fakeBalance) Admit(_ context.Context, s domain.Scope, r domain.AdmitReq
 	f.admitted = append(f.admitted, r)
 	f.mu.Unlock()
 	return f.admit(s, r)
+}
+
+func (f *fakeBalance) Balance(_ context.Context, s domain.Scope) (map[domain.Pool]domain.Credits, error) {
+	f.mu.Lock()
+	f.balanced = append(f.balanced, s)
+	f.mu.Unlock()
+	return f.balance(s)
 }
 
 func (f *fakeBalance) Debit(_ context.Context, c domain.Charge) (domain.Receipt, error) {
