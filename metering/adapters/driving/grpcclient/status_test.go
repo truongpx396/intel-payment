@@ -109,14 +109,17 @@ func TestEveryStatusBecomesItsTypedErrorOnEveryCall(t *testing.T) {
 				}
 				// Identity is the sentinel's, not a lookalike's: no other row's error matches.
 				for _, other := range statusRows {
-					if other.want != nil && other.want != row.want && errors.Is(err, other.want) {
+					if other.reason != row.reason && other.want != nil && errors.Is(err, other.want) {
 						t.Fatalf("a %q status also satisfies errors.Is(err, %v)", row.reason, other.want)
 					}
 				}
-				if got := status.Code(err); got != row.code && row.want != context.Canceled && row.want != context.DeadlineExceeded {
+				// A cancellation or a deadline is the context's own error, whoever noticed it: the
+				// status and the message of the row are not what survives.
+				isContext := errors.Is(row.want, context.Canceled) || errors.Is(row.want, context.DeadlineExceeded)
+				if got := status.Code(err); got != row.code && !isContext {
 					t.Fatalf("the status code is lost: %v, want %v", got, row.code)
 				}
-				if !strings.Contains(err.Error(), "the server's explanation") && row.want != context.Canceled && row.want != context.DeadlineExceeded {
+				if !strings.Contains(err.Error(), "the server's explanation") && !isContext {
 					t.Fatalf("the server's message is lost: %q", err.Error())
 				}
 			})
