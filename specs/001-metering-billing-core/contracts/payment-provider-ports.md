@@ -481,6 +481,18 @@ Inbox.Lease(n) → for each event, in provider CreatedAt order per customer:
   d. On error: MarkFailed with exponential backoff; past MaxAttempts → status dead, page.
 ```
 
+A failed attempt keeps its reason on the row and is retried on a backoff (15 s doubling, 30 minutes at
+most); past the attempt cap (5) the event is **dead**, `billing_webhook_dead_total` pages, and nothing
+touches it again until a human does. An event the deployment does not own is **ignored**, never failed —
+an unsubscribed type, a customer no `Customers` row names (a provider account can carry customers this
+deployment never created), a price the catalogue does not sell (never a default plan) — each with its
+reason on `billing_webhook_ignored_total`; a customer in a realm the account does not serve is ignored
+and counted on `billing_webhook_foreign_realm_total`, which is a security signal. A price whose plan lives
+in a realm other than the customer's fails loudly: money was taken for something the customer's realm does
+not sell. An event that names a payment and not a customer (a dispute) takes its scope from that payment's
+own record. `Lease` hands a customer's events out one at a time, oldest provider timestamp first, so two
+processors never work one customer's money at once.
+
 **Every step is idempotent**, which is what makes the lease-and-retry model safe: `Meter.Grant` is
 keyed on a provider id (unique per realm and op — one payment can mint once, for one scope),
 `Payments.Upsert` on `(account, provider_payment_id)`, `Subs.ApplyIfNewer` on the provider

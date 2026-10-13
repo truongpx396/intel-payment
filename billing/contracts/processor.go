@@ -135,6 +135,7 @@ func GrantCases() []ProcessorCase {
 		{"concurrent processors grant once", func(t testing.TB, mk ProcessorFactory) {
 			h := NewHarness()
 			h.Persisted(h.PaymentSucceeded("evt_1", "pay-2"))
+			h.Inbox.SyncLeases(8) // all eight reach the inbox together: whoever may take the event must be decided by the lease
 			done := make(chan struct{})
 			for range 8 {
 				p := mk(t, h)
@@ -186,7 +187,7 @@ func GrantCases() []ProcessorCase {
 			renewal := h.SubscriptionPaymentSucceeded("evt_2", "in-1", "sub-1")
 			h.Persisted(discounted)
 			h.Persisted(renewal)
-			h.Tick(t, p)
+			h.Rounds(t, p, 2, time.Minute) // one customer's events are handled one at a time, in the provider's order
 
 			pack, pro := h.Payments.Row("pay-1"), h.Payments.Row("in-1")
 			if pack.CreditsGranted != PackCredits || pack.Pool != md.GeneralPool || pack.Amount.MinorUnits != 500 {
