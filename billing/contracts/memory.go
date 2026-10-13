@@ -603,6 +603,10 @@ func (m *MemInbox) Add(e domain.Event) {
 
 // MemPayments holds payments, with an exclusive update per payment.
 type MemPayments struct {
+	// failCommit is how many more Updates run their function and then fail to store the result, as a database
+	// that goes away between the work and the commit does.
+	failCommit int
+
 	log   *CallLog
 	mu    sync.Mutex
 	rows  map[string]domain.Payment
@@ -615,6 +619,13 @@ func NewMemPayments(log *CallLog) *MemPayments {
 }
 
 func paymentKey(account, id string) string { return account + "|" + id }
+
+// FailCommit makes the next n Updates run their function, with whatever side effects it has, and then fail.
+func (m *MemPayments) FailCommit(n int) {
+	m.mu.Lock()
+	m.failCommit = n
+	m.mu.Unlock()
+}
 
 // Get implements ports.Payments.
 func (m *MemPayments) Get(_ context.Context, account, id string) (domain.Payment, bool, error) {
@@ -657,8 +668,12 @@ func (m *MemPayments) Update(_ context.Context, account, id string, fn func(doma
 		return cur, err
 	}
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.failCommit > 0 {
+		m.failCommit--
+		return cur, errors.New("memory payments: the commit failed after the work was done")
+	}
 	m.rows[k] = next
-	m.mu.Unlock()
 	return next, nil
 }
 
@@ -1086,6 +1101,9 @@ func (m *FakeMeter) Balance(s md.Scope, p md.Pool) md.Credits {
 // FakeLots is the lot reader: where a grant's credits stand under CreditExpiry=lots_fefo. With nothing lapsed,
 // it answers like a deployment with expiry off — no lots at all.
 type FakeLots struct {
+	// Blind makes the reader report no lots whatever has lapsed: a processor that cannot see expiry.
+	Blind bool
+
 	log     *CallLog
 	mu      sync.Mutex
 	expired map[string]md.Credits
@@ -1116,7 +1134,7 @@ func (l *FakeLots) LotsOf(_ context.Context, s md.Scope, p md.Pool, sourceKey st
 	defer l.mu.Unlock()
 	k := lotKey(s, p, sourceKey)
 	exp, ok := l.expired[k]
-	if !ok {
+	if !ok || l.Blind {
 		return nil, nil
 	}
 	now := time.Now()

@@ -87,3 +87,60 @@ func TestProcessorGrantsPassEveryCaseOnTheProcessorUnderTest(t *testing.T) {
 		}
 	}
 }
+
+func TestProcessorRefundsAndDisputes(t *testing.T) {
+	t.Parallel()
+	contracts.ProcessorRefunds(t, processorUnderTest)
+}
+
+// The refunds suite is shown to reject collaborators broken in the ways that take credits twice or not at all.
+func TestProcessorRefundsRejectsEveryBrokenCollaboratorByName(t *testing.T) {
+	t.Parallel()
+	const (
+		expiry  = "a refund never claws back what expiry already took (20)"
+		partial = "a refund after partial expiry revokes only the rest, across reports"
+		commit  = "a clawback whose commit failed is not taken twice on the retry"
+		chargeb = "a chargeback takes what a refund and expiry left"
+	)
+	broken := []struct {
+		name     string
+		breakIt  func(h *contracts.Harness)
+		caughtBy []string
+	}{
+		{"a lot reader that cannot see what expired", func(h *contracts.Harness) { h.Lots.Blind = true }, []string{expiry, partial, chargeb}},
+		{"a meter with no idempotency guard", func(h *contracts.Harness) { h.Meter.NoIdempotency = true }, []string{commit}},
+	}
+	cases := append(contracts.RefundCases(), contracts.DisputeCases()...)
+	for _, b := range broken {
+		t.Run(b.name, func(t *testing.T) {
+			t.Parallel()
+			var rejected []string
+			for _, c := range cases {
+				var broke sync.Map
+				mk := func(t testing.TB, h *contracts.Harness) ports.WebhookProcessor {
+					if _, already := broke.LoadOrStore(h, true); !already {
+						b.breakIt(h)
+					}
+					return processorUnderTest(t, h)
+				}
+				if failed, _ := contracts.Probe(30*time.Second, func(t testing.TB) { c.Run(t, mk) }); failed {
+					rejected = append(rejected, c.Name)
+				}
+			}
+			for _, want := range b.caughtBy {
+				if !slices.Contains(rejected, want) {
+					t.Errorf("the suite PASSED %s on %q (rejected only by %q)", b.name, want, rejected)
+				}
+			}
+		})
+	}
+}
+
+func TestProcessorRefundsPassEveryCaseOnTheProcessorUnderTest(t *testing.T) {
+	t.Parallel()
+	for _, c := range append(contracts.RefundCases(), contracts.DisputeCases()...) {
+		if failed, said := contracts.Probe(30*time.Second, func(t testing.TB) { c.Run(t, processorUnderTest) }); failed {
+			t.Errorf("%q: %v", c.Name, said)
+		}
+	}
+}
