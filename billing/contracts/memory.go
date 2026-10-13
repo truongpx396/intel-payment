@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/truongpx396/intel-payment/billing/domain"
@@ -225,10 +226,12 @@ type MemInbox struct {
 	DropParkedBody bool
 	// NoExclusion makes Lease hand the same event to every caller: a lease that excludes nobody.
 	NoExclusion bool
-	// AckOnLease marks an event processed the moment it is leased: an acknowledgement before the work.
+	// AckOnLease marks an event processed the moment it is leased: an acknowledgement before the work, which a
+	// later failure cannot take back.
 	AckOnLease bool
 
 	mu          sync.Mutex
+	gate        *leaseGate
 	clock       mports.Clock
 	log         *CallLog
 	rows        []*InboxRow
@@ -243,6 +246,19 @@ func NewMemInbox(clock mports.Clock, log *CallLog) *MemInbox {
 }
 
 func inboxKey(account, eventID string) string { return account + "|" + eventID }
+
+// leaseGate holds the first n callers of Lease until all n have arrived, once.
+type leaseGate struct {
+	n       int32
+	arrived atomic.Int32
+	open    chan struct{}
+}
+
+// SyncLeases makes the next n calls to Lease rendezvous before any of them proceeds, so a test of concurrent
+// processors does not depend on one finishing before another starts. Set it before the callers run.
+func (m *MemInbox) SyncLeases(n int) {
+	m.gate = &leaseGate{n: int32(n), open: make(chan struct{})} //nolint:gosec // n is a handful of goroutines in a test
+}
 
 // FailPersist makes the next Persists fail with err; nil clears it.
 func (m *MemInbox) FailPersist(err error) {
@@ -316,6 +332,16 @@ func customerKey(e domain.Event) string {
 // Lease implements ports.Inbox: events due, in the provider's order, never two of one customer at once.
 func (m *MemInbox) Lease(_ context.Context, n int, ttl time.Duration) ([]ports.LeasedEvent, error) {
 	m.log.Add("inbox.Lease")
+	if g := m.gate; g != nil {
+		if g.arrived.Add(1) == g.n {
+			close(g.open)
+		}
+		select {
+		case <-g.open:
+		case <-time.After(10 * time.Second):
+			return nil, errors.New("memory inbox: the lease rendezvous never completed")
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.clock.Now()
@@ -398,6 +424,9 @@ func (m *MemInbox) MarkFailed(_ context.Context, id string, cause error, retryAt
 	r := m.rowLocked(id)
 	if r == nil {
 		return false, fmt.Errorf("%w: inbox row %s", md.ErrNotFound, id)
+	}
+	if m.AckOnLease && r.Status == RowProcessed {
+		return false, nil // acknowledged already: the failure has nowhere to be recorded
 	}
 	r.Err, r.LeaseUntil = cause.Error(), time.Time{}
 	if r.Attempts >= m.MaxAttempts {

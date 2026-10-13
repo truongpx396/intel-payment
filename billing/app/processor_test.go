@@ -1,26 +1,30 @@
 package app_test
 
 import (
-	"context"
+	"io"
+	"log/slog"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/truongpx396/intel-payment/billing/app"
 	"github.com/truongpx396/intel-payment/billing/contracts"
 	"github.com/truongpx396/intel-payment/billing/domain"
 	"github.com/truongpx396/intel-payment/billing/ports"
 )
 
-// unbuiltProcessor is the processor as it is before it exists: Tick does nothing, so every case fails on what it
-// claims — nothing was granted, nothing was processed — and not on a compile error. The one variable below that
-// binds it is the only edit each green makes to this file's wiring.
-type unbuiltProcessor struct{}
-
-func (unbuiltProcessor) Tick(context.Context) error { return nil }
-
 // processorUnderTest builds the processor over a harness's collaborators.
 var processorUnderTest contracts.ProcessorFactory = func(t testing.TB, h *contracts.Harness) ports.WebhookProcessor {
-	return unbuiltProcessor{}
+	t.Helper()
+	p, err := app.NewProcessor(app.ProcessorDeps{
+		Inbox: h.Inbox, Accounts: h.Accounts, Providers: h.Providers(), Customers: h.Customers, Catalog: h.Catalog,
+		Payments: h.Payments, Subs: h.Subs, Meter: h.Meter, Lots: h.Lots, Clock: h.Clock, Metrics: h.Metrics, Bus: h.Bus,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Grace: contracts.GraceWindow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
 }
 
 func TestProcessorGrants(t *testing.T) {
@@ -41,7 +45,7 @@ func TestProcessorGrantsRejectsEveryBrokenCollaboratorByName(t *testing.T) {
 	mystery := domain.Plan{Code: "free", Kind: domain.OneTime, Active: true}
 	broken := []struct {
 		name     string
-		break_   func(h *contracts.Harness)
+		breakIt  func(h *contracts.Harness)
 		caughtBy string
 	}{
 		{"an inbox that acknowledges an event when it leases it", func(h *contracts.Harness) { h.Inbox.AckOnLease = true }, crash},
@@ -57,7 +61,7 @@ func TestProcessorGrantsRejectsEveryBrokenCollaboratorByName(t *testing.T) {
 			var rejected []string
 			for _, c := range contracts.GrantCases() {
 				mk := func(t testing.TB, h *contracts.Harness) ports.WebhookProcessor {
-					b.break_(h)
+					b.breakIt(h)
 					return processorUnderTest(t, h)
 				}
 				if failed, _ := contracts.Probe(30*time.Second, func(t testing.TB) { c.Run(t, mk) }); failed {
