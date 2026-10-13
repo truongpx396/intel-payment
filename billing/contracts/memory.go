@@ -223,6 +223,10 @@ type MemInbox struct {
 	ErrOnDuplicate bool
 	// DropParkedBody makes Park keep the row and lose the body.
 	DropParkedBody bool
+	// NoExclusion makes Lease hand the same event to every caller: a lease that excludes nobody.
+	NoExclusion bool
+	// AckOnLease marks an event processed the moment it is leased: an acknowledgement before the work.
+	AckOnLease bool
 
 	mu          sync.Mutex
 	clock       mports.Clock
@@ -344,12 +348,17 @@ func (m *MemInbox) Lease(_ context.Context, n int, ttl time.Duration) ([]ports.L
 			break
 		}
 		key := customerKey(r.Event)
-		if busy[key] {
+		if busy[key] && !m.NoExclusion {
 			continue
 		}
 		busy[key] = true
-		r.Status, r.LeaseUntil = RowProcessing, now.Add(ttl)
 		r.Attempts++
+		switch {
+		case m.AckOnLease:
+			r.Status, r.Outcome, r.ProcessedAt = RowProcessed, RowProcessed, now
+		case !m.NoExclusion:
+			r.Status, r.LeaseUntil = RowProcessing, now.Add(ttl)
+		}
 		out = append(out, ports.LeasedEvent{ID: r.ID, Event: r.Event, Attempts: r.Attempts})
 	}
 	return out, nil
@@ -822,6 +831,10 @@ func (m *MemCustomers) ResolveScope(_ context.Context, account, providerCustomer
 
 // MemCatalog is the catalogue in memory: plans per realm, with the provider price each account sells them at.
 type MemCatalog struct {
+	// FallbackPlan, when set, is what PlanForPrice answers for a price it does not know: a default plan, the
+	// thing the catalogue must never do.
+	FallbackPlan *domain.Plan
+
 	log    *CallLog
 	mu     sync.Mutex
 	plans  []domain.Plan
@@ -895,6 +908,9 @@ func (m *MemCatalog) PlanForPrice(_ context.Context, account, providerPriceID st
 			}
 		}
 	}
+	if m.FallbackPlan != nil {
+		return *m.FallbackPlan, true, nil
+	}
 	return domain.Plan{}, false, nil
 }
 
@@ -904,6 +920,10 @@ func (m *MemCatalog) PlanForPrice(_ context.Context, account, providerPriceID st
 // the same grant is a replay (Applied=false), the same key for a different grant is ErrIdemConflict, and keys are
 // per realm. It records every call, so a suite can say "granted once", "granted nothing" and "net of the dispute".
 type FakeMeter struct {
+	// NoIdempotency makes the meter apply every grant it is given, whatever the key: the flaw the durable guard
+	// exists to prevent.
+	NoIdempotency bool
+
 	log *CallLog
 	mu  sync.Mutex
 
@@ -943,7 +963,7 @@ func (m *FakeMeter) Grant(_ context.Context, g md.Grant) (md.Receipt, error) {
 	}
 	k := string(g.Scope.Realm.Or()) + "|" + g.IdemKey
 	fp := g.Fingerprint()
-	if have, ok := m.byKey[k]; ok {
+	if have, ok := m.byKey[k]; ok && !m.NoIdempotency {
 		if have != fp {
 			return md.Receipt{}, fmt.Errorf("%w: %s", md.ErrIdemConflict, g.IdemKey)
 		}
