@@ -437,6 +437,17 @@ provider → POST /webhooks/{provider}/{account}
   5. 200. Publish billing.webhook.received as a latency hint.
 ```
 
+A body over the limit (1 MiB) is `413` before anything else. A route that names no registered provider,
+or an account that does not exist, is inactive or belongs to another provider, is `404 unknown_account`
+and verifies nothing. A delivery is parked under a name made of the SHA-256 of its bytes
+(`parked:<hash>`) — nothing in it may be parsed yet — so the provider's redelivery of the same bytes is
+one row. `billing.webhook.tick` calls `Ingress.Retry`: a parked delivery that now verifies becomes an
+ordinary event and loses its raw body; one that fails is rejected (a security event, body dropped, never
+processed); one that still cannot be verified backs off (30 s doubling, one hour at most). An event whose
+provider or account differs from the route's is an adapter defect, answered `500`, never filed. Metrics
+are counted only after the route has resolved to a registered provider and a live account, so no
+label is ever keyed on what an unauthenticated caller typed.
+
 Nothing in stage 1 touches money, so it can run on a single transaction's latency and answer every
 duplicate `200` without a retry storm. **The only way a verified delivery is lost is a failure
 before step 4 commits — and then the provider has not received `200` and retries it.**

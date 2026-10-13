@@ -2,30 +2,31 @@ package app_test
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"net/http"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/truongpx396/intel-payment/billing/app"
 	"github.com/truongpx396/intel-payment/billing/contracts"
 	"github.com/truongpx396/intel-payment/billing/domain"
 	"github.com/truongpx396/intel-payment/billing/ports"
 	md "github.com/truongpx396/intel-payment/metering/domain"
 )
 
-// unbuiltIngress is the ingress as it is before it exists: it answers every delivery 501, so the suite fails on
-// what it claims and not on a compile error. The one line below that binds it is the only edit T084 makes to
-// this file's wiring.
-type unbuiltIngress struct{}
-
-func (unbuiltIngress) Handle(context.Context, string, string, []byte, http.Header) ports.IngressResult {
-	return ports.IngressResult{Status: 501, Code: "not_implemented"}
-}
-func (unbuiltIngress) Retry(context.Context) error { return domain.ErrNotImplemented }
-
 // ingressUnderTest builds the ingress over a harness's collaborators.
 var ingressUnderTest contracts.IngressFactory = func(t testing.TB, h *contracts.Harness) contracts.Ingress {
-	return unbuiltIngress{}
+	t.Helper()
+	g, err := app.NewIngress(app.IngressDeps{
+		Providers: h.Providers(), Accounts: h.Accounts, Inbox: h.Inbox, Metrics: h.Metrics, Clock: h.Clock,
+		MaxBody: contracts.MaxWebhookBody, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return g
 }
 
 func TestIngressContract(t *testing.T) {
@@ -134,7 +135,7 @@ func (g grantsAtTheDoor) Handle(ctx context.Context, provider, account string, b
 
 type anyAccount struct{ contracts.Ingress }
 
-func (a anyAccount) Handle(ctx context.Context, provider, account string, body []byte, hdr http.Header) ports.IngressResult {
+func (a anyAccount) Handle(ctx context.Context, _, _ string, body []byte, hdr http.Header) ports.IngressResult {
 	return a.Ingress.Handle(ctx, "fake", contracts.AccountID, body, hdr)
 }
 

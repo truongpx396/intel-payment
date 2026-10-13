@@ -83,10 +83,10 @@ func TestProbeReportsWhatAFailingCaseSaid(t *testing.T) {
 	if failed, _ := contracts.Probe(time.Second, func(t testing.TB) { t.Errorf("one"); t.Errorf("two") }); !failed {
 		t.Fatal("an Errorf must fail the probe")
 	}
-	if failed, _ := contracts.Probe(time.Second, func(t testing.TB) { panic("nil map") }); !failed {
+	if failed, _ := contracts.Probe(time.Second, func(testing.TB) { panic("nil map") }); !failed {
 		t.Fatal("a panic is a failure, not a pass")
 	}
-	if failed, _ := contracts.Probe(50*time.Millisecond, func(t testing.TB) { time.Sleep(300 * time.Millisecond) }); !failed {
+	if failed, _ := contracts.Probe(50*time.Millisecond, func(testing.TB) { time.Sleep(300 * time.Millisecond) }); !failed {
 		t.Fatal("a case that never finishes is rejected, not waited for")
 	}
 	if failed, _ := contracts.Probe(time.Second, func(t testing.TB) { t.Helper(); t.Cleanup(func() {}) }); failed {

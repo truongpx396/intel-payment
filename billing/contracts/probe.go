@@ -82,9 +82,9 @@ func (p *probeTB) Cleanup(f func()) {
 	p.cleanups = append(p.cleanups, f)
 	p.mu.Unlock()
 }
-func (p *probeTB) Log(args ...any)                 {}
-func (p *probeTB) Logf(format string, args ...any) {}
-func (p *probeTB) Error(args ...any)               { p.fail(strings.TrimSpace(fmt.Sprintln(args...))) }
+func (p *probeTB) Log(...any)          {}
+func (p *probeTB) Logf(string, ...any) {}
+func (p *probeTB) Error(args ...any)   { p.fail(strings.TrimSpace(fmt.Sprintln(args...))) }
 func (p *probeTB) Errorf(format string, args ...any) {
 	p.fail(fmt.Sprintf(format, args...))
 }
@@ -101,7 +101,7 @@ func (p *probeTB) Fatalf(format string, args ...any) {
 	p.fail(fmt.Sprintf(format, args...))
 	runtime.Goexit()
 }
-func (p *probeTB) Skip(args ...any)                 { runtime.Goexit() }
-func (p *probeTB) Skipf(format string, args ...any) { runtime.Goexit() }
-func (p *probeTB) SkipNow()                         { runtime.Goexit() }
-func (p *probeTB) Skipped() bool                    { return false }
+func (p *probeTB) Skip(...any)          { runtime.Goexit() }
+func (p *probeTB) Skipf(string, ...any) { runtime.Goexit() }
+func (p *probeTB) SkipNow()             { runtime.Goexit() }
+func (p *probeTB) Skipped() bool        { return false }

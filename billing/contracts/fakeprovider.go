@@ -286,7 +286,7 @@ func (p *FakeProvider) Checkouts() []ports.CheckoutInput {
 }
 
 // CreatePortalSession implements ports.PaymentProvider.
-func (p *FakeProvider) CreatePortalSession(_ context.Context, acct domain.ProviderAccount, customerID, returnURL string) (string, error) {
+func (p *FakeProvider) CreatePortalSession(_ context.Context, acct domain.ProviderAccount, customerID, _ string) (string, error) {
 	p.log.Add("provider.CreatePortalSession")
 	return "https://pay.fake.test/" + acct.ID + "/portal/" + customerID, nil
 }
