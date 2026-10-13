@@ -5,7 +5,7 @@ MODULE  := github.com/truongpx396/intel-payment
 .DEFAULT_GOAL := help
 .PHONY: help build test test-integration fuzz mutation mutation-diff verify-red-green verify-tdd-gates lint arch-lint verify-portability \
         verify-boundary verify-schema verify-hot-path verify-deploy e2e e2e-install up up-jetstream down down-volumes logs \
-        migrate seed proto fmt vuln secrets ci clean
+        migrate seed proto proto-tools proto-check fmt vuln secrets ci clean
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) | \
@@ -89,7 +89,7 @@ e2e: ## Run the e2e suite against E2E_BASE_URL (default: the local `make up` sta
 # `make verify-red-green mutation-diff` before opening a pull request — mutation-diff only when the branch
 # changes production Go in a mutation target (docs/testing.md, "When mutation testing applies").
 # verify-schema needs an empty DB.
-ci: build test fuzz test-integration lint verify-portability verify-boundary verify-tdd-gates vuln verify-hot-path verify-deploy ## Everything CI runs on every change
+ci: build proto-check test fuzz test-integration lint verify-portability verify-boundary verify-tdd-gates vuln verify-hot-path verify-deploy ## Everything CI runs on every change
 
 ## ---- run ------------------------------------------------------------------
 up: ## Start the stack (postgres + redis + migrate + paymentd + worker)
@@ -122,8 +122,25 @@ seed: ## Seed a realm: pools, rate card, limits, plans, entitlements, free tier 
 	$(COMPOSE) exec -T postgres psql -U payment -d payment \
 	  -v realm='$(REALM)' -f /dev/stdin < scripts/seed.sql
 
-proto: ## Regenerate protobuf
+# The generators are pinned so the generated code is identical on every machine; CI fails on a stale tree.
+PROTOC_GEN_GO_VERSION      := v1.36.12
+PROTOC_GEN_GO_GRPC_VERSION := v1.6.2
+
+proto-tools: ## Install the pinned protobuf generators (buf itself: https://buf.build/docs/installation)
+	go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
+	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GO_GRPC_VERSION)
+
+proto: ## Regenerate api/meteringv1 from api/proto
 	buf generate
+
+# A released wire shape never changes in place (rest-api.md § Versioning): lint, then compare with main.
+# `buf breaking` has nothing to compare against until main carries a proto, so it is skipped there and says so.
+proto-check: proto ## The generated code is current, lints, and breaks nothing on main
+	buf lint
+	@test -z "$$(git status --porcelain -- api/meteringv1)" || { git status --short -- api/meteringv1; echo "FAIL: api/meteringv1 is stale — run 'make proto' and commit it"; exit 1; }
+	@if git cat-file -e origin/main:api/proto/metering/v1/metering.proto 2>/dev/null; then \
+	  buf breaking --against '.git#ref=origin/main'; \
+	else echo "buf breaking: origin/main carries no proto yet — nothing to compare against"; fi
 
 clean:
 	rm -rf bin dist coverage.out

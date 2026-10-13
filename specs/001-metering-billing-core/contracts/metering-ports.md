@@ -966,6 +966,8 @@ What makes it **not free** (decide these before extracting):
 
 The service-mode facade is the SAME `Meter` port over the wire. gRPC (not REST) because this is an internal, latency-sensitive, strongly-typed hot path. Money crosses the wire as `int64` credits (never floats); `idem_key` is required on every mutating RPC; `Scope` stays opaque.
 
+The block below is the file [`api/proto/metering/v1/metering.proto`](../../../api/proto/metering/v1/metering.proto) in compact form, and a test holds the two equal field for field (`api/meteringv1`), so neither can drift. `Receipt.writeoff` and `Limit.max_entitlement` are the two fields the domain's `Receipt` and `Limit` carry that the first draft of this surface dropped: a wire that loses a field is a wire the caller *can* tell from the in-process value (FR-044).
+
 ```proto
 syntax = "proto3";
 package metering.v1;
@@ -991,12 +993,15 @@ message Limit {
   string name = 1; string subject = 2; string resource = 3; string unit = 4; int64 max = 5;
   Window window = 6; int64 dur_seconds = 7; string tz = 8;
   double warn_at = 9;                          // a fraction, not money
-  string deny_code = 10;                       // "payment_required" | "limit_reached"
+  string deny_code = 10;                       // "payment_required" | "limit_reached" | "account_blocked"
+  string max_entitlement = 11;                 // the entitlement key that sizes max — reported on a refusal,
+                                               // never honoured on a limit a caller supplies
 }
 message Admission { bool allowed = 1; Limit exceeded = 2; Limit warning = 3;
                     int64 headroom = 4; bool blocked = 5; }
 message Receipt   { string idem_key = 1; bool applied = 2; bool deferred = 3; int64 delta = 4;
-                    int64 balance = 5; int64 seq = 6; string rate_card_version = 7; }
+                    int64 balance = 5; int64 seq = 6; string rate_card_version = 7;
+                    int64 writeoff = 8; }          // the shortfall a clamp policy floored on a negative grant
 
 message AdmitRequest    { Scope scope = 1; string resource = 2; map<string,string> subjects = 3;
                           repeated Limit limits = 4;   // can only tighten
