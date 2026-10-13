@@ -71,4 +71,21 @@ expect_reject "depguard 6: a transport does not import another (grpcclient -> gr
 import \"$mod/metering/adapters/driving/grpcserver\"
 var _ = grpcserver.New"
 
+expect_reject "arch: billing domain imports nothing of billing (billing/domain -> billing/ports)" arch \
+  billing/domain/zz_violation.go billing/domain \
+  "package domain
+import _ \"$mod/billing/ports\""
+expect_reject "arch: billing ports reach metering through its ports (billing/ports -> metering/app)" arch \
+  billing/ports/zz_violation.go billing/ports \
+  "package ports
+import _ \"$mod/metering/app\""
+expect_reject "depguard 7: no infra in the fiat core (billing/ports -> pgx)" lint \
+  billing/ports/zz_violation.go billing/ports \
+  "package ports
+import _ \"github.com/jackc/pgx/v5\""
+expect_reject "depguard 8: the billing domain imports only metering's domain (billing/domain -> metering/ports)" lint \
+  billing/domain/zz_violation.go billing/domain \
+  "package domain
+import _ \"$mod/metering/ports\""
+
 [ "$fail" -eq 0 ] && echo "boundary verified" || { echo "boundary NOT verified"; exit 1; }
