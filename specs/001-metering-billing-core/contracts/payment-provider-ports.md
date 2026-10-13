@@ -534,6 +534,15 @@ Credits the customer *spent* are still revoked: what a refund past the spend doe
 payment it reverses (`source_key`), so the books empty that payment's own lot before any other. With expiry
 off there are no lots, `LotsOf` is empty and the cap is a no-op.
 
+A refund or a dispute names a payment, and the payment is the authority on whose it is: an event whose
+customer is not the payment's owner fails loudly rather than moving another scope's credits. Both run
+under the payment's lock (`Payments.Update`), read `LotReader.LotsOf` for what expiry has taken — an
+outage of the reader is an error, never a zero — and are announced on `billing.payment.<tag>`
+(`refunded`, `disputed`, `charged_back`, `succeeded`) only when they changed something, **before** the
+event is marked processed: a bus that blinked retries the event, every step of which is idempotent, so a
+notification is never lost. A clawback whose payment commit failed after the grant was made is recomputed
+identically on the retry and replays under the same key.
+
 ### Dispute lifecycle
 
 | Event | Payment | Credits |

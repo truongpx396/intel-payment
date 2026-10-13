@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -224,6 +225,10 @@ func (p *Processor) handle(ctx context.Context, le ports.LeasedEvent) (string, e
 	switch e.Type {
 	case domain.PaymentSucceeded:
 		return p.paymentSucceeded(ctx, acct, scope, le)
+	case domain.PaymentRefunded:
+		return p.paymentRefunded(ctx, acct, scope, le)
+	case domain.DisputeOpened, domain.DisputeFundsWithdrawn, domain.DisputeFundsReinstated, domain.DisputeClosed:
+		return p.dispute(ctx, acct, scope, le)
 	default:
 		return "", fmt.Errorf("%w: event type %s is not handled yet", domain.ErrNotImplemented, e.Type)
 	}
@@ -296,13 +301,9 @@ func (p *Processor) paymentSucceeded(ctx context.Context, acct domain.ProviderAc
 		// checkout.session.completed can both arrive for one purchase. A replay is a no-op, so running it again
 		// after a crash — or for a payment already recorded — is how a lost grant heals.
 		if pay.CreditsGranted > 0 {
-			receipt, err := p.d.Meter.Grant(ctx, md.Grant{Scope: pay.Scope, Pool: pay.Pool, Amount: pay.CreditsGranted, IdemKey: pay.IdemKey,
-				Reason: grantReason(pay.Kind), Ref: refOf(acct, pay, e)})
-			if err != nil {
+			if err := p.mint(ctx, md.Grant{Scope: pay.Scope, Pool: pay.Pool, Amount: pay.CreditsGranted, IdemKey: pay.IdemKey,
+				Reason: grantReason(pay.Kind), Ref: refOf(acct, pay, e)}); err != nil {
 				return cur, fmt.Errorf("grant credits for payment %s: %w", pay.ProviderPaymentID, err)
-			}
-			if receipt.Applied {
-				p.d.Metrics.Count(ports.MetricGrantApplied, 1, mports.Labels{"realm": string(pay.Scope.Realm.Or()), "reason": grantReason(pay.Kind)})
 			}
 		}
 		return pay, nil
@@ -334,4 +335,216 @@ func grantReason(kind string) string {
 // refOf is what the books remember about where a grant came from: audit data, never authority.
 func refOf(acct domain.ProviderAccount, pay domain.Payment, e domain.Event) map[string]string {
 	return map[string]string{"payment": pay.ProviderPaymentID, "account": acct.ID, "plan": pay.PlanCode, "event": e.ProviderEventID}
+}
+
+// mint is the one place billing creates or removes credits, and it does so only through Meter.Grant (invariant 3).
+func (p *Processor) mint(ctx context.Context, g md.Grant) error {
+	receipt, err := p.d.Meter.Grant(ctx, g)
+	if err != nil {
+		return err
+	}
+	if receipt.Applied {
+		p.d.Metrics.Count(ports.MetricGrantApplied, 1, mports.Labels{"realm": string(g.Scope.Realm.Or()), "reason": g.Reason})
+	}
+	return nil
+}
+
+// expired is how much of a payment's credits expiry has already taken (Σ lot.Expired under lots_fefo; nothing
+// with expiry off). A refund or a chargeback is capped by it, so the customer is not charged for the same credits
+// twice (invariant 20). An outage of the reader is an error, never a zero: taking credits back blind is worse
+// than taking them back late.
+func (p *Processor) expired(ctx context.Context, pay domain.Payment) (md.Credits, error) {
+	lots, err := p.d.Lots.LotsOf(ctx, pay.Scope, pay.Pool, pay.IdemKey)
+	if err != nil {
+		return 0, fmt.Errorf("read the lots of payment %s: %w", pay.ProviderPaymentID, err)
+	}
+	var total md.Credits
+	for _, l := range lots {
+		if total, err = total.Add(l.Expired); err != nil {
+			return 0, err
+		}
+	}
+	return total, nil
+}
+
+// refundKey names a refund's clawback: the provider's refund id, so a redelivery is the same key. A provider
+// that names none gets the payment and the cumulative figure, which is the same refund report every time.
+func refundKey(obj domain.EventObject) string {
+	if obj.ProviderRefundID != "" {
+		return "refund:" + obj.ProviderRefundID
+	}
+	return fmt.Sprintf("refund:%s@%d", obj.ProviderPaymentID, obj.AmountRefunded.MinorUnits)
+}
+
+// ownPayment refuses an event whose customer is not the payment's: the payment is the authority on whose it is.
+func ownPayment(cur domain.Payment, found bool, id string, scope domain.Scope) error {
+	if !found {
+		return fmt.Errorf("%w: payment %s is not recorded yet", md.ErrNotFound, id)
+	}
+	if cur.Scope.Normalized() != scope.Normalized() {
+		return fmt.Errorf("%w: payment %s belongs to %s, not %s", md.ErrInvalid, id, cur.Scope.Tag(), scope.Tag())
+	}
+	return nil
+}
+
+// paymentRefunded applies a CUMULATIVE refund report. The clawback is the difference between what the formula
+// says should be revoked by now and what has been — so several partial refunds revoke what one refund of the
+// total would, a replay revokes nothing, and a late, lower report is a no-op. It runs under the payment's lock:
+// two reports for one payment must not both read the same cumulative figures.
+func (p *Processor) paymentRefunded(ctx context.Context, acct domain.ProviderAccount, scope domain.Scope, le ports.LeasedEvent) (string, error) {
+	e := le.Event
+	obj := e.Object
+	if obj.ProviderPaymentID == "" || obj.AmountRefunded == nil {
+		return "", fmt.Errorf("%w: payment_refunded %s carries no payment id or refunded amount", md.ErrInvalid, e.ProviderEventID)
+	}
+	var announce *domain.Payment
+	_, err := p.d.Payments.Update(ctx, acct.ID, obj.ProviderPaymentID, func(cur domain.Payment, found bool) (domain.Payment, error) {
+		if err := ownPayment(cur, found, obj.ProviderPaymentID, scope); err != nil {
+			return cur, err
+		}
+		expired, err := p.expired(ctx, cur)
+		if err != nil {
+			return cur, err
+		}
+		plan, err := cur.ApplyRefund(*obj.AmountRefunded, expired)
+		if err != nil {
+			return cur, err
+		}
+		if plan.Revoke > 0 {
+			// Appends, never mutates (invariant 8): a negative grant beside the purchase, naming the payment whose
+			// lot the books empty first.
+			if err := p.mint(ctx, md.Grant{Scope: cur.Scope, Pool: cur.Pool, Amount: -plan.Revoke, SourceKey: cur.IdemKey,
+				IdemKey: refundKey(obj), Reason: "refund", Ref: refOf(acct, cur, e)}); err != nil {
+				return cur, fmt.Errorf("revoke credits for refund %s: %w", refundKey(obj), err)
+			}
+		}
+		next := cur
+		next.RefundedMinor, next.CreditsRevoked, next.Status = plan.RefundedMinor, plan.RevokedTotal, plan.Status
+		if next != cur {
+			announce = &next
+		}
+		return next, nil
+	})
+	if err != nil {
+		return "", err
+	}
+	if announce != nil {
+		if err := p.announcePayment(ctx, *announce, "refunded", announce.RefundedMinor); err != nil {
+			return "", err
+		}
+	}
+	return outcomeProcessed, nil
+}
+
+// dispute applies a phase of a dispute. Each phase that moves credits is a grant keyed on the dispute id and the
+// phase, so a replay is one effect; the phases converge in either order (invariant 17).
+func (p *Processor) dispute(ctx context.Context, acct domain.ProviderAccount, scope domain.Scope, le ports.LeasedEvent) (string, error) {
+	e := le.Event
+	obj := e.Object
+	if obj.ProviderPaymentID == "" || obj.DisputeID == "" {
+		return "", fmt.Errorf("%w: %s %s carries no payment or dispute id", md.ErrInvalid, e.Type, e.ProviderEventID)
+	}
+	var announce *domain.Payment
+	var note string
+	_, err := p.d.Payments.Update(ctx, acct.ID, obj.ProviderPaymentID, func(cur domain.Payment, found bool) (domain.Payment, error) {
+		if err := ownPayment(cur, found, obj.ProviderPaymentID, scope); err != nil {
+			return cur, err
+		}
+		var plan domain.DisputePlan
+		switch e.Type {
+		case domain.DisputeOpened:
+			plan = domain.DisputePlan{Payment: cur.OpenDispute(obj.DisputeID)}
+			note = "disputed"
+		case domain.DisputeFundsWithdrawn:
+			expired, err := p.expired(ctx, cur)
+			if err != nil {
+				return cur, err
+			}
+			if plan, err = cur.WithdrawFunds(obj.DisputeID, expired); err != nil {
+				return cur, err
+			}
+			note = "charged_back"
+		case domain.DisputeFundsReinstated:
+			var err error
+			if plan, err = cur.ReinstateFunds(obj.DisputeID); err != nil {
+				return cur, err
+			}
+			note = "succeeded"
+		default: // DisputeClosed
+			var err error
+			switch obj.Status {
+			case "won":
+				plan, err = cur.CloseDispute(obj.DisputeID, true)
+				note = "succeeded"
+			case "lost":
+				plan, err = cur.CloseDispute(obj.DisputeID, false)
+			default:
+				err = fmt.Errorf("%w: dispute %s closed with status %q, want won or lost", md.ErrInvalid, obj.DisputeID, obj.Status)
+			}
+			if err != nil {
+				return cur, err
+			}
+		}
+		if plan.Delta != 0 {
+			g := md.Grant{Scope: cur.Scope, Pool: cur.Pool, Amount: plan.Delta, IdemKey: plan.IdemKey, Reason: plan.Reason, Ref: refOf(acct, cur, e)}
+			if plan.Delta < 0 {
+				g.SourceKey = cur.IdemKey // a chargeback empties the payment's own lot first
+			}
+			if err := p.mint(ctx, g); err != nil {
+				return cur, fmt.Errorf("apply %s for dispute %s: %w", plan.Reason, obj.DisputeID, err)
+			}
+		}
+		if plan.Payment != cur {
+			announce = &plan.Payment
+		}
+		return plan.Payment, nil
+	})
+	if err != nil {
+		return "", err
+	}
+	if announce != nil && note != "" {
+		if err := p.announcePayment(ctx, *announce, note, announce.Amount.MinorUnits); err != nil {
+			return "", err
+		}
+	}
+	return outcomeProcessed, nil
+}
+
+// paymentNote is the body of billing.payment.<tag>: facts for outbound events and the host, never an instruction.
+type paymentNote struct {
+	Realm string `json:"realm"`
+	Scope struct {
+		Kind string `json:"kind"`
+		ID   string `json:"id"`
+	} `json:"scope"`
+	Event      string     `json:"event"` // succeeded | failed | refunded | disputed | charged_back | renewed | canceled
+	Payment    string     `json:"payment"`
+	Amount     int64      `json:"amount"` // minor units
+	Currency   string     `json:"currency"`
+	GraceUntil *time.Time `json:"grace_until,omitempty"`
+	ReceiptURL string     `json:"receipt_url,omitempty"`
+}
+
+// announcePayment publishes billing.payment.<tag>. It happens before the event is marked processed and a failure
+// retries the event — every step before it is idempotent — so a notification is never lost to a bus that blinked.
+func (p *Processor) announcePayment(ctx context.Context, pay domain.Payment, event string, amount int64) error {
+	n := paymentNote{Realm: string(pay.Scope.Realm.Or()), Event: event, Payment: pay.ProviderPaymentID, Amount: amount,
+		Currency: pay.Amount.Currency, ReceiptURL: pay.ReceiptURL}
+	n.Scope.Kind, n.Scope.ID = pay.Scope.Kind, pay.Scope.ID
+	return p.publish(ctx, "billing.payment."+pay.Scope.SubjectToken(), n)
+}
+
+// publish sends a JSON body to the bus, if there is one.
+func (p *Processor) publish(ctx context.Context, subject string, body any) error {
+	if p.d.Bus == nil {
+		return nil
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("encode %s: %w", subject, err)
+	}
+	if err := p.d.Bus.Publish(ctx, subject, raw); err != nil {
+		return fmt.Errorf("publish %s: %w", subject, err)
+	}
+	return nil
 }
