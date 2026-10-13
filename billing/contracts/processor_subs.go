@@ -62,6 +62,7 @@ func SubscriptionCases() []ProcessorCase {
 			p := mk(t, h)
 			h.GivenProviderSub("sub-2", domain.PastDue, Start)
 			h.Persisted(h.PaymentFailed("evt_f", "in-9", "sub-2"))
+			h.Clock.Advance(3 * time.Hour) // the worker gets to it late: the window is the provider's to date, not ours
 			h.Tick(t, p)
 
 			grace := Start.Add(GraceWindow)
@@ -84,7 +85,7 @@ func SubscriptionCases() []ProcessorCase {
 			}
 
 			// Inside the window nothing is announced; at its instant the end is announced once.
-			h.Clock.Advance(GraceWindow - time.Second)
+			h.Clock.Advance(grace.Add(-time.Second).Sub(h.Clock.Now()))
 			h.Tick(t, p)
 			if count(entitlementReasons(h, h.Scope), "grace_expired") != 0 {
 				t.Fatal("the grace was announced over before it ended")
