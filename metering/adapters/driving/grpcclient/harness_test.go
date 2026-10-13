@@ -118,6 +118,16 @@ func (f *fakeServer) GetBalance(ctx context.Context, r *meteringv1.BalanceReques
 // dial serves f over an in-memory connection and returns a Client on it.
 func dial(t *testing.T, f *fakeServer, opts ...grpc.DialOption) *grpcclient.Client {
 	t.Helper()
+	cl, err := tryDial(t, f, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cl
+}
+
+// tryDial is dial for a connection that may legitimately be refused at creation.
+func tryDial(t *testing.T, f *fakeServer, opts ...grpc.DialOption) (*grpcclient.Client, error) {
+	t.Helper()
 	g := grpc.NewServer()
 	meteringv1.RegisterMeteringServer(g, f)
 	lis := bufconn.Listen(1 << 20)
@@ -126,11 +136,17 @@ func dial(t *testing.T, f *fakeServer, opts ...grpc.DialOption) *grpcclient.Clie
 		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	}, opts...)...)
+	t.Cleanup(func() {
+		if conn != nil {
+			_ = conn.Close()
+		}
+		g.Stop()
+		_ = lis.Close()
+	})
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
-	t.Cleanup(func() { _ = conn.Close(); g.Stop(); _ = lis.Close() })
-	return grpcclient.New(conn)
+	return grpcclient.New(conn), nil
 }
 
 // wireStatus builds a status the way the contract says a server writes it: the code, and an ErrorInfo

@@ -38,10 +38,11 @@ type BalanceReader interface {
 	Balance(ctx context.Context, s domain.Scope) (map[domain.Pool]domain.Credits, error)
 }
 
-// Service is what a transport fronts: the Meter and the read beside it, as one value.
+// Service is what a transport fronts: the Meter and the reads beside it, as one value.
 type Service interface {
 	Meter
 	BalanceReader
+	CreditsReader
 }
 
 // LedgerWriter is the ONLY component that writes the account of record: credit_ledger,

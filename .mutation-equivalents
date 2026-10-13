@@ -130,3 +130,24 @@ mutator = "ARITHMETIC_BASE"
 col = 61
 line = 'pools := make(map[domain.Pool]domain.Credits, len(st.Booked)+len(st.Suspense))'
 why = "a map capacity hint; a negative hint is treated as zero, so nothing observable changes"
+
+[[equivalent]]
+file = "metering/app/credits.go"
+mutator = "CONDITIONALS_BOUNDARY"
+col = 31
+line = 'return configured[i].Priority < configured[j].Priority'
+why = "reached only when the priorities differ, so < and <= agree"
+
+[[equivalent]]
+file = "metering/app/credits.go"
+mutator = "CONDITIONALS_BOUNDARY"
+col = 27
+line = 'return configured[i].Name < configured[j].Name'
+why = "pool names are unique within a realm (the primary key), so two configured pools never compare equal and < and <= agree"
+
+[[equivalent]]
+file = "metering/app/credits.go"
+mutator = "CONDITIONALS_BOUNDARY"
+col = 59
+line = 'sort.Slice(strays, func(i, j int) bool { return strays[i] < strays[j] })'
+why = "strays are the keys of a map, so no two are equal and < and <= agree"

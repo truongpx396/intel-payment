@@ -299,6 +299,8 @@ The panel needs materially more than a balance figure, and it needs it in one sh
 | `ledger[]` + `idempotent` | `credit_ledger` | the `deduped` tag is how "charged at most once" becomes *observable to the person it protects*, rather than a claim in a spec |
 | `anchor` | resolved by the host | absent when this scope *is* the billing entity |
 
+**What is built today.** `balance.remaining` / `granted` / `pools`, `limits[]` and `ledger[]` are served by `GET /v1/credits` ([rest-api.md](./rest-api.md)); `balance.burnRatePerDay`, `series[]` and `breakdown[]` wait for the `usage_daily` rollup (Phase 5) and are absent — `breakdown` is an empty list — until then. A limit view is the kernel's `Limit` with `window` mapped to the view's vocabulary in exactly one place (`app.Credits`); `warnAtPct` is the limit's own, as a whole percent; `resetsAt` is the instant the counter starts over, in the limit's own zone, and only a calendar window has one; and a balance's `used` is the overdraft it is into. `scopeHint` is set only in a member's view.
+
 See [rest-api.md](./rest-api.md) for the full endpoint contract and [entitlement-ports.md](./entitlement-ports.md) for the admin gate on `breakdown[]`.
 
 ---

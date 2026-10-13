@@ -7,6 +7,11 @@ import "errors"
 var (
 	// ErrInvalid is a malformed request: 400 / INVALID_ARGUMENT.
 	ErrInvalid = errors.New("invalid request")
+	// ErrNotFound is a named piece of configuration that does not exist: 404.
+	ErrNotFound = errors.New("not found")
+	// ErrAlreadyExists is configuration that is published once and cannot be written again — a rate
+	// card version, or a second active card for a realm: 409.
+	ErrAlreadyExists = errors.New("already exists")
 	// ErrIdemConflict is a key reused with a DIFFERENT request: 409. Never a silent no-op.
 	ErrIdemConflict = errors.New("idempotency key reused with a different request")
 	// ErrStaleEvent is a usage event older than the dedup window: 422.

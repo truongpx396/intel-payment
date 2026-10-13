@@ -63,8 +63,14 @@ Each credential carries:
 - **a privilege set** — any of `record` (admit, record, read), `grant` (mint, remove and transfer
   credits) and `admin` (configuration and operations).
 
-Credentials are configured as `PAYMENT_SERVICE_TOKENS=<caller-id>:<sha256>:<realms>:<privileges>`
-(bearer) or map a client-certificate subject to the same triple (mTLS).
+Credentials are configured as `PAYMENT_SERVICE_TOKENS=<caller-id>:<sha256>:<realms>:<privileges>` (bearer) or
+`PAYMENT_SERVICE_CERTS=<caller-id>:<certificate common name>:<realms>:<privileges>` (mTLS); realms and
+privileges are each joined with `+`. The configuration holds the **digest** of a token, never the token, and a
+mistake in it — a plaintext token where the digest belongs, a wildcard realm, an unknown privilege, a caller or a
+credential listed twice — stops the service at start-up rather than meaning something other than what was written.
+A bearer token is compared by digest, in constant time, against every entry. Over gRPC the token rides in the
+`authorization` metadata (and is refused over a connection that is not TLS unless the caller says the transport
+is one it trusts); over REST it is the `Authorization: Bearer` header.
 
 ### Realm binding
 

@@ -22,6 +22,8 @@ type Deps struct {
 	Bus       ports.Bus            // warn/blocked events (redisstreams by default)
 	Quotas    ports.QuotaSource    // optional: sizes limits that name a max_entitlement
 	Archive   ports.UsageArchive   // required when LedgerGranularity=rollup
+	Usage     ports.UsageReader    // optional: the window counters, for the credits snapshot
+	Ledger    ports.LedgerReader   // optional: the booked rows, for the credits snapshot
 	Stream    ports.IntentStream   // the writer's view of the outbox (redisstreams); unused by the Meter
 	Clock     ports.Clock          // required: the core reads no clock. adapters/driven/system.Clock{}
 	IDs       ports.IDSource       // required by the writer; adapters/driven/system.IDs

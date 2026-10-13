@@ -102,23 +102,9 @@ func (m *meter) resolveLimits(ctx context.Context, s domain.Scope, req domain.Ad
 		// realm's ceilings would be serving unbounded, so it fails closed whatever AdmitFail says.
 		return nil, false, fmt.Errorf("metering: realm limits: %w", err)
 	}
-	configured := make([]domain.Limit, 0, len(all))
-	for _, l := range all {
-		if !l.Applies(req.Resource) {
-			continue
-		}
-		if l.MaxEntitlement != "" {
-			size, keep, open, err := m.sizeFromEntitlement(ctx, s, l)
-			if err != nil {
-				return nil, false, err
-			}
-			failedOpen = failedOpen || open
-			if !keep {
-				continue // unlimited, or unresolved under fail_open
-			}
-			l.Max = size
-		}
-		configured = append(configured, l)
+	configured, failedOpen, err := m.sizeLimits(ctx, s, all, func(l domain.Limit) bool { return l.Applies(req.Resource) })
+	if err != nil {
+		return nil, false, err
 	}
 
 	// A caller may tighten a configured limit or pass a per-run Job budget. A window limit that no
@@ -140,6 +126,31 @@ func (m *meter) resolveLimits(ctx context.Context, s domain.Scope, req domain.Ad
 		}
 	}
 	return domain.MergeLimits(configured, req.Limits), failedOpen, nil
+}
+
+// sizeLimits keeps the limits that pass keep, each sized by its entitlement when it names one: the cap Admit
+// enforces, and so the cap the credits snapshot shows. A limit whose quota is unlimited — or unresolved
+// under fail_open — is dropped; an unresolved one under fail_closed is the error.
+func (m *meter) sizeLimits(ctx context.Context, s domain.Scope, all []domain.Limit, keep func(domain.Limit) bool) (sized []domain.Limit, failedOpen bool, err error) {
+	sized = make([]domain.Limit, 0, len(all))
+	for _, l := range all {
+		if !keep(l) {
+			continue
+		}
+		if l.MaxEntitlement != "" {
+			size, ok, open, err := m.sizeFromEntitlement(ctx, s, l)
+			if err != nil {
+				return nil, false, err
+			}
+			failedOpen = failedOpen || open
+			if !ok {
+				continue // unlimited, or unresolved under fail_open
+			}
+			l.Max = size
+		}
+		sized = append(sized, l)
+	}
+	return sized, failedOpen, nil
 }
 
 // sizeFromEntitlement resolves a limit's Max from the scope's entitlement quota.
