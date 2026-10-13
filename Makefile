@@ -51,6 +51,7 @@ fmt: ## Format
 
 ## ---- the boundary ---------------------------------------------------------
 lint: arch-lint ## golangci-lint (incl. depguard) + architecture graph
+	golangci-lint config verify
 	golangci-lint run ./...
 
 arch-lint: ## Enforce the hexagonal dependency graph
