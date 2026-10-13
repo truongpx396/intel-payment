@@ -338,20 +338,48 @@ type Customers interface {
 	ResolveScope(ctx context.Context, account, providerCustomerID string) (domain.Scope, bool, error)
 }
 
+// Accounts serves provider accounts, which are configuration data. SecretResolver turns the reference an
+// account holds (`env:STRIPE_SECRET_KEY`) into the secret at the moment of use; a secret is never stored,
+// logged or cached beyond a call (invariant 10). Providers resolves an adapter by name.
+type Accounts interface {
+	Account(ctx context.Context, id string) (domain.ProviderAccount, bool, error)
+}
+type SecretResolver interface {
+	Resolve(ctx context.Context, ref string) (string, error)
+}
+type Providers map[domain.Provider]PaymentProvider
+
 // Inbox is the durable webhook queue (payment_events).
 type Inbox interface {
 	// Persist stores a verified, normalized event. An existing (account, event id) is a no-op
 	// that still reports success: the delivery is durable either way, so the ingress answers 200.
 	Persist(ctx context.Context, e domain.Event) (inserted bool, err error)
 	// Park stores a delivery whose verification is UNAVAILABLE (not failed), raw body included,
-	// until verification can be retried. The body is deleted the moment it verifies.
-	Park(ctx context.Context, account, eventID string, raw []byte, headers http.Header) error
+	// until verification can be retried. The body is not parsed, so eventID is a stable name for
+	// the delivery ("parked:" + the body's SHA-256): a redelivery of the same bytes is one row.
+	Park(ctx context.Context, provider domain.Provider, account, eventID string, raw []byte, headers http.Header) error
+
 	// Lease claims up to n events due for processing (received, failed past backoff, or a
 	// processing lease that expired) for this worker, for `ttl`. A lease is a conditional UPDATE:
-	// two processors never hold the same event.
+	// two processors never hold the same event, and an event is not leased while an earlier one of
+	// the same customer is still being worked — a customer's events are handled in the provider's order.
 	Lease(ctx context.Context, n int, ttl time.Duration) ([]LeasedEvent, error)
-	MarkProcessed(ctx context.Context, id string, outcome string) error          // processed | ignored
-	MarkFailed(ctx context.Context, id string, err error, retryAt time.Time) error // → dead past MaxAttempts
+	MarkProcessed(ctx context.Context, id string, outcome string) error // processed | ignored
+	// MarkFailed records a failed attempt and schedules the next; past the attempt cap the event
+	// is dead, and the caller pages. It reports whether the event is now dead.
+	MarkFailed(ctx context.Context, id string, cause error, retryAt time.Time) (dead bool, err error)
+
+	// The parked half. A parked delivery is retried by billing.webhook.tick: Promote when it now
+	// verifies (the body is deleted that moment), RetryParked while verification is still
+	// unavailable, Reject when it FAILS to verify — a security event; never trusted, body dropped.
+	LeaseParked(ctx context.Context, n int, ttl time.Duration) ([]ParkedDelivery, error)
+	Promote(ctx context.Context, id string, e domain.Event) (inserted bool, err error)
+	RetryParked(ctx context.Context, id string, retryAt time.Time) error
+	Reject(ctx context.Context, id string, reason string) error
+
+	// Oldest is the receipt time of the oldest verified event not yet processed
+	// (billing_webhook_inbox_age_seconds).
+	Oldest(ctx context.Context) (receivedAt time.Time, ok bool, err error)
 	// Purge drops processed rows past retention, which MUST exceed the longest provider replay window.
 	Purge(ctx context.Context, olderThan time.Time) (int, error)
 }
@@ -359,14 +387,34 @@ type Inbox interface {
 type Payments interface {
 	Get(ctx context.Context, account, providerPaymentID string) (domain.Payment, bool, error)
 	Upsert(ctx context.Context, p domain.Payment) error
+	// Update runs fn on the payment under an exclusive lock on (account, provider payment id) and
+	// stores what it returns. Two refund reports for one payment, handled by two processors, must
+	// not both read the same cumulative figures — the lock is what makes "revoke exactly" hold
+	// under concurrency. fn may call Meter.Grant: every call it makes is idempotent, so a failed
+	// commit is a retry, not a second effect.
+	Update(ctx context.Context, account, providerPaymentID string, fn func(cur domain.Payment, found bool) (domain.Payment, error)) (domain.Payment, error)
 	List(ctx context.Context, s domain.Scope, cursor string, limit int) ([]domain.Payment, string, error)
 }
 
 type Subs interface {
 	Get(ctx context.Context, s domain.Scope) (domain.Sub, bool, error)
-	// ApplyIfNewer writes the state only when at is newer than the stored LastEventAt.
+	// ApplyIfNewer writes the state only when it is newer than the stored one, by the total order of
+	// domain.Sub.Apply (invariant 15) — in one conditional statement, so concurrent appliers converge.
 	ApplyIfNewer(ctx context.Context, sub domain.Sub, at time.Time) (applied bool, err error)
+	// DueForGraceExpiry lists past_due subscriptions whose grace window has ended and whose end has
+	// not been announced; MarkGraceLapsed records the announcement, only while it is still the grace
+	// that ended (a newer state clears it).
 	DueForGraceExpiry(ctx context.Context, now time.Time) ([]domain.Sub, error)
+	MarkGraceLapsed(ctx context.Context, sub domain.Sub, at time.Time) (bool, error)
+}
+
+// The two driving ports. Handle answers one provider delivery with a status; Tick leases the events
+// that are due, processes them, and retries parked deliveries — safe to run from many processors at once.
+type WebhookIngress interface {
+	Handle(ctx context.Context, provider, account string, body []byte, header http.Header) IngressResult
+}
+type WebhookProcessor interface {
+	Tick(ctx context.Context) error
 }
 ```
 
@@ -576,20 +624,20 @@ func ProviderContract(t *testing.T, p ports.PaymentProvider, fx Fixtures) {
 func IngressContract(t *testing.T, h ports.WebhookIngress, fx Fixtures) {
 	t.Run("a duplicate delivery is persisted once and answered 200 twice", func(t *testing.T) {
 		body, hdr := fx.SignedPaymentSucceeded()
-		mustStatus(t, h.Handle(ctx, "fake", "acct", body, hdr), 200)
-		mustStatus(t, h.Handle(ctx, "fake", "acct", body, hdr), 200)
+		mustStatus(t, h.Handle(ctx, "fake", "acct", body, hdr).Status, 200)
+		mustStatus(t, h.Handle(ctx, "fake", "acct", body, hdr).Status, 200)
 		if n := fx.Inbox.Count(); n != 1 { t.Fatalf("persisted %d rows", n) }
 	})
 	t.Run("ingress never touches money", func(t *testing.T) {
 		body, hdr := fx.SignedPaymentSucceeded()
-		mustStatus(t, h.Handle(ctx, "fake", "acct", body, hdr), 200)
+		mustStatus(t, h.Handle(ctx, "fake", "acct", body, hdr).Status, 200)
 		if fx.Meter.GrantCalls() != 0 { t.Fatal("stage 1 must only persist") }
 	})
 	t.Run("an unknown account is 404; unavailable verification parks and answers 202", func(t *testing.T) {
 		body, hdr := fx.SignedPaymentSucceeded()
-		mustStatus(t, h.Handle(ctx, "fake", "nope", body, hdr), 404)
+		mustStatus(t, h.Handle(ctx, "fake", "nope", body, hdr).Status, 404)
 		fx.Provider.VerificationDown()
-		mustStatus(t, h.Handle(ctx, "fake", "acct", body, hdr), 202)
+		mustStatus(t, h.Handle(ctx, "fake", "acct", body, hdr).Status, 202)
 		if !fx.Inbox.HasParked() { t.Fatal("an unverifiable delivery must be parked, not dropped") }
 	})
 }
