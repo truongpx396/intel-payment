@@ -137,7 +137,8 @@ type Sub struct {
 	CurrentPeriodStart     time.Time
 	CurrentPeriodEnd       time.Time
 	CancelAtPeriodEnd      bool
-	GraceUntil             *time.Time // dunning: entitlements hold until this instant
+	GraceUntil             *time.Time // dunning: entitlements hold until this instant, and not after it
+	GraceLapsedAt          *time.Time // when the sweep announced the end of the grace; nil until it has (once, not every sweep)
 	LastEventAt            time.Time  // provider timestamp of the newest state applied (invariant 15)
 }
 
@@ -169,6 +170,7 @@ type Payment struct {
 	Status            PaymentStatus
 	DisputeID         string
 	DisputeStatus     string // "" | "open" | "won" | "lost"
+	DisputeClawed     domain.Credits // what a chargeback took, so a won dispute returns exactly that (invariant 17)
 	ReceiptURL        string
 	FailureReason     string
 	IdemKey           string // == the grant's idem_key
@@ -438,7 +440,12 @@ this_refund  = revoke_total − credits_revoked          (never negative)
 
 Computing the *cumulative* figure and subtracting what was already revoked means three partial
 refunds revoke exactly what one refund of the same total would — no rounding drift, never more than
-was granted, and a replayed refund event revokes nothing further. `refunded_minor ≤ amount_minor`
+was granted, and a replayed refund event revokes nothing further. The product is computed in 128 bits
+(`billing/domain.RevokeTotal`, held to `math/big` by a fuzz target), so it cannot wrap. Providers do not
+order deliveries, so a report **older** than one already applied lowers nothing: the stored
+`refunded_minor` is `max(report, stored)` and the report revokes nothing. A refund that fiat cannot
+explain — more than was paid, in another currency, negative — is `ErrInvalid`, which the inbox retries
+into a dead event and a page; it is never a number. `refunded_minor ≤ amount_minor`
 and `credits_revoked ≤ credits_granted` are database constraints.
 
 **What expiry already took (invariant 20).** Under `CreditExpiry=lots_fefo` the payment's credits are a
@@ -461,12 +468,17 @@ off there are no lots, `LotsOf` is empty and the cap is a no-op.
 | Event | Payment | Credits |
 |---|---|---|
 | `dispute_opened` | `disputed`, `dispute_status = open` | none: funds have not moved. A host that wants to freeze usage uses `block_and_flag` via an admin action |
-| `dispute_funds_withdrawn` | `charged_back` | `Meter.Grant{amount: −(credits_granted − credits_revoked), idem_key: "dispute:" + id + ":withdrawn", reason: chargeback}` — subject to `NegativeBalancePolicy` |
-| `dispute_funds_reinstated` / `dispute_closed{won}` | `succeeded`, `dispute_status = won` | `Meter.Grant{amount: +the amount clawed back, idem_key: "dispute:" + id + ":reinstated", reason: chargeback_reversal}` — only if a withdrawal was applied |
+| `dispute_funds_withdrawn` | `charged_back` | `Meter.Grant{amount: −(credits_granted − credits_revoked − Σ lot.Expired), source_key: payment.IdemKey, idem_key: "dispute:" + id + ":withdrawn", reason: chargeback}` — subject to `NegativeBalancePolicy`. What it took is kept in `dispute_clawed` |
+| `dispute_funds_reinstated` / `dispute_closed{won}` | the status the refunds alone give (`succeeded`, `partially_refunded`, `refunded`), `dispute_status = won` | `Meter.Grant{amount: +dispute_clawed, idem_key: "dispute:" + id + ":reinstated", reason: chargeback_reversal}` — only if a withdrawal was applied |
 | `dispute_closed{lost}` | `dispute_status = lost` | none further |
 
 A chargeback is reversible because the provider says so; a system that only knows how to take
-credits back turns every won dispute into a support ticket.
+credits back turns every won dispute into a support ticket. Deliveries are unordered, so the two
+phases converge in either order: a reinstatement that arrives first records the verdict and grants
+nothing, and a withdrawal that then arrives takes nothing; a replay of either changes nothing; an
+opening that arrives after the money moved does not un-charge the payment back. The chargeback is
+capped by expiry exactly as a refund is (invariant 20): credits that lapsed unspent are not taken
+a second time.
 
 ### Auto top-up
 
@@ -511,12 +523,12 @@ provider's reference.
 12. **Subscription status has one writer: the processor** (and the drift sweep, which uses the same `ApplyIfNewer`). A local cancel calls the provider and waits for the resulting event.
 13. **A failed payment does not instantly revoke.** `GraceUntil` holds entitlements for the configured grace period, then suspends.
 14. **Unverifiable deliveries are parked, never dropped and never trusted.** Their raw body is kept only until verification succeeds.
-15. **Delivery order never decides state.** Subscription state is the provider's current object, applied only if its timestamp is newer than the stored `last_event_at`.
+15. **Delivery order never decides state.** Subscription state is the provider's current object, applied only if it is newer than the stored state. "Newer" is a **total order**: the provider's instant, then — because providers stamp events to the second and `updated` and `deleted` can share one — how final the status is (`canceled` above `paused` above `past_due` above `active`…), then every remaining field in a fixed order (`billing/domain.Sub.Apply`). Any permutation of any set of events therefore converges to one state, and a redelivery of the state already held is not applied, so it is not announced twice.
 16. **Partial refunds revoke exactly.** Cumulative arithmetic, rounded up, capped at what was granted; several partial refunds equal one refund of the same total.
 17. **A chargeback is reversible.** Funds withdrawn claws back; funds reinstated grants back exactly what was clawed; each is keyed on the dispute id and phase.
 18. **Auto top-up is bounded and still webhook-fulfilled.** At most `max_per_day` distinct idempotent charges per scope per day; repeated failure disables it and tells the host; credits arrive only on the verified payment.
 19. **An account touches only its realms.** A verified event whose customer resolves to a realm outside the account's `realms` is ignored and counted as a security event.
-20. **A refund never claws back what expiry already took.** The clawback names the payment it reverses (`source_key`) and is capped at `credits_granted − Σ lot.Expired`, read from `LotReader.LotsOf`; credits that were spent are still revoked and fall to `NegativeBalancePolicy`.
+20. **A refund never claws back what expiry already took.** The clawback names the payment it reverses (`source_key`) and is capped at `credits_granted − Σ lot.Expired`, read from `LotReader.LotsOf`; credits that were spent are still revoked and fall to `NegativeBalancePolicy`. A chargeback is the same clawback by another name and is capped the same way.
 
 ---
 
