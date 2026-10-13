@@ -1,0 +1,11 @@
+# `make proto` — local plugins, pinned in the Makefile (PROTOC_GEN_GO_VERSION, PROTOC_GEN_GO_GRPC_VERSION)
+# so the generated code is the same on every machine and CI can fail when it is stale.
+version: v2
+plugins:
+  - local: protoc-gen-go
+    out: .
+    opt: module=github.com/truongpx396/intel-payment
+  - local: protoc-gen-go-grpc
+    out: .
+    opt:
+      - module=github.com/truongpx396/intel-payment

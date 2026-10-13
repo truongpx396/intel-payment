@@ -53,6 +53,20 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
+  # The wire contract (api/proto). Generated code is checked in, so CI fails on a stale tree; a released
+  # shape never changes in place, so `buf breaking` compares with main (rest-api.md § Versioning).
+  proto:
+    name: protobuf (lint · generated code current · no breaking change)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }          # buf breaking reads origin/main
+      - uses: actions/setup-go@v7
+        with: { go-version: '1.26', cache: true }
+      - uses: bufbuild/buf-action@v1
+        with: { version: 1.60.0, setup_only: true }
+      - run: make proto-tools proto-check
+
   # Test-driven development, with the evidence checkable (docs/testing.md; constitution principle X).
   red-green:
     name: test-driven (a failing test-only commit precedes the change)
