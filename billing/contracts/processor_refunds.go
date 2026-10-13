@@ -39,13 +39,16 @@ func paymentEvents(h *Harness, scope md.Scope) []string {
 	return out
 }
 
-func contains(xs []string, want string) bool {
+func contains(xs []string, want string) bool { return count(xs, want) > 0 }
+
+func count(xs []string, want string) int {
+	n := 0
 	for _, x := range xs {
 		if x == want {
-			return true
+			n++
 		}
 	}
-	return false
+	return n
 }
 
 // RefundCases are the subtests of the refunds half of ProcessorRefunds (invariants 8, 16, 20; FR-023, SC-017).
@@ -82,8 +85,21 @@ func RefundCases() []ProcessorCase {
 			if h.Meter.NetGranted("pay-4") != paid-666*perCent {
 				t.Fatalf("net granted for the payment = %d", h.Meter.NetGranted("pay-4"))
 			}
-			if !contains(paymentEvents(h, h.Scope), "refunded") {
-				t.Fatalf("billing.payment.<tag> never announced the refund: %v", paymentEvents(h, h.Scope))
+			if n := count(paymentEvents(h, h.Scope), "refunded"); n != 2 {
+				t.Fatalf("the refunds were announced %d times, want 2: a replayed report changes nothing, so it announces nothing (%v)", n, paymentEvents(h, h.Scope))
+			}
+		}},
+		{"a refund naming another customer's payment is refused, not applied to it", func(t testing.TB, mk ProcessorFactory) {
+			h := NewHarness()
+			p := mk(t, h)
+			h.GivenSucceededPayment("pay-4", 1000, paid) // cus_1's
+			fe := h.Refund("evt_r1", "pay-4", "re_1", 500)
+			fe.Customer = "cus_2" // another customer of the same account names it
+			h.Persisted(fe)
+			h.Tick(t, p)
+			wantRow(t, h, "evt_r1", RowFailed)
+			if len(negativeGrants(h)) != 0 || h.Payments.Row("pay-4").CreditsRevoked != 0 {
+				t.Fatal("credits were taken from one scope on the word of an event about another")
 			}
 		}},
 		{"any partition of a total into reports revokes what one refund of the total does", func(t testing.TB, mk ProcessorFactory) {
@@ -282,6 +298,9 @@ func DisputeCases() []ProcessorCase {
 			h.Rounds(t, p, 2, time.Minute)
 			if n := len(negativeGrants(h)); n != 1 || h.Meter.NetGranted("pay-5") != 0 {
 				t.Fatalf("%d chargebacks, net %d: one chargeback, once", n, h.Meter.NetGranted("pay-5"))
+			}
+			if n := count(paymentEvents(h, h.Scope), "charged_back"); n != 1 {
+				t.Fatalf("the chargeback was announced %d times, want 1: a replay changes nothing, so it announces nothing", n)
 			}
 		}},
 		{"a chargeback takes what a refund and expiry left", func(t testing.TB, mk ProcessorFactory) {
