@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync"
+	"testing"
 	"time"
 
 	"github.com/truongpx396/intel-payment/billing/domain"
 	"github.com/truongpx396/intel-payment/billing/ports"
 	mcontracts "github.com/truongpx396/intel-payment/metering/contracts"
 	md "github.com/truongpx396/intel-payment/metering/domain"
+	mports "github.com/truongpx396/intel-payment/metering/ports"
 )
 
 // The world every suite runs in, so an expectation is a number and not a formula.
@@ -45,6 +48,7 @@ type Harness struct {
 	Meter     *FakeMeter
 	Lots      *FakeLots
 	Metrics   *RecordingMetrics
+	Bus       *MemBus
 
 	// Scope is the customer cus_1's scope; Scope2 is cus_2's. Foreign is cus_foreign's, in a realm the account
 	// does not serve.
@@ -71,7 +75,7 @@ func NewHarness() *Harness {
 		Accounts: NewMemAccounts(log, accts...),
 		Inbox:    NewMemInbox(clock, log), Payments: NewMemPayments(log), Subs: NewMemSubs(log),
 		Customers: NewMemCustomers(log), Catalog: NewMemCatalog(log), Meter: NewFakeMeter(log), Lots: NewFakeLots(log),
-		Metrics: &RecordingMetrics{},
+		Metrics: &RecordingMetrics{}, Bus: &MemBus{},
 		Scope:   md.Scope{Realm: md.DefaultRealm, Kind: "workspace", ID: "w1"},
 		Scope2:  md.Scope{Realm: md.DefaultRealm, Kind: "workspace", ID: "w2"},
 		Foreign: md.Scope{Realm: "other", Kind: "workspace", ID: "x1"},
@@ -222,4 +226,164 @@ func (f fakeFixtures) SignedUnknownType() ([]byte, http.Header) {
 func (f fakeFixtures) Checkout() ports.CheckoutInput {
 	return ports.CheckoutInput{Scope: f.h.Scope, Mode: "payment", PlanCode: PackCode, Currency: "USD", ProviderPriceID: PackPriceID,
 		BillingEmail: "buyer@example.test", SuccessURL: "https://app.example.test/ok", CancelURL: "https://app.example.test/no", IdemKey: "checkout-1"}
+}
+
+// ------------------------------------------------------------ the processor --
+
+// GraceWindow is the dunning grace the processor under test is configured with.
+const GraceWindow = 7 * 24 * time.Hour
+
+// MemBus records what is published and delivers nothing: the suites ask what was announced.
+type MemBus struct {
+	mu   sync.Mutex
+	msgs []BusMessage
+	fail error
+}
+
+// BusMessage is one publication.
+type BusMessage struct {
+	Subject string
+	Payload []byte
+}
+
+// FailPublish makes Publish fail with err; nil clears it.
+func (b *MemBus) FailPublish(err error) {
+	b.mu.Lock()
+	b.fail = err
+	b.mu.Unlock()
+}
+
+// Publish implements ports.Bus.
+func (b *MemBus) Publish(_ context.Context, subject string, payload []byte) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.fail != nil {
+		return b.fail
+	}
+	b.msgs = append(b.msgs, BusMessage{subject, append([]byte(nil), payload...)})
+	return nil
+}
+
+// Subscribe is not the suites' to use.
+func (b *MemBus) Subscribe(context.Context, string, string, mports.Handler) (mports.Subscription, error) {
+	return nil, domain.ErrNotImplemented
+}
+
+// Pending is not the suites' to use.
+func (b *MemBus) Pending(context.Context, string, string) (int64, time.Duration, error) {
+	return 0, 0, nil
+}
+
+// Trim is not the suites' to use.
+func (b *MemBus) Trim(context.Context, string, mports.RetentionPolicy) error { return nil }
+
+// Messages is everything published so far.
+func (b *MemBus) Messages() []BusMessage {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]BusMessage(nil), b.msgs...)
+}
+
+// On is the messages published to a subject, decoded as JSON objects.
+func (b *MemBus) On(subject string) []map[string]any {
+	var out []map[string]any
+	for _, m := range b.Messages() {
+		if m.Subject != subject {
+			continue
+		}
+		var v map[string]any
+		if err := json.Unmarshal(m.Payload, &v); err != nil {
+			panic("harness: a published payload is not JSON: " + err.Error())
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// ProcessorFactory builds the processor under test over a harness's collaborators: its inbox, accounts, the
+// provider registry, customers, catalogue, payments, subscriptions, meter, lot reader, clock, metrics and bus, with
+// GraceWindow as the dunning grace.
+type ProcessorFactory func(t testing.TB, h *Harness) ports.WebhookProcessor
+
+// Tick runs the processor once and fails the case if it reports an error.
+func (h *Harness) Tick(t testing.TB, p ports.WebhookProcessor) {
+	t.Helper()
+	if err := p.Tick(Ctx()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+}
+
+// Rounds ticks the processor n times, moving the clock forward by step before each: the way a worker's loop runs
+// across the backoff of a failing event.
+func (h *Harness) Rounds(t testing.TB, p ports.WebhookProcessor, n int, step time.Duration) {
+	t.Helper()
+	for range n {
+		h.Clock.Advance(step)
+		h.Tick(t, p)
+	}
+}
+
+// Refund is a payment_refunded event for cus_1: the provider reports the CUMULATIVE amount refunded.
+func (h *Harness) Refund(eventID, paymentID, refundID string, cumulative int64) FakeEvent {
+	return FakeEvent{ID: eventID, Type: string(domain.PaymentRefunded), Created: h.Now(), Customer: "cus_1", Payment: paymentID,
+		Refund: refundID, Refunded: cumulative, Amount: 1000, Currency: "USD"}
+}
+
+// Dispute is a dispute event for a payment of cus_1. The provider names the payment, not the customer.
+func (h *Harness) Dispute(eventID string, kind domain.EventType, paymentID, disputeID string) FakeEvent {
+	return FakeEvent{ID: eventID, Type: string(kind), Created: h.Now(), Payment: paymentID, Dispute: disputeID}
+}
+
+// DisputeClosed is the verdict: won or lost.
+func (h *Harness) DisputeClosed(eventID, paymentID, disputeID, verdict string) FakeEvent {
+	e := h.Dispute(eventID, domain.DisputeClosed, paymentID, disputeID)
+	e.Status = verdict
+	return e
+}
+
+// PaymentFailed is a failed payment for cus_1, for a subscription's renewal when subID is given.
+func (h *Harness) PaymentFailed(eventID, paymentID, subID string) FakeEvent {
+	return FakeEvent{ID: eventID, Type: string(domain.PaymentFailed), Created: h.Now(), Customer: "cus_1", Payment: paymentID,
+		Subscription: subID, Price: ProPriceID, Amount: 2000, Currency: "USD", Reason: "card_declined"}
+}
+
+// SubscriptionPaymentSucceeded is the renewal invoice of a subscription: $20.00 for the Pro plan.
+func (h *Harness) SubscriptionPaymentSucceeded(eventID, paymentID, subID string) FakeEvent {
+	return FakeEvent{ID: eventID, Type: string(domain.PaymentSucceeded), Created: h.Now(), Customer: "cus_1", Payment: paymentID,
+		Subscription: subID, Price: ProPriceID, Amount: 2000, Currency: "USD"}
+}
+
+// SubscriptionEvent says a subscription changed. What changed is for the processor to FETCH, not to read here.
+func (h *Harness) SubscriptionEvent(eventID, subID string, kind domain.EventType, at time.Time) FakeEvent {
+	return FakeEvent{ID: eventID, Type: string(kind), Created: at.Unix(), Customer: "cus_1", Subscription: subID, Price: ProPriceID}
+}
+
+// GivenProviderSub sets the provider's CURRENT subscription object — what FetchSubscription will return — for cus_1
+// on the Pro plan, as of `at`.
+func (h *Harness) GivenProviderSub(subID string, status domain.SubStatus, at time.Time) domain.Sub {
+	s := domain.Sub{Scope: h.Scope, PlanCode: ProCode, Account: AccountID, ProviderSubscriptionID: subID, Status: status,
+		CurrentPeriodStart: at.Add(-24 * time.Hour), CurrentPeriodEnd: at.Add(29 * 24 * time.Hour)}
+	h.Provider.SetSubscription(subID, s, at)
+	return s
+}
+
+// GivenSucceededPayment is a payment that was fulfilled before the test began: its row, and its grant in the books.
+func (h *Harness) GivenSucceededPayment(id string, amountMinor int64, credits md.Credits) domain.Payment {
+	p := domain.Payment{Scope: h.Scope, Account: AccountID, ProviderPaymentID: id, PlanCode: PackCode, Kind: "one_time",
+		Amount: domain.Money{MinorUnits: amountMinor, Currency: "USD"}, CreditsGranted: credits, Pool: md.GeneralPool,
+		Status: domain.Succeeded, IdemKey: id, CreatedAt: h.Clock.Now()}
+	if err := h.Payments.Upsert(Ctx(), p); err != nil {
+		panic(err)
+	}
+	if _, err := h.Meter.Grant(Ctx(), md.Grant{Scope: h.Scope, Pool: md.GeneralPool, Amount: credits, IdemKey: id, Reason: "purchase",
+		Ref: map[string]string{"payment": id}}); err != nil {
+		panic(err)
+	}
+	h.Log.Reset()
+	return p
+}
+
+// GivenLapsed says that `expired` of a payment's credits lapsed unspent (CreditExpiry=lots_fefo).
+func (h *Harness) GivenLapsed(paymentID string, granted, expired md.Credits) {
+	h.Lots.Lapse(h.Scope, md.GeneralPool, paymentID, granted, expired)
 }
