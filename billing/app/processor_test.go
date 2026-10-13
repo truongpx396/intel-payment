@@ -2,8 +2,13 @@ package app_test
 
 import (
 	"io"
+	"io/fs"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"regexp"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -142,5 +147,83 @@ func TestProcessorRefundsPassEveryCaseOnTheProcessorUnderTest(t *testing.T) {
 		if failed, said := contracts.Probe(30*time.Second, func(t testing.TB) { c.Run(t, processorUnderTest) }); failed {
 			t.Errorf("%q: %v", c.Name, said)
 		}
+	}
+}
+
+func TestProcessorSubscriptions(t *testing.T) {
+	t.Parallel()
+	contracts.ProcessorSubscriptions(t, processorUnderTest)
+}
+
+// The subscription suite is shown to reject a store that lets delivery order decide state and one that forgets
+// it announced the end of a grace.
+func TestProcessorSubscriptionsRejectsEveryBrokenCollaboratorByName(t *testing.T) {
+	t.Parallel()
+	broken := []struct {
+		name     string
+		breakIt  func(h *contracts.Harness)
+		caughtBy string
+	}{
+		{"a store that applies whatever arrives last", func(h *contracts.Harness) { h.Subs.NoOrder = true },
+			"a stale read of the provider never overwrites a newer state"},
+		{"a store that forgets it announced the end of a grace", func(h *contracts.Harness) { h.Subs.NoLapseMark = true },
+			"a failed payment holds entitlements until GraceUntil and then suspends (13)"},
+	}
+	for _, b := range broken {
+		t.Run(b.name, func(t *testing.T) {
+			t.Parallel()
+			var rejected []string
+			for _, c := range contracts.SubscriptionCases() {
+				var broke sync.Map
+				mk := func(t testing.TB, h *contracts.Harness) ports.WebhookProcessor {
+					if _, already := broke.LoadOrStore(h, true); !already {
+						b.breakIt(h)
+					}
+					return processorUnderTest(t, h)
+				}
+				if failed, _ := contracts.Probe(30*time.Second, func(t testing.TB) { c.Run(t, mk) }); failed {
+					rejected = append(rejected, c.Name)
+				}
+			}
+			if !slices.Contains(rejected, b.caughtBy) {
+				t.Fatalf("the suite PASSED %s on %q (rejected only by %q)", b.name, b.caughtBy, rejected)
+			}
+		})
+	}
+}
+
+func TestProcessorSubscriptionsPassEveryCaseOnTheProcessorUnderTest(t *testing.T) {
+	t.Parallel()
+	for _, c := range contracts.SubscriptionCases() {
+		if failed, said := contracts.Probe(30*time.Second, func(t testing.TB) { c.Run(t, processorUnderTest) }); failed {
+			t.Errorf("%q: %v", c.Name, said)
+		}
+	}
+}
+
+// Invariant 12 as a property of the code: subscription state has exactly one writer. Anything that calls
+// Subs.ApplyIfNewer outside the processor is a second writer, and the one thing it would write is the status the
+// provider has not yet confirmed.
+func TestOnlyTheProcessorWritesSubscriptionStatus(t *testing.T) {
+	t.Parallel()
+	call := regexp.MustCompile(`\.ApplyIfNewer\(`)
+	var writers []string
+	for _, root := range []string{"../../billing", "../../cmd"} {
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") || strings.Contains(path, "/contracts/") {
+				return err
+			}
+			src, err := os.ReadFile(path)
+			if err == nil && call.Match(src) {
+				writers = append(writers, filepath.ToSlash(path))
+			}
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if want := []string{"../../billing/app/processor.go"}; !slices.Equal(writers, want) {
+		t.Fatalf("Subs.ApplyIfNewer is called from %v, want only %v (payments invariant 12)", writers, want)
 	}
 }

@@ -734,6 +734,11 @@ func (m *MemPayments) Count() int {
 
 // MemSubs holds subscriptions.
 type MemSubs struct {
+	// NoOrder makes ApplyIfNewer overwrite whatever is held, whatever its age: delivery order deciding state.
+	NoOrder bool
+	// NoLapseMark makes MarkGraceLapsed record nothing, so an expired grace is due on every sweep.
+	NoLapseMark bool
+
 	log  *CallLog
 	mu   sync.Mutex
 	rows map[string]domain.Sub
@@ -770,6 +775,10 @@ func (m *MemSubs) ApplyIfNewer(_ context.Context, sub domain.Sub, at time.Time) 
 	defer m.mu.Unlock()
 	k := subKey(sub.Account, sub.ProviderSubscriptionID)
 	next, applied := m.rows[k].Apply(sub, at)
+	if m.NoOrder {
+		sub.LastEventAt = at
+		next, applied = sub, true
+	}
 	if applied {
 		m.rows[k] = next
 	}
@@ -798,6 +807,9 @@ func (m *MemSubs) MarkGraceLapsed(_ context.Context, sub domain.Sub, at time.Tim
 	defer m.mu.Unlock()
 	k := subKey(sub.Account, sub.ProviderSubscriptionID)
 	cur, ok := m.rows[k]
+	if m.NoLapseMark {
+		return true, nil
+	}
 	if !ok || cur.GraceLapsedAt != nil || cur.GraceUntil == nil || sub.GraceUntil == nil || !cur.GraceUntil.Equal(*sub.GraceUntil) {
 		return false, nil
 	}
