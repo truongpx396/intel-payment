@@ -153,10 +153,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - id: svc
-        run: echo "present=$([ -d cmd/paymentd ] && echo yes || echo no)" >> "$GITHUB_OUTPUT"
-      # The suite drives the REAL stack, so it activates with cmd/paymentd (Phase 1). Until then
-      # the job still type-checks and lists the tests, so the suite cannot rot unseen.
+      # The suite drives the REAL stack — image, migrations, Redis ACL, transports — so it fails when the
+      # stack does not come up. (It was skipped while cmd/paymentd did not exist; now that it does, a skip
+      # would let the wiring rot unseen.)
       - uses: actions/setup-node@v7
         with: { node-version: 24, cache: npm, cache-dependency-path: e2e/package-lock.json }
       - run: npm ci
@@ -164,20 +163,33 @@ jobs:
       - run: npx tsc --noEmit && npx playwright test --list
         working-directory: e2e
       - name: Start the stack
-        if: steps.svc.outputs.present == 'yes'
         run: make up && for i in $(seq 1 60); do curl -sf localhost:8080/readyz && break; sleep 2; done
       - name: Run e2e
-        if: steps.svc.outputs.present == 'yes'
         working-directory: e2e
         env: { CI: 'true', E2E_BASE_URL: 'http://localhost:8080' }
         run: npx playwright test
       - name: Upload report
-        if: always() && steps.svc.outputs.present == 'yes'
+        if: always()
         uses: actions/upload-artifact@v7
         with: { name: playwright-report, path: e2e/playwright-report, if-no-files-found: ignore }
       - name: Stack logs on failure
-        if: failure() && steps.svc.outputs.present == 'yes'
+        if: failure()
         run: docker compose -f deploy/docker-compose.yml logs --tail 200 || true
+
+  # The REST clients are generated from api/openapi/v1.yaml, so the document is held to the handler by the
+  # resthandler tests (every route, both directions, real traffic validated against it) and to its clients
+  # here: what is generated from it compiles and round-trips an Admit through the real handler.
+  clients:
+    name: generated clients (TypeScript · Python compile and round-trip an Admit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version: '1.26', cache: true }
+      - uses: actions/setup-node@v7
+        with: { node-version: 24 }
+      # The runner's own python3 (>= 3.11) and pip are enough: the script uses uv when present and venv otherwise.
+      - run: make verify-clients
 
   migrations:
     name: schema (apply · seed · assert · phase-2 draft)

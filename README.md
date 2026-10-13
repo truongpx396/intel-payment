@@ -6,12 +6,12 @@ self-contained container.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-> ## ⚠️ Status: the metering core is built; it is not yet a service
+> ## ⚠️ Status: the metering core is built and served; payments are not
 > The foundation and the **metering core** — domain, ports, the hot path on Redis, the durable
 > writer on Postgres, the Redis Streams and JetStream buses, pricers, and the conformance suites they
-> all pass — are implemented and verified in CI. There is **no gRPC or REST transport and no
-> `paymentd` / `payment-worker` binary yet**, so the service commands below describe the intended
-> interface; today the engine is usable as an embedded Go library. Payments, entitlements, the
+> all pass — are implemented and verified in CI, and served by two binaries: **`paymentd`** (gRPC and
+> REST behind a service credential, with generated TypeScript and Python clients) and
+> **`payment-worker`** (the sole durable writer). `make up` runs the stack. Payments, entitlements, the
 > operational surface and the UI are designed, not built. Start at [ROADMAP.md](ROADMAP.md) for the
 > task count and what is deliberately absent; [tasks.md](specs/001-metering-billing-core/tasks.md) is
 > the build order, and [docs/testing.md](docs/testing.md) is how it is being built (test-first, with

@@ -63,6 +63,7 @@ func TestMain(m *testing.M) {
 	}
 	_ = rdb.Close()
 	code := m.Run()
+	cleanupPaymentd()
 	_ = natsSrv.Terminate(ctx)
 	_ = redis.Terminate(ctx)
 	_ = pg.Terminate(ctx)
@@ -160,13 +161,15 @@ func (s *stack) exec(sql string, args ...any) {
 	}
 }
 
-func (s *stack) seedRealm() {
-	r := string(s.realm)
-	s.exec(`INSERT INTO credit_pools (realm, name, priority) VALUES ($1,'promo',10)`, r)
-	s.exec(`INSERT INTO rate_cards (realm, version, pricer) VALUES ($1,'v1','table')`, r)
-	s.exec(`INSERT INTO rate_card_entries (realm, version, rate_key, unit, credits_per_block, block_size, cost_micros_per_block) VALUES
+func (s *stack) seedRealm() { seedRealmSQL(s.exec, string(s.realm)) }
+
+// seedRealmSQL is the configuration a realm needs to meter: a promo pool, a card that prices `gpt`, and a balance ceiling.
+func seedRealmSQL(exec func(sql string, args ...any), r string) {
+	exec(`INSERT INTO credit_pools (realm, name, priority) VALUES ($1,'promo',10)`, r)
+	exec(`INSERT INTO rate_cards (realm, version, pricer) VALUES ($1,'v1','table')`, r)
+	exec(`INSERT INTO rate_card_entries (realm, version, rate_key, unit, credits_per_block, block_size, cost_micros_per_block) VALUES
 		($1,'v1','gpt','in',150000,1000000,100000), ($1,'v1','gpt','out',600000,1000000,0)`, r)
-	s.exec(`INSERT INTO limits (realm, name, unit, max, window_kind, deny_code, sort_order) VALUES ($1,'scope_balance','credit',0,'balance','payment_required',0)`, r)
+	exec(`INSERT INTO limits (realm, name, unit, max, window_kind, deny_code, sort_order) VALUES ($1,'scope_balance','credit',0,'balance','payment_required',0)`, r)
 }
 
 // open opens the scope's shard in Redis the way the worker does at start: hot_shards decides the

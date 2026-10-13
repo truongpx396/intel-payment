@@ -32,6 +32,8 @@ x-env: &env
 services:
   postgres:
     image: postgres:16-alpine
+    # payment-worker holds one connection per shard it owns (256 by default), plus its batches.
+    command: ["postgres", "-c", "max_connections=400"]
     environment:
       POSTGRES_USER: payment
       POSTGRES_PASSWORD: payment

@@ -8,8 +8,9 @@ passing without running the check and showing its real output.**
 
 Status is derived, not asserted: [ROADMAP.md](ROADMAP.md) states task counts that CI checks against
 `specs/*/tasks.md`. Read it rather than trusting this file. As of writing, the metering core is built and
-verified, and there is **no gRPC/REST transport and no `paymentd`/`payment-worker` binary** — do not write
-code, docs or comments that imply otherwise.
+verified and served by `cmd/paymentd` (gRPC and REST) and `cmd/payment-worker` (the durable writer), but
+`billing/`, `entitlement/` and `events/` are still `doc.go` stubs — there are no payments, no webhook ingress,
+no entitlements and no UI. Do not write code, docs or comments that imply otherwise.
 
 ## Layout
 
@@ -33,7 +34,7 @@ code, docs or comments that imply otherwise.
 | `make fuzz` `FUZZTIME=20s` | After touching arithmetic, an encoding, or time logic |
 | `make mutation-diff` `REF=origin/main` | Before a PR that changes production Go in `metering/domain`, `metering/app` or the table pricer: do the tests fail when the lines you changed are wrong? For docs, specs, scripts, config, SQL, Lua or other Go it mutates nothing — skip it and say `N/A` ([when it applies](docs/testing.md#when-mutation-testing-applies)) |
 | `make verify-red-green` | Before a PR: a failing tests-only commit precedes the change (run on a branch) |
-| `make ci` | Before a PR: build, tests, fuzz, integration, lint, portability, boundary, vuln, hot path, deploy. Not `verify-schema`, e2e, or the two branch-history gates above |
+| `make ci` | Before a PR: build, tests, fuzz, integration, lint, portability, boundary, vuln, hot path, deploy. Not `verify-schema`, `verify-clients` (node + python + network), e2e, or the two branch-history gates above |
 | `make verify-schema` / `verify-hot-path` / `verify-deploy` | Changed a migration / the Redis Lua / the image or ACL |
 | `scripts/check-spec-drift.sh` | Changed any document or contract |
 

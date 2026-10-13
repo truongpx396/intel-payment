@@ -67,6 +67,7 @@ Write the test at the lowest tier that can express the invariant; move up only w
 | **Conformance suite** (`metering/contracts`) | *every* implementation of a port | what any `Pricer`, `Ledger`, `Bus`… must do — the suite is written before the second implementation |
 | **Integration** (`-tags=integration`) | real Redis, Postgres, NATS (Testcontainers) | the seams: guards, locks, the hot path, the writer, recovery |
 | **Consistency / chaos** | a hot tier that goes back in time | failover, truncated AOF, poison, drift |
+| **Generated clients** (`make verify-clients`) | the handler, over loopback | the REST document is a usable contract: the TypeScript and Python clients generated from `api/openapi/v1.yaml` compile and round-trip an `Admit`. The document is held to the route table by `resthandler`'s own tests |
 | **End-to-end** (`e2e/`, Playwright) | the deployed stack | the wiring: image, migrations, ACLs, transports |
 
 Failure paths get the most attention — replay, concurrency, cancellation, tampering, outage, drift, a
@@ -193,3 +194,23 @@ with no reason — and accepts an exact one.
 
 `make ci` runs the local equivalents except the two that need a branch history (`red-green`,
 `mutation-diff`): run them before opening a PR.
+
+## Working through a long task list without losing hours
+
+Phase 2 (about thirty red→green pairs) showed where the time goes. None of it is the discipline itself; all of
+it is avoidable.
+
+| Cost | Do this instead |
+|---|---|
+| `make mutation-diff` takes 4–7 minutes for `metering/app` | Run it **once per slice**, in the background, while writing the next red — not per cycle. It reads `git diff` of **committed** history, so a run on the working tree silently skips every new file: commit first |
+| Gremlins cannot judge a `case` condition ("not covered") | Read those mutants by eye and pin the boundary with a plain test: an inclusive limit, exactly zero, an `int64` extreme. An equivalent mutant gets a reasoned `.mutation-equivalents` entry, never a contrived test |
+| Planted-defect checks that go on and on | Three or four mutants on the decision lines (auth, privilege, realm, idempotency, money) per slice; the mutation run covers the rest. A mutant that does not compile proves nothing |
+| A text-replace script that silently misses | Assert the pattern matched, and run `gofmt -w` first: it re-aligns lines |
+| `git stash` with staged changes | Don't: it un-stages them, and a "complete" commit then lacks its `Makefile`/`go.mod`. Run `git show --stat HEAD` after each commit |
+| A compile-failing red with mistakes of its own | Drop a throwaway stub in the package, `go vet` it so the only error left is the missing symbol, delete the stub, then commit |
+| A test that hangs when the code under test is broken | Bound every wait (`select` with `time.After`); give each parallel subtest its own counters |
+| Running everything while working | `go test -run <name> ./pkg/` while working; `-race -shuffle=on ./...` and the Docker `-tags=integration` suite at the end of a slice |
+| Looping the integration suite after a flake | Rerun the one failing package. `TestTrimRemovesOnlyWhatEveryGroupHasAcknowledged/cluster` and `TestHotAckWaitAOFLocal` are known intermittent |
+| `scripts/mutation.sh` dying with `No module named 'tomllib'` | `/opt/homebrew/bin` must come **before** `/usr/bin` on `PATH` (the script needs Python 3.11+); the tools live in `/opt/homebrew/bin` and `~/go/bin` |
+| `go-arch-lint` failing on a clean tree | It scans `.claude/worktrees/*` (stale agent worktrees inside the repo). Check the graph on a copy that excludes `.claude/worktrees`, `.git` and `node_modules` |
+| A branch that needs `TDD-Exempt:` for generated code | One `TDD-Exempt:` line in **any** commit exempts the **whole** branch for `verify-red-green.sh`: keep exempt work (a generated proto) on its own bottom branch of the stack |

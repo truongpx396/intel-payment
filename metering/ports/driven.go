@@ -169,7 +169,8 @@ type BalanceStore interface {
 	// notice a failover (hot_shards.node_replid) — the second way, besides a sequence regression,
 	// of detecting that the hot tier lost history.
 	NodeID(ctx context.Context, sh domain.Shard) (string, error)
-	// Ping reports whether the hot tier is reachable (for /readyz).
+	// Ping reports whether the hot tier is reachable. /readyz deliberately does not ask it: while the hot tier is
+	// down Record journals to Postgres and answers 202, and a service pulled out of rotation could not.
 	Ping(ctx context.Context) error
 }
 

@@ -52,7 +52,9 @@ deps:
   billing:          { mayDependOn: [ metering-domain, metering-ports, api ] }
   entitlement:      { mayDependOn: [ metering-domain, metering-ports, api ] }   # also implements metering's QuotaSource
   events:           { mayDependOn: [ metering-domain, api ] }                  # outbound delivery to hosts
-  cmd:              { mayDependOn: [ metering-domain, metering-ports, metering-config,
+  # cmd/** includes cmd/internal, the helpers the binaries share (the environment reader, the store wiring), so a
+  # binary depends on its own component.
+  cmd:              { mayDependOn: [ cmd, metering-domain, metering-ports, metering-config,
                                      metering-app, metering-driven, metering-driving,
                                      billing, entitlement, events, api,
                                      migrate, migrations ] }
