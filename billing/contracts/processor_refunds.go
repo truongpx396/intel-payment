@@ -87,8 +87,8 @@ func RefundCases() []ProcessorCase {
 			}
 		}},
 		{"any partition of a total into reports revokes what one refund of the total does", func(t testing.TB, mk ProcessorFactory) {
-			// ceil(10,000,000 × 777 / 1000) = 7,770,000, however the 777 arrives.
-			for _, partition := range [][]int64{{777}, {1, 776}, {100, 200, 477}, {333, 333, 111}, {776, 777}, {7, 70, 700, 777}} {
+			// ceil(10,000,000 × 777 / 1000) = 7,770,000, however the cumulative reports leading to 777 arrive.
+			for _, partition := range [][]int64{{777}, {1, 777}, {100, 300, 777}, {333, 666, 777}, {776, 777}, {7, 70, 700, 777}} {
 				h := NewHarness()
 				p := mk(t, h)
 				h.GivenSucceededPayment("pay-p", 1000, paid)
@@ -306,8 +306,10 @@ func DisputeCases() []ProcessorCase {
 			if got.CreditsRevoked != 3_330_000 || got.Status != domain.PartiallyRefunded || got.DisputeStatus != "won" {
 				t.Fatalf("payment after the win = %+v", got)
 			}
-			if sumNegative(h) != -4_670_000 || h.Meter.NetGranted("pay-5") != paid-3_330_000 {
-				t.Fatalf("net after the win = %d", h.Meter.NetGranted("pay-5"))
+			// The fixture put the earlier refund on the payment row, not in the fake meter, so the chargeback and its
+			// reversal are all the meter has seen of this payment besides the purchase: they cancel.
+			if sumNegative(h) != -4_670_000 || h.Meter.NetGranted("pay-5") != paid {
+				t.Fatalf("net after the win = %d, want the purchase back: the reversal returns exactly the 4,670,000 taken", h.Meter.NetGranted("pay-5"))
 			}
 		}},
 		{"opening a dispute moves no credits", func(t testing.TB, mk ProcessorFactory) {
