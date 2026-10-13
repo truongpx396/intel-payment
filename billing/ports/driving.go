@@ -16,6 +16,10 @@ type IngressResult struct {
 type WebhookIngress interface {
 	// Handle takes the RAW body and headers of one delivery to /webhooks/{provider}/{account}.
 	Handle(ctx context.Context, provider, account string, body []byte, header http.Header) IngressResult
+	// Retry verifies the parked deliveries again (billing.webhook.tick): one that now verifies becomes an
+	// ordinary event and loses its raw body; one that fails is rejected — a security event, never processed;
+	// one that still cannot be verified waits for its next attempt.
+	Retry(ctx context.Context) error
 }
 
 // WebhookProcessor is stage 2 (payment-worker): it fulfils verified events from the inbox.

@@ -1544,6 +1544,7 @@ Invariant 15 requires that every terminal state be observable, which means the m
 | `metering_correction_orphan_total` | counter (`realm`) | a correction was booked that closed no suspense entry: it was already closed, or never existed |
 | `metering_correction_stale_total` | counter (`realm`) | an open suspense entry older than `HotIdemTTL`: re-issuing its correction could apply twice, so it is left for a human |
 | `metering_recover_parked_total` | counter (`shard`) | intents a recovery parked because they sat behind a sequence gap that can no longer fill — each is a movement to investigate |
+| `billing_webhook_received_total` | counter (`provider`, `result`) | verified deliveries by outcome: `new`, a `duplicate` acknowledged again, or `parked` because verification was unavailable. `provider` is a registered provider, resolved before anything is counted — never what an unauthenticated route typed |
 | `billing_webhook_verify_failed_total` | counter (`provider`) | a signature failure is a **security** event (see [payment-provider-ports.md](./payment-provider-ports.md)) |
 | `billing_webhook_inbox_age_seconds` | gauge | the oldest unprocessed verified webhook — a payment someone made that has not been fulfilled yet |
 | `billing_grant_applied_total` | counter (`realm`, `reason`) | reconciles against the provider's own payout report |
