@@ -75,6 +75,9 @@ func NewProcessor(d ProcessorDeps) (*Processor, error) {
 	if d.Inbox == nil || d.Accounts == nil || d.Customers == nil || d.Catalog == nil || d.Payments == nil || d.Subs == nil {
 		errs = append(errs, errors.New("the Inbox, Accounts, Customers, Catalog, Payments and Subs ports are required"))
 	}
+	if len(d.Providers) == 0 {
+		errs = append(errs, errors.New("the Providers are required: subscription state is the provider's current object, never the event"))
+	}
 	if d.Meter == nil {
 		errs = append(errs, errors.New("a Meter is required: credits are created only through it"))
 	}
@@ -134,6 +137,9 @@ func (p *Processor) Tick(ctx context.Context) error {
 		if err := p.process(ctx, le); err != nil {
 			errs = append(errs, fmt.Errorf("event %s: %w", le.Event.ProviderEventID, err))
 		}
+	}
+	if err := p.sweepGrace(ctx); err != nil {
+		errs = append(errs, err)
 	}
 	if err := p.publishInboxAge(ctx); err != nil {
 		errs = append(errs, err)
@@ -225,6 +231,10 @@ func (p *Processor) handle(ctx context.Context, le ports.LeasedEvent) (string, e
 	switch e.Type {
 	case domain.PaymentSucceeded:
 		return p.paymentSucceeded(ctx, acct, scope, le)
+	case domain.PaymentFailed:
+		return p.paymentFailed(ctx, acct, scope, le)
+	case domain.SubscriptionUpdated, domain.SubscriptionDeleted:
+		return p.subscriptionChanged(ctx, acct, scope, le)
 	case domain.PaymentRefunded:
 		return p.paymentRefunded(ctx, acct, scope, le)
 	case domain.DisputeOpened, domain.DisputeFundsWithdrawn, domain.DisputeFundsReinstated, domain.DisputeClosed:
@@ -284,18 +294,22 @@ func (p *Processor) paymentSucceeded(ctx context.Context, acct domain.ProviderAc
 			obj.ProviderPriceID, plan.Code, plan.Realm.Or(), obj.ProviderCustomerID, scope.Realm.Or())
 	}
 
+	var announce *domain.Payment
 	_, err = p.d.Payments.Update(ctx, acct.ID, obj.ProviderPaymentID, func(cur domain.Payment, found bool) (domain.Payment, error) {
 		pay := cur
-		if !found {
-			pay = domain.Payment{Scope: scope, Account: acct.ID, ProviderPaymentID: obj.ProviderPaymentID, PlanCode: plan.Code,
-				Kind: paymentKind(plan), Pool: plan.Pool.Or(), IdemKey: obj.ProviderPaymentID, CreatedAt: e.CreatedAt}
+		if !found || pay.Status == "" || pay.Status == domain.Pending || pay.Status == domain.Failed {
+			// A payment that has not succeeded yet takes the plan's terms now — including one that failed on an
+			// earlier attempt and is paid at last under the same payment id.
+			if !found {
+				pay = domain.Payment{Scope: scope, Account: acct.ID, ProviderPaymentID: obj.ProviderPaymentID, IdemKey: obj.ProviderPaymentID, CreatedAt: e.CreatedAt}
+			}
+			pay.PlanCode, pay.Kind, pay.Pool, pay.CreditsGranted = plan.Code, paymentKind(plan), plan.Pool.Or(), 0
 			if plan.CreditAllotment != nil {
 				pay.CreditsGranted = *plan.CreditAllotment
 			}
-		}
-		if !found || pay.Status == "" || pay.Status == domain.Pending || pay.Status == domain.Failed {
 			pay.Amount, pay.TaxAmount, pay.ReceiptURL = *obj.Amount, obj.TaxAmount, obj.ReceiptURL
 			pay.Status, pay.FailureReason = domain.Succeeded, ""
+			announce = &pay
 		}
 		// The grant is keyed on the PAYMENT (or invoice) id, never on the event: invoice.paid and
 		// checkout.session.completed can both arrive for one purchase. A replay is a no-op, so running it again
@@ -310,6 +324,15 @@ func (p *Processor) paymentSucceeded(ctx context.Context, acct domain.ProviderAc
 	})
 	if err != nil {
 		return "", err
+	}
+	if announce != nil {
+		event := "succeeded"
+		if announce.Kind == "subscription_invoice" {
+			event = "renewed"
+		}
+		if err := p.announcePayment(ctx, announce.Scope, p.noteOf(*announce, event, announce.Amount.MinorUnits, nil)); err != nil {
+			return "", err
+		}
 	}
 	return outcomeProcessed, nil
 }
@@ -429,7 +452,7 @@ func (p *Processor) paymentRefunded(ctx context.Context, acct domain.ProviderAcc
 		return "", err
 	}
 	if announce != nil {
-		if err := p.announcePayment(ctx, *announce, "refunded", announce.RefundedMinor); err != nil {
+		if err := p.announcePayment(ctx, announce.Scope, p.noteOf(*announce, "refunded", announce.RefundedMinor, nil)); err != nil {
 			return "", err
 		}
 	}
@@ -503,20 +526,23 @@ func (p *Processor) dispute(ctx context.Context, acct domain.ProviderAccount, sc
 		return "", err
 	}
 	if announce != nil && note != "" {
-		if err := p.announcePayment(ctx, *announce, note, announce.Amount.MinorUnits); err != nil {
+		if err := p.announcePayment(ctx, announce.Scope, p.noteOf(*announce, note, announce.Amount.MinorUnits, nil)); err != nil {
 			return "", err
 		}
 	}
 	return outcomeProcessed, nil
 }
 
+// scopeRef is a scope as a message names it.
+type scopeRef struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
+}
+
 // paymentNote is the body of billing.payment.<tag>: facts for outbound events and the host, never an instruction.
 type paymentNote struct {
-	Realm string `json:"realm"`
-	Scope struct {
-		Kind string `json:"kind"`
-		ID   string `json:"id"`
-	} `json:"scope"`
+	Realm      string     `json:"realm"`
+	Scope      scopeRef   `json:"scope"`
 	Event      string     `json:"event"` // succeeded | failed | refunded | disputed | charged_back | renewed | canceled
 	Payment    string     `json:"payment"`
 	Amount     int64      `json:"amount"` // minor units
@@ -525,13 +551,29 @@ type paymentNote struct {
 	ReceiptURL string     `json:"receipt_url,omitempty"`
 }
 
+// noteOf is the announcement of something that happened to a payment.
+func (p *Processor) noteOf(pay domain.Payment, event string, amount int64, graceUntil *time.Time) paymentNote {
+	return paymentNote{Realm: string(pay.Scope.Realm.Or()), Scope: scopeRef{pay.Scope.Kind, pay.Scope.ID}, Event: event,
+		Payment: pay.ProviderPaymentID, Amount: amount, Currency: pay.Amount.Currency, GraceUntil: graceUntil, ReceiptURL: pay.ReceiptURL}
+}
+
 // announcePayment publishes billing.payment.<tag>. It happens before the event is marked processed and a failure
 // retries the event — every step before it is idempotent — so a notification is never lost to a bus that blinked.
-func (p *Processor) announcePayment(ctx context.Context, pay domain.Payment, event string, amount int64) error {
-	n := paymentNote{Realm: string(pay.Scope.Realm.Or()), Event: event, Payment: pay.ProviderPaymentID, Amount: amount,
-		Currency: pay.Amount.Currency, ReceiptURL: pay.ReceiptURL}
-	n.Scope.Kind, n.Scope.ID = pay.Scope.Kind, pay.Scope.ID
-	return p.publish(ctx, "billing.payment."+pay.Scope.SubjectToken(), n)
+func (p *Processor) announcePayment(ctx context.Context, scope domain.Scope, n paymentNote) error {
+	return p.publish(ctx, "billing.payment."+scope.SubjectToken(), n)
+}
+
+// entitlementNote is the body of billing.entitlement.<tag>: a scope's entitlements may have changed, so evict it
+// from every cache now rather than at its TTL — a customer who just paid must not wait.
+type entitlementNote struct {
+	Realm  string   `json:"realm"`
+	Scope  scopeRef `json:"scope"`
+	Reason string   `json:"reason"` // subscription | grace_expired
+}
+
+func (p *Processor) announceEntitlement(ctx context.Context, scope domain.Scope, reason string) error {
+	return p.publish(ctx, "billing.entitlement."+scope.SubjectToken(),
+		entitlementNote{Realm: string(scope.Realm.Or()), Scope: scopeRef{scope.Kind, scope.ID}, Reason: reason})
 }
 
 // publish sends a JSON body to the bus, if there is one.
@@ -547,4 +589,150 @@ func (p *Processor) publish(ctx context.Context, subject string, body any) error
 		return fmt.Errorf("publish %s: %w", subject, err)
 	}
 	return nil
+}
+
+// paymentFailed records a failed payment and, for a subscription's renewal, takes the provider's current state.
+// A failed payment does not revoke anything (invariant 13): the grace window it may open holds entitlements until
+// the instant GraceUntil, and a payment already settled is never undone by a failure that follows it.
+func (p *Processor) paymentFailed(ctx context.Context, acct domain.ProviderAccount, scope domain.Scope, le ports.LeasedEvent) (string, error) {
+	e := le.Event
+	obj := e.Object
+	var failed *domain.Payment
+	if obj.ProviderPaymentID != "" && obj.Amount != nil {
+		_, err := p.d.Payments.Update(ctx, acct.ID, obj.ProviderPaymentID, func(cur domain.Payment, found bool) (domain.Payment, error) {
+			pay := cur
+			if !found {
+				pay = domain.Payment{Scope: scope, Account: acct.ID, ProviderPaymentID: obj.ProviderPaymentID, Kind: "one_time", Pool: md.GeneralPool,
+					Amount: *obj.Amount, IdemKey: obj.ProviderPaymentID, CreatedAt: e.CreatedAt}
+				plan, ok, err := p.d.Catalog.PlanForPrice(ctx, acct.ID, obj.ProviderPriceID)
+				if err != nil {
+					return cur, fmt.Errorf("catalogue: price %s: %w", obj.ProviderPriceID, err)
+				}
+				if ok && plan.Realm.Or() == scope.Realm.Or() {
+					pay.PlanCode, pay.Kind, pay.Pool = plan.Code, paymentKind(plan), plan.Pool.Or()
+				}
+			}
+			if !found || pay.Status == "" || pay.Status == domain.Pending || pay.Status == domain.Failed {
+				pay.Status, pay.FailureReason = domain.Failed, obj.FailureReason
+			}
+			failed = &pay
+			return pay, nil
+		})
+		if err != nil {
+			return "", err
+		}
+	}
+	var grace *time.Time
+	if obj.ProviderSubscriptionID != "" {
+		res, err := p.applySubscription(ctx, acct, scope, e, obj.ProviderSubscriptionID)
+		if err != nil {
+			return "", err
+		}
+		if !res.skipped {
+			grace = res.sub.GraceUntil
+		}
+	}
+	if failed != nil {
+		if err := p.announcePayment(ctx, scope, p.noteOf(*failed, "failed", failed.Amount.MinorUnits, grace)); err != nil {
+			return "", err
+		}
+	}
+	return outcomeProcessed, nil
+}
+
+// subscriptionChanged applies a subscription event. The event says THAT something changed; what the subscription
+// is now comes from the provider's current object, so no delivery order can decide state (invariant 15).
+func (p *Processor) subscriptionChanged(ctx context.Context, acct domain.ProviderAccount, scope domain.Scope, le ports.LeasedEvent) (string, error) {
+	e := le.Event
+	if e.Object.ProviderSubscriptionID == "" {
+		return "", fmt.Errorf("%w: %s %s carries no subscription id", md.ErrInvalid, e.Type, e.ProviderEventID)
+	}
+	res, err := p.applySubscription(ctx, acct, scope, e, e.Object.ProviderSubscriptionID)
+	if err != nil {
+		return "", err
+	}
+	if res.skipped {
+		return p.ignored(e, "unknown_price"), nil
+	}
+	return outcomeProcessed, nil
+}
+
+type subResult struct {
+	sub     domain.Sub
+	applied bool
+	skipped bool // the provider's object names a plan the catalogue does not sell: nothing was written
+}
+
+// applySubscription fetches the provider's CURRENT subscription and writes it if it is newer than the one held,
+// then tells the entitlement layer. Status has exactly one writer — here (invariant 12).
+func (p *Processor) applySubscription(ctx context.Context, acct domain.ProviderAccount, scope domain.Scope, e domain.Event, subID string) (subResult, error) {
+	provider, ok := p.d.Providers[e.Provider]
+	if !ok {
+		return subResult{}, fmt.Errorf("%w: no adapter for provider %s", domain.ErrUnknownAccount, e.Provider)
+	}
+	cur, at, err := provider.FetchSubscription(ctx, acct, subID)
+	if err != nil {
+		return subResult{}, fmt.Errorf("fetch subscription %s: %w", subID, err)
+	}
+	if cur.PlanCode == "" {
+		p.d.Log.Warn("a subscription is on a price the catalogue does not sell", "provider", string(e.Provider), "account", acct.ID, "subscription", subID)
+		return subResult{skipped: true}, nil
+	}
+	sub := cur
+	sub.Scope, sub.Account, sub.ProviderSubscriptionID, sub.GraceLapsedAt = scope, acct.ID, subID, nil
+
+	held, has, err := p.d.Subs.Get(ctx, scope)
+	if err != nil {
+		return subResult{}, fmt.Errorf("read the subscription of %s: %w", scope.Tag(), err)
+	}
+	same := has && held.ProviderSubscriptionID == subID
+	switch {
+	case sub.Status != domain.PastDue:
+		sub.GraceUntil = nil // not past due at the provider: nothing to hold on to
+	case same && held.Status == domain.PastDue && held.GraceUntil != nil:
+		// Still the same trouble: the window opened when it began, and a newer notice of it does not move it.
+		sub.GraceUntil, sub.GraceLapsedAt = held.GraceUntil, held.GraceLapsedAt
+	default:
+		g := at.Add(p.d.Grace) // the provider's clock, not ours: a retry computes the same instant
+		sub.GraceUntil = &g
+	}
+
+	applied, err := p.d.Subs.ApplyIfNewer(ctx, sub, at)
+	if err != nil {
+		return subResult{}, fmt.Errorf("apply subscription %s: %w", subID, err)
+	}
+	if applied {
+		if err := p.announceEntitlement(ctx, scope, "subscription"); err != nil {
+			return subResult{}, err
+		}
+		if sub.Status == domain.Canceled && (!same || held.Status != domain.Canceled) {
+			if err := p.announcePayment(ctx, scope, paymentNote{Realm: string(scope.Realm.Or()), Scope: scopeRef{scope.Kind, scope.ID}, Event: "canceled"}); err != nil {
+				return subResult{}, err
+			}
+		}
+	}
+	return subResult{sub: sub, applied: applied}, nil
+}
+
+// sweepGrace announces, once, that a grace window has ended — so entitlement caches evict the scope at that
+// instant instead of at their TTL. Entitlements themselves lapse by the clock (Sub.HoldsEntitlements); this only
+// tells the others. The announcement is made before it is recorded, so a crash between them repeats it, which
+// is harmless, instead of losing it.
+func (p *Processor) sweepGrace(ctx context.Context) error {
+	now := p.d.Clock.Now()
+	due, err := p.d.Subs.DueForGraceExpiry(ctx, now)
+	if err != nil {
+		return fmt.Errorf("list ended grace windows: %w", err)
+	}
+	var errs []error
+	for _, s := range due {
+		if err := p.announceEntitlement(ctx, s.Scope, "grace_expired"); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if _, err := p.d.Subs.MarkGraceLapsed(ctx, s, now); err != nil {
+			errs = append(errs, fmt.Errorf("record the end of the grace of %s: %w", s.ProviderSubscriptionID, err))
+		}
+	}
+	return errors.Join(errs...)
 }

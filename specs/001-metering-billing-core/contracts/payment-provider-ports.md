@@ -499,6 +499,20 @@ keyed on a provider id (unique per realm and op — one payment can mint once, f
 timestamp. A processor that crashes mid-event leaves a lease that expires; the next lease re-runs
 the event and every completed step is a no-op.
 
+**Subscriptions.** A subscription event says THAT something changed; the processor fetches the
+provider's current object (`FetchSubscription`) and writes it only if it is newer than the one held
+(`Subs.ApplyIfNewer`), so no delivery order decides state. The adapter has already mapped the provider's
+price to a plan code through the catalogue; an object with no plan code is ignored (`unknown_price`),
+never guessed. When the provider says `past_due` the grace window opens at **the provider's timestamp**
+of that object plus the dunning grace — not at our clock, so a retry computes the same instant — and a
+newer notice of the same trouble carries the window forward instead of moving it; any other status
+clears it. Entitlements lapse by the clock (`Sub.HoldsEntitlements`); every tick also lists the windows
+that have ended and announces each once on `billing.entitlement.<tag>` (`reason: grace_expired`) so
+caches evict at that instant, recording the announcement (`grace_lapsed_at`) after making it. A change
+that was applied is announced on `billing.entitlement.<tag>` (`reason: subscription`); a cancellation also
+on `billing.payment.<tag>` (`event: canceled`). A failed payment is recorded and moves no credits; one that
+follows a success does not undo it; one paid at last under the same payment id is granted then.
+
 ### Partial refunds
 
 A payment of `amount_minor` that granted `credits_granted` has, after a refund event reporting the

@@ -199,8 +199,9 @@ func SubscriptionCases() []ProcessorCase {
 			if pay.Status != domain.Failed || pay.Kind != "one_time" || pay.CreditsGranted != 0 {
 				t.Fatalf("payment = %+v", pay)
 			}
-			if touched := h.Log.Touched("subs."); len(touched) != 0 {
-				t.Fatalf("a one-time payment touched subscriptions: %v", touched)
+			// (Every tick also lists the grace windows that have ended: that is the sweep, not this payment.)
+			if touched := h.Log.Touched("subs.Get", "subs.ApplyIfNewer", "subs.MarkGraceLapsed"); len(touched) != 0 {
+				t.Fatalf("a one-time payment touched a subscription: %v", touched)
 			}
 		}},
 		{"a failure does not undo a payment that succeeded, whatever the order", func(t testing.TB, mk ProcessorFactory) {
