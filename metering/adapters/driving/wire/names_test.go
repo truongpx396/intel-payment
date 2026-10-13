@@ -12,6 +12,8 @@ import (
 // them to values. A new Err* fails the scan until it is added here AND to the table.
 var namesOf = map[string]error{
 	"ErrInvalid":             domain.ErrInvalid,
+	"ErrNotFound":            domain.ErrNotFound,
+	"ErrAlreadyExists":       domain.ErrAlreadyExists,
 	"ErrIdemConflict":        domain.ErrIdemConflict,
 	"ErrStaleEvent":          domain.ErrStaleEvent,
 	"ErrMissingSubject":      domain.ErrMissingSubject,

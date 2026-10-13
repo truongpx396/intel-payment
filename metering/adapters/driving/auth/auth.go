@@ -15,6 +15,7 @@ package auth
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"strings"
@@ -158,4 +159,27 @@ func Caller(ctx context.Context) (Principal, error) {
 		return Principal{}, ErrUnauthenticated
 	}
 	return p, nil
+}
+
+// Credential is what a transport lifts off a request for an Authenticator, whatever the transport: the
+// bearer token of an Authorization header or gRPC metadata, and the client certificates of a verified TLS
+// handshake. Verifying the TLS chain itself is the listener's job; an Authenticator maps a verified
+// certificate to a Principal.
+type Credential struct {
+	Bearer           string
+	PeerCertificates []*x509.Certificate
+}
+
+// Authenticator turns a Credential into a Principal. A credential it does not recognise is
+// ErrUnauthenticated; any other error means the credential could not be checked (a store is down), which a
+// transport reports as the service's own failure and never as a stranger's access.
+type Authenticator interface {
+	Authenticate(ctx context.Context, c Credential) (Principal, error)
+}
+
+// AuthenticatorFunc is an Authenticator in a function.
+type AuthenticatorFunc func(ctx context.Context, c Credential) (Principal, error)
+
+func (f AuthenticatorFunc) Authenticate(ctx context.Context, c Credential) (Principal, error) {
+	return f(ctx, c)
 }

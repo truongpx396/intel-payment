@@ -133,7 +133,8 @@ or move money.
 | `PAYMENT_GRPC_ADDR` | `:9090` | Hot path |
 | `PAYMENT_HTTP_ADDR` | `:8080` | REST + webhooks + `/healthz` + `/readyz` + `/metrics` |
 | `PAYMENT_SERVICE_AUTH` | `bearer` | `none` \| `mtls` \| `bearer`. **`none` is permitted only on loopback or a Unix socket** |
-| `PAYMENT_SERVICE_TOKENS` | — | `<caller-id>:<sha256>:<realms>:<privileges>,…` — privileges from `record`, `grant`, `admin` |
+| `PAYMENT_SERVICE_TOKENS` | — | bearer mode: `<caller-id>:<sha256-hex>:<realms>:<privileges>,…` — realms and privileges (`record`, `grant`, `admin`) each joined with `+`. The **digest** of the token, never the token: a plaintext token, a short or non-hex digest, a caller or a token listed twice, a wildcard realm or an unknown privilege stops the service at start-up. Empty accepts no caller |
+| `PAYMENT_SERVICE_CERTS` | — | mTLS mode: `<caller-id>:<certificate common name>:<realms>:<privileges>,…` — same rules. The listener verifies the chain against the private CA; this maps the verified leaf's subject to a caller |
 | `PAYMENT_LEGACY_429_FOR_LIMITS` | `false` | Restores `429` instead of `409` for spent windows, for a host mid-migration |
 
 ### Provider secrets

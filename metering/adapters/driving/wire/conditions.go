@@ -64,6 +64,8 @@ var Table = []Condition{
 	row("dest_balance_cap", domain.ErrDestBalanceCap, codes.FailedPrecondition, 422, "dest_balance_cap", true),
 	row("insufficient_balance", domain.ErrInsufficient, codes.FailedPrecondition, 409, "insufficient_balance", true),
 	row("idempotency_conflict", domain.ErrIdemConflict, codes.AlreadyExists, 409, "idempotency_conflict", true),
+	row("already_exists", domain.ErrAlreadyExists, codes.AlreadyExists, 409, "already_exists", true),
+	row("not_found", domain.ErrNotFound, codes.NotFound, 404, "not_found", true),
 	row("cross_realm", domain.ErrCrossRealm, codes.PermissionDenied, 403, "cross_realm", true),
 
 	// The service cannot serve right now. ErrHotStoreUnavailable first: the engine wraps it around the
