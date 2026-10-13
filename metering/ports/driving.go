@@ -31,6 +31,19 @@ type Meter interface {
 	Transfer(ctx context.Context, t domain.Transfer) (domain.TransferReceipt, error)
 }
 
+// BalanceReader is the read a transport offers beside Meter: a scope's hot balance per pool
+// (GetBalance, GET /v1/balance). It is a fast copy — the ledger is the account of record — and it
+// reads what Admit would read, so a cold account is rebuilt rather than reported as an error.
+type BalanceReader interface {
+	Balance(ctx context.Context, s domain.Scope) (map[domain.Pool]domain.Credits, error)
+}
+
+// Service is what a transport fronts: the Meter and the read beside it, as one value.
+type Service interface {
+	Meter
+	BalanceReader
+}
+
 // LedgerWriter is the ONLY component that writes the account of record: credit_ledger,
 // account_credits, the watermarks, suspense and the idempotency guards. It runs in
 // `cmd/payment-worker`, never a request-serving tier, with ONE owner per shard at a time

@@ -34,7 +34,7 @@ else**, and saying so is more useful than pretending otherwise:
 
 **Status: in progress — the foundation and the metering core are built and verified; the transports, payments, entitlements, operational surface and UI are not.** → [specs/001-metering-billing-core](specs/001-metering-billing-core/)
 
-Tasks: 47 of 141 done (specs/001-metering-billing-core/tasks.md) — counted by `scripts/check-spec-drift.sh`, which fails CI when this line and the task list disagree.
+Tasks: 55 of 143 done (specs/001-metering-billing-core/tasks.md) — counted by `scripts/check-spec-drift.sh`, which fails CI when this line and the task list disagree.
 
 Prepaid credits in pools, exact rational pricing, the admission gate with subject- and plan-sized
 ceilings, the single durable writer with a per-scope sequence watermark, cluster-safe hot-path

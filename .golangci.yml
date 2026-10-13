@@ -68,6 +68,37 @@ linters:
               desc: metering/ must stand alone — hosts hear about events through events/, which depends on metering
             - pkg: github.com/truongpx396/intel-payment/cmd
               desc: the core never imports its own wiring
+        # The wire contract is a leaf: generated code and its checks import protobuf and gRPC, never the
+        # engine. (go-arch-lint lets api reach metering-driving through dependency injection only.)
+        api-is-a-leaf:
+          list-mode: lax
+          files:
+            - '**/api/**'
+            - '!$test'
+          deny:
+            - pkg: github.com/truongpx396/intel-payment
+              desc: api/ is the wire contract — it imports nothing of the module it describes
+        # Transports share `auth` and `wire` (go-arch-lint lets metering-driving build on its own siblings)
+        # and nothing else of each other: a client that imported the server, or a REST handler that reached
+        # into a gRPC transport, would be a second path to the engine that skips what the first one checks.
+        grpcclient-is-a-client:
+          list-mode: lax
+          files: [ '**/driving/grpcclient/**' ]
+          deny:
+            - { pkg: github.com/truongpx396/intel-payment/metering/adapters/driving/grpcserver, desc: a client does not import a server }
+            - { pkg: github.com/truongpx396/intel-payment/metering/adapters/driving/resthandler, desc: "transports share auth and wire, nothing else" }
+        grpcserver-is-a-server:
+          list-mode: lax
+          files: [ '**/driving/grpcserver/**' ]
+          deny:
+            - { pkg: github.com/truongpx396/intel-payment/metering/adapters/driving/grpcclient, desc: a server does not import a client }
+            - { pkg: github.com/truongpx396/intel-payment/metering/adapters/driving/resthandler, desc: "transports share auth and wire, nothing else" }
+        resthandler-is-rest:
+          list-mode: lax
+          files: [ '**/driving/resthandler/**' ]
+          deny:
+            - { pkg: github.com/truongpx396/intel-payment/metering/adapters/driving/grpcserver, desc: "transports share auth and wire, nothing else" }
+            - { pkg: github.com/truongpx396/intel-payment/metering/adapters/driving/grpcclient, desc: "transports share auth and wire, nothing else" }
         provider-sdk-containment:
           list-mode: lax
           files:

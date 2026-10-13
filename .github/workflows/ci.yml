@@ -31,6 +31,11 @@ jobs:
       - name: Integration (Testcontainers)
         run: go test -race -count=1 -shuffle=on -tags=integration ./...
 
+      # FR-044: a Meter behind the gRPC transport is the same value as the engine. The suite is shown to
+      # reject five broken transports, by name, so a pass means something.
+      - name: The equivalence suite has teeth
+        run: scripts/verify-equivalence-teeth.sh
+
       - name: golangci-lint (incl. depguard boundary rules)
         uses: golangci/golangci-lint-action@v9
         with: { version: v2.14 }   # must be built with a Go >= the module's `go` line

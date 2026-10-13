@@ -62,6 +62,14 @@ var _ ports.Meter = (*meter)(nil)
 
 // New validates config, assembles the core, and returns it as the ports.Meter interface.
 func New(cfg metering.Config, d Deps) (ports.Meter, error) {
+	m, err := build(cfg, d)
+	if err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func build(cfg metering.Config, d Deps) (*meter, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("metering config: %w", err)
 	}
