@@ -4,6 +4,7 @@ import (
 	"io"
 	"log/slog"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -60,8 +61,11 @@ func TestProcessorGrantsRejectsEveryBrokenCollaboratorByName(t *testing.T) {
 			t.Parallel()
 			var rejected []string
 			for _, c := range contracts.GrantCases() {
+				var broken sync.Map // a case that builds several processors breaks its world once, before any of them runs
 				mk := func(t testing.TB, h *contracts.Harness) ports.WebhookProcessor {
-					b.breakIt(h)
+					if _, already := broken.LoadOrStore(h, true); !already {
+						b.breakIt(h)
+					}
 					return processorUnderTest(t, h)
 				}
 				if failed, _ := contracts.Probe(30*time.Second, func(t testing.TB) { c.Run(t, mk) }); failed {

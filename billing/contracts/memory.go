@@ -332,6 +332,9 @@ func customerKey(e domain.Event) string {
 // Lease implements ports.Inbox: events due, in the provider's order, never two of one customer at once.
 func (m *MemInbox) Lease(_ context.Context, n int, ttl time.Duration) ([]ports.LeasedEvent, error) {
 	m.log.Add("inbox.Lease")
+	out := m.leaseLocked(n, ttl)
+	// With SyncLeases, nobody goes on until every caller has taken its lease: the lease alone decides who has
+	// the event, not who got there first.
 	if g := m.gate; g != nil {
 		if g.arrived.Add(1) == g.n {
 			close(g.open)
@@ -342,6 +345,10 @@ func (m *MemInbox) Lease(_ context.Context, n int, ttl time.Duration) ([]ports.L
 			return nil, errors.New("memory inbox: the lease rendezvous never completed")
 		}
 	}
+	return out, nil
+}
+
+func (m *MemInbox) leaseLocked(n int, ttl time.Duration) []ports.LeasedEvent {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.clock.Now()
@@ -387,7 +394,7 @@ func (m *MemInbox) Lease(_ context.Context, n int, ttl time.Duration) ([]ports.L
 		}
 		out = append(out, ports.LeasedEvent{ID: r.ID, Event: r.Event, Attempts: r.Attempts})
 	}
-	return out, nil
+	return out
 }
 
 func (m *MemInbox) rowLocked(id string) *InboxRow {

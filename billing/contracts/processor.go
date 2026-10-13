@@ -237,6 +237,21 @@ func GrantCases() []ProcessorCase {
 				t.Fatalf("the payment is still recorded: %+v", pay)
 			}
 		}},
+		{"a price whose plan is another realm's fails loudly instead of granting into the customer's", func(t testing.TB, mk ProcessorFactory) {
+			h := NewHarness()
+			p := mk(t, h)
+			credits := PackCredits
+			h.Catalog.Add(domain.Plan{Realm: "other", Code: "pack", Name: "Pack of another product", Kind: domain.OneTime, CreditAllotment: &credits,
+				Pool: md.GeneralPool, Active: true, Prices: map[string]domain.Money{"USD": {MinorUnits: 1000, Currency: "USD"}}}, AccountID, "USD", "price_elsewhere")
+			fe := h.PaymentSucceeded("evt_1", "pay-1")
+			fe.Price = "price_elsewhere" // cus_1 is in the default realm
+			h.Persisted(fe)
+			h.Tick(t, p)
+			wantRow(t, h, "evt_1", RowFailed)
+			if h.Meter.GrantCalls() != 0 {
+				t.Fatal("credits were granted to a customer for a plan of another realm: money taken for something the customer's realm does not sell")
+			}
+		}},
 		{"an event for a realm the account does not serve is ignored and counted (19)", func(t testing.TB, mk ProcessorFactory) {
 			h := NewHarness()
 			p := mk(t, h)
