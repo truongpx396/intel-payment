@@ -123,7 +123,8 @@ needs_integration_tag() {
 }
 
 status=0
-verified_names=""; verified_pkgs=""; verified_tags=()
+verified_names=""; verified_pkgs=""; verified_tags=()  # the tags are the union over every red: one that needs
+                                                           # a tag is built with it at the tip, whatever tier the last red was in
 for c in "${red_candidates[@]}"; do
   short=$(git log -1 --format='%h %s' "$c")
   names=$(added_tests "$c"); pkgs=$(test_packages "$c")
@@ -153,7 +154,7 @@ for c in "${red_candidates[@]}"; do
     echo "RED   $short — $kind"
     grep -E '^(--- FAIL|FAIL|\s+[a-z_]+_test\.go:[0-9]+:)' "$out" | head -4 | sed 's/^/        /'
     verified_names="${verified_names:+$verified_names|}$names"
-    verified_pkgs="$verified_pkgs $pkgs"; verified_tags=("${tag_args[@]+"${tag_args[@]}"}")
+    verified_pkgs="$verified_pkgs $pkgs"; [ "${#tag_args[@]}" -eq 0 ] || verified_tags=("${tag_args[@]}")
   fi
 done
 [ "$status" -eq 0 ] || exit 1

@@ -39,7 +39,16 @@ deps:
   metering-app:     { mayDependOn: [ metering-domain, metering-ports, metering-config ] }
   metering-driven:  { mayDependOn: [ metering-domain, metering-ports, metering-config, metering-contracts,
                                      metering-driven ] }    # an adapter may build on a sibling (pricing → table); contracts: only from tests
-  metering-driving: { mayDependOn: [ metering-domain, metering-ports, metering-config, api ] }
+  # A transport may build on a sibling: grpcserver, grpcclient and the REST handler share `auth` (who is
+  # calling) and `wire` (the status table and the message converters), as driven adapters share `pricing`.
+  # What stays forbidden — one transport reaching into another — is a depguard rule (.golangci.yml).
+  metering-driving: { mayDependOn: [ metering-domain, metering-ports, metering-config, api,
+                                     metering-driving ] }
+  # api is generated wire code. Its Register…Server takes the transport as an interface and calls it, which
+  # the dependency-injection check reads as api → metering-driving. That is the only edge api may have in
+  # this graph; that api IMPORTS nothing of this module is a depguard rule (api-is-a-leaf, .golangci.yml),
+  # because the graph alone would now allow `import driving` from api.
+  api:              { mayDependOn: [ metering-driving ] }
   billing:          { mayDependOn: [ metering-domain, metering-ports, api ] }
   entitlement:      { mayDependOn: [ metering-domain, metering-ports, api ] }   # also implements metering's QuotaSource
   events:           { mayDependOn: [ metering-domain, api ] }                  # outbound delivery to hosts
