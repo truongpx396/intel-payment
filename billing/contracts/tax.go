@@ -91,13 +91,16 @@ func TaxCases() []TaxCase {
 		{"a hook cannot change what is sold (4)", func(t testing.TB, mk TaxFactory) {
 			h := NewHarness()
 			for name, mutate := range map[string]func(*ports.CheckoutInput){
-				"the price":    func(in *ports.CheckoutInput) { in.ProviderPriceID = "price_cheap" },
-				"the plan":     func(in *ports.CheckoutInput) { in.PlanCode = "free" },
-				"the currency": func(in *ports.CheckoutInput) { in.Currency = "VND" },
-				"the scope":    func(in *ports.CheckoutInput) { in.Scope.ID = "victim" },
-				"the customer": func(in *ports.CheckoutInput) { in.CustomerID = "cus_other" },
-				"the mode":     func(in *ports.CheckoutInput) { in.Mode = "setup" },
-				"the redirect": func(in *ports.CheckoutInput) { in.SuccessURL = "https://evil.example/" },
+				"the price":           func(in *ports.CheckoutInput) { in.ProviderPriceID = "price_cheap" },
+				"the plan":            func(in *ports.CheckoutInput) { in.PlanCode = "free" },
+				"the currency":        func(in *ports.CheckoutInput) { in.Currency = "VND" },
+				"the scope":           func(in *ports.CheckoutInput) { in.Scope.ID = "victim" },
+				"the customer":        func(in *ports.CheckoutInput) { in.CustomerID = "cus_other" },
+				"the mode":            func(in *ports.CheckoutInput) { in.Mode = "setup" },
+				"the redirect":        func(in *ports.CheckoutInput) { in.SuccessURL = "https://evil.example/" },
+				"the cancel redirect": func(in *ports.CheckoutInput) { in.CancelURL = "https://evil.example/" },
+				"the buyer":           func(in *ports.CheckoutInput) { in.BillingEmail = "someone-else@example.test" },
+				"the idempotency key": func(in *ports.CheckoutInput) { in.IdemKey = "another-checkout" },
 			} {
 				s, err := mk(domain.TaxExternalHook, func(_ context.Context, in *ports.CheckoutInput) error { mutate(in); return nil })
 				if err != nil {
