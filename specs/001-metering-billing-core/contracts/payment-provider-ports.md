@@ -459,7 +459,7 @@ type AutoRecharges interface {
 	// Claim and Settle are the domain's rules under a lock. A scope with no instruction claims nothing (disabled);
 	// settling one is md.ErrNotFound.
 	Claim(ctx context.Context, s domain.Scope, now time.Time, staleAfter time.Duration) (RechargeClaim, RechargeRefusal, error)
-	Settle(ctx context.Context, s domain.Scope, ok bool, reason string, now time.Time) (disabled bool, err error)
+	Settle(ctx context.Context, s domain.Scope, slot RechargeClaim, ok bool, reason string, now time.Time) (disabled bool, err error)
 }
 
 // The driving ports behind the host-facing routes. Checkout has no Meter: it cannot grant. Subscriptions never
@@ -714,8 +714,10 @@ what the provider de-duplicates on. While a slot is in flight and younger than t
 it — the same slot, so the same key, and the provider charges once however many replicas see the trigger — and resuming
 costs nothing, so it is allowed at the maximum. A slot claimed and never settled is replaced once it is stale, but it was
 spent and still counts, so abandoning slots cannot get round the maximum. A new UTC day starts from slot 1 and drops
-whatever was in flight on the day before. Settling a slot clears it: a good charge clears the count of failures, a failed
-one adds one, and **the third in a row switches the instruction off** with the reason recorded (a default if the provider
+whatever was in flight on the day before. **A settlement names its slot** and releases the slot in flight only if it is that
+one: webhooks are late and replayed, and slot one's arriving after slot two was claimed must not release slot two, or a
+duplicate trigger would claim a third slot under a new key and charge the customer twice for one low balance. The outcome
+counts either way: a good charge clears the count of failures, a failed one adds one, and **the third in a row switches the instruction off** with the reason recorded (a default if the provider
 gave none, so the customer can always be told) and reports that this settling did it, so the news is made once. Nothing
 switches an instruction back on but its owner writing a new one.
 

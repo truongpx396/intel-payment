@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	md "github.com/truongpx396/intel-payment/metering/domain"
@@ -128,12 +129,16 @@ func (a AutoRecharge) Claim(now time.Time, staleAfter time.Duration) (AutoRechar
 	return a, RechargeClaim{Day: a.Day, N: a.ChargesToday}, RechargeOK
 }
 
-// Settle ends the slot in flight with the charge's outcome. A good charge clears the count of failures; a failed one adds
-// one, and the third in a row switches the instruction off and records why — the reason given, or a default so the
-// customer can always be told. It reports whether THIS settling switched it off, so the news is made once. Nothing here
-// switches an instruction back on: only its owner does, by writing a new one.
-func (a AutoRecharge) Settle(ok bool, reason string) (AutoRecharge, bool) {
-	a.InflightN, a.InflightSince = 0, nil
+// Settle reports the outcome of ONE slot. The slot in flight is released only if it is the slot the report names: a webhook
+// can be late, and slot one's arriving after slot two was claimed must not release slot two, or a duplicate trigger would claim
+// a third slot under a new key and charge the customer twice for one low balance. The outcome counts either way: a good
+// charge clears the count of failures, a failed one adds one, and the third in a row switches the instruction off and records
+// why — the reason given, or a default so the customer can always be told. It reports whether THIS settling switched it off,
+// so the news is made once. Nothing here switches an instruction back on: only its owner does, by writing a new one.
+func (a AutoRecharge) Settle(slot RechargeClaim, ok bool, reason string) (AutoRecharge, bool) {
+	if a.InflightN > 0 && slot.Day == a.Day && slot.N == a.InflightN {
+		a.InflightN, a.InflightSince = 0, nil
+	}
 	if ok {
 		a.ConsecutiveFailed = 0
 		return a, false
@@ -148,4 +153,32 @@ func (a AutoRecharge) Settle(ok bool, reason string) (AutoRecharge, bool) {
 		a.DisabledReason = "consecutive_failures"
 	}
 	return a, true
+}
+
+// ParseRechargeKey reads a key RechargeKey made: the scope's tag, the UTC day and the slot. It reads from the right — the slot
+// after the last colon, the ten-character day before it — which is what makes the key unambiguous, and it accepts nothing that
+// RechargeKey would not have written: a real calendar day, a slot of one or more with no sign or leading zero.
+func ParseRechargeKey(key string) (scopeTag, day string, n int, ok bool) {
+	rest, found := strings.CutPrefix(key, "recharge:")
+	if !found {
+		return "", "", 0, false
+	}
+	i := strings.LastIndex(rest, ":")
+	if i < 0 {
+		return "", "", 0, false
+	}
+	slot := rest[i+1:]
+	n, err := strconv.Atoi(slot)
+	if err != nil || n < 1 || strconv.Itoa(n) != slot {
+		return "", "", 0, false
+	}
+	rest = rest[:i]
+	if len(rest) < 12 || rest[len(rest)-11] != ':' {
+		return "", "", 0, false
+	}
+	day = rest[len(rest)-10:]
+	if _, err := time.Parse(time.DateOnly, day); err != nil {
+		return "", "", 0, false
+	}
+	return rest[:len(rest)-11], day, n, true
 }
