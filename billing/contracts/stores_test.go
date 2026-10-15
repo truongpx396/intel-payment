@@ -70,6 +70,7 @@ func TestAutoRechargeContractRejectsEveryBrokenStoreByName(t *testing.T) {
 		ledger   = "the ledger is stored: what a claim did is what the next read says"
 		edit     = "editing the instruction never refills the day, and the owner enabling it clears the failures"
 		settling = "settling clears the slot, counts failures, switches off on the third and says so once"
+		stale    = "a slot nobody settled is replaced once it is stale, and still counts"
 	)
 	broken := []struct {
 		name     string
@@ -80,6 +81,7 @@ func TestAutoRechargeContractRejectsEveryBrokenStoreByName(t *testing.T) {
 		{"forgets the ledger it computed", func(s *contracts.MemAutoRecharges) { s.ForgetLedger = true }, []string{numbered, ledger}},
 		{"refills the day when the instruction is edited", func(s *contracts.MemAutoRecharges) { s.ResetLedgerOnPut = true }, []string{edit}},
 		{"never switches an instruction off", func(s *contracts.MemAutoRecharges) { s.NeverDisables = true }, []string{settling}},
+		{"resumes an abandoned slot for ever", func(s *contracts.MemAutoRecharges) { s.NeverStale = true }, []string{stale}},
 	}
 	for _, b := range broken {
 		t.Run(b.name, func(t *testing.T) {
