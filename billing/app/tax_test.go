@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/truongpx396/intel-payment/billing/app"
 	"github.com/truongpx396/intel-payment/billing/contracts"
 	"github.com/truongpx396/intel-payment/billing/domain"
 	"github.com/truongpx396/intel-payment/billing/ports"
@@ -13,16 +14,8 @@ import (
 
 // ---- tax ----
 
-// unbuiltTax answers every mode and annotates nothing, so the cases that need a strategy to DO something fail on
-// what they claim. The variable below that binds it is the only edit T089 makes to the wiring.
-type unbuiltTax struct{ mode domain.TaxMode }
-
-func (u unbuiltTax) Mode() domain.TaxMode                               { return u.mode }
-func (unbuiltTax) Annotate(context.Context, *ports.CheckoutInput) error { return nil }
-
-var taxUnderTest contracts.TaxFactory = func(mode domain.TaxMode, _ ports.TaxHook) (ports.TaxStrategy, error) {
-	return unbuiltTax{mode}, nil
-}
+// taxUnderTest builds the tax strategy under test.
+var taxUnderTest contracts.TaxFactory = app.NewTaxStrategy
 
 func TestTaxContract(t *testing.T) {
 	t.Parallel()
