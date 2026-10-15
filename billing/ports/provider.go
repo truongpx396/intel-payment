@@ -60,12 +60,15 @@ type CheckoutInput struct {
 	PlanCode        string
 	Currency        string
 	ProviderPriceID string
-	CustomerID      string // existing provider customer, or "" to create
-	BillingEmail    string
-	SuccessURL      string
-	CancelURL       string
-	IdemKey         string            // a double-clicked buy button creates one checkout
-	Metadata        map[string]string // echoed back; correlation ONLY, never authority (invariant 4)
+	// Amount is the catalogue's price for the plan in the currency (zero for a setup checkout). Providers that price a
+	// purchase themselves — PayPal's orders — charge it; the others price from ProviderPriceID and ignore it.
+	Amount       domain.Money
+	CustomerID   string // existing provider customer, or "" to create
+	BillingEmail string
+	SuccessURL   string
+	CancelURL    string
+	IdemKey      string            // a double-clicked buy button creates one checkout
+	Metadata     map[string]string // echoed back; correlation ONLY, never authority (invariant 4)
 }
 
 // CustomerInput is a provider customer to create for a scope.
