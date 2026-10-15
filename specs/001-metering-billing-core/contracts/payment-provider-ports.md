@@ -242,6 +242,9 @@ type PaymentProvider interface {
 
 	// CreateCheckout starts a hosted checkout and returns a URL to hand off to. Mode "payment"
 	// and "subscription" sell a plan; mode "setup" only saves a payment method (for auto top-up).
+	// A provider that cannot save a method answers mode "setup" — and ChargeSaved — with
+	// domain.ErrUnsupported, without calling the provider: never a stub's ErrNotImplemented, never a page
+	// that sells something else. Selling a plan is not optional.
 	// It MUST NOT grant anything: fulfilment arrives later on a verified webhook (principle 3).
 	CreateCheckout(ctx context.Context, acct domain.ProviderAccount, in CheckoutInput) (redirectURL string, err error)
 
