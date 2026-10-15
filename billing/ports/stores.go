@@ -103,6 +103,9 @@ const (
 // AutoRecharges holds each scope's standing instruction to top up, and bounds what it may do.
 type AutoRecharges interface {
 	Get(ctx context.Context, s domain.Scope) (domain.AutoRecharge, bool, error)
+	// Put stores the configuration, never the ledger, so editing an instruction cannot hand out more charges today.
+	// Written enabled it clears the failures; written disabled it records the reason given. An invalid instruction is
+	// md.ErrInvalid and is not stored.
 	Put(ctx context.Context, a domain.AutoRecharge) error
 	// Claim reserves the next charge slot, atomically: at most MaxPerDay distinct slots per UTC day however many
 	// times a trigger fires, and while one is in flight (claimed, not settled, younger than staleAfter) another
