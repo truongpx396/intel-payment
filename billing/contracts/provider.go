@@ -56,6 +56,23 @@ func ProviderCases() []ProviderCase {
 				t.Fatalf("a signature from the future is as suspect as one from the past, got %v", err)
 			}
 		}},
+		{"a signature is judged as of when the delivery arrived, not when it is verified", func(t testing.TB, p ports.PaymentProvider, fx ProviderFixtures) {
+			sent := fx.Now().Add(-time.Hour)
+			body, hdr := fx.SignedAt(sent)
+			// A delivery parked while verification was down and verified an hour later: it arrived a minute after it was sent,
+			// and its age is that, not the hour it waited. Rejecting it would lose a payment the provider will not resend.
+			arrived := ports.WithReceivedAt(Ctx(), sent.Add(time.Minute))
+			if _, err := p.VerifyWebhook(arrived, fx.Account(), body, hdr); err != nil {
+				t.Fatalf("a genuine delivery that waited to be verified must verify as of its arrival: %v", err)
+			}
+			// One that arrived an hour after it was sent is a replay however recently it is verified, and one that "arrived"
+			// before it was sent is as suspect as a signature from the future.
+			for name, at := range map[string]time.Time{"an hour after it was sent": sent.Add(time.Hour), "an hour before it was sent": sent.Add(-time.Hour)} {
+				if _, err := p.VerifyWebhook(ports.WithReceivedAt(Ctx(), at), fx.Account(), body, hdr); !errors.Is(err, domain.ErrInvalidSignature) {
+					t.Fatalf("a delivery that arrived %s must not verify, got %v", name, err)
+				}
+			}
+		}},
 		{"rejects a body signed for another account", func(t testing.TB, p ports.PaymentProvider, fx ProviderFixtures) {
 			body, hdr := fx.SignedWithSecretOf(fx.OtherAccount())
 			if _, err := p.VerifyWebhook(Ctx(), fx.Account(), body, hdr); !errors.Is(err, domain.ErrInvalidSignature) {

@@ -303,6 +303,25 @@ func InboxCases() []StoreCase[InboxFactory] {
 				t.Fatal("a held parked delivery was leased again")
 			}
 		}},
+		{"a parked delivery remembers when it first arrived", func(t testing.TB, mk InboxFactory) {
+			clock := mcontracts.NewFakeClock(Start)
+			in := mk(t, clock, 5)
+			if err := in.Park(Ctx(), ProviderName, AccountID, "parked:abc", []byte("raw"), nil); err != nil {
+				t.Fatal(err)
+			}
+			clock.Advance(10 * time.Minute)
+			if err := in.Park(Ctx(), ProviderName, AccountID, "parked:abc", []byte("raw"), nil); err != nil { // the provider's redelivery
+				t.Fatal(err)
+			}
+			clock.Advance(time.Hour)
+			parked, err := in.LeaseParked(Ctx(), 10, ttl)
+			if err != nil || len(parked) != 1 {
+				t.Fatalf("LeaseParked = %d, %v", len(parked), err)
+			}
+			if !parked[0].ReceivedAt.Equal(Start) {
+				t.Fatalf("ReceivedAt = %v, want the first arrival %v: a signature's age is judged from it, and a redelivery must not make it younger", parked[0].ReceivedAt, Start)
+			}
+		}},
 		{"a parked delivery that verifies becomes an ordinary event and loses its body", func(t testing.TB, mk InboxFactory) {
 			clock := mcontracts.NewFakeClock(Start)
 			in := mk(t, clock, 5)

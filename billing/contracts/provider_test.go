@@ -29,6 +29,7 @@ func TestProviderContractRejectsEveryBrokenProviderByName(t *testing.T) {
 		normal    = "verifies and normalizes with the provider's timestamp and a body hash"
 		refund    = "refund amounts are normalized as cumulative"
 		ignored   = "unsubscribed types are Ignored, not errors"
+		judged    = "a signature is judged as of when the delivery arrived, not when it is verified"
 	)
 	broken := []struct {
 		defect   contracts.FakeDefect
@@ -41,6 +42,7 @@ func TestProviderContractRejectsEveryBrokenProviderByName(t *testing.T) {
 		{contracts.DefectPerEventRefund, []string{refund}},
 		{contracts.DefectNoIgnore, []string{ignored}},
 		{contracts.DefectPartialOnError, []string{tampered, missing}},
+		{contracts.DefectIgnoreArrival, []string{judged}},
 	}
 	for _, b := range broken {
 		t.Run(string(b.defect), func(t *testing.T) {
