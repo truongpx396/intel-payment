@@ -443,10 +443,18 @@ type Subs interface {
 // charge slot atomically: at most MaxPerDay distinct slots per UTC day however many times a trigger fires,
 // and while one is in flight another claim RESUMES it, so a duplicated trigger names the same idempotency
 // key and the provider charges once. Settle ends the slot: a good charge clears the failure count, a failed
-// one adds one, and the third in a row disables the instruction with the reason recorded.
+// one adds one, and the third in a row disables the instruction with the reason recorded. The rules are the
+// domain's (domain.AutoRecharge.Claim and Settle are pure); a store only makes them atomic.
 type AutoRecharges interface {
 	Get(ctx context.Context, s domain.Scope) (domain.AutoRecharge, bool, error)
+	// Put stores the configuration (never the ledger, so an edit cannot hand out more charges today). Written
+	// enabled it clears the failures — its owner has fixed the card; written disabled it records the reason given.
+	// An invalid instruction is md.ErrInvalid and is not stored. On PostgreSQL the instruction keeps a balance watch
+	// of key auto_recharge in the same transaction — metering's hot function flags a crossing of a watch and its
+	// writer publishes billing.balance.low — and a watch of any other key is the host's and is never touched.
 	Put(ctx context.Context, a domain.AutoRecharge) error
+	// Claim and Settle are the domain's rules under a lock. A scope with no instruction claims nothing (disabled);
+	// settling one is md.ErrNotFound.
 	Claim(ctx context.Context, s domain.Scope, now time.Time, staleAfter time.Duration) (RechargeClaim, RechargeRefusal, error)
 	Settle(ctx context.Context, s domain.Scope, ok bool, reason string, now time.Time) (disabled bool, err error)
 }
