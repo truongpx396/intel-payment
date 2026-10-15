@@ -856,6 +856,9 @@ func (m *MemSubs) Put(s domain.Sub) {
 
 // MemCustomers maps provider customers to scopes.
 type MemCustomers struct {
+	// DropUpserts makes Upsert report success and keep nothing: a mapping that is lost before the payment arrives.
+	DropUpserts bool
+
 	log  *CallLog
 	mu   sync.Mutex
 	rows []domain.Customer
@@ -882,9 +885,14 @@ func (m *MemCustomers) Upsert(_ context.Context, c domain.Customer) error {
 	m.log.Add("customers.Upsert")
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.DropUpserts {
+		return nil
+	}
 	for i, have := range m.rows {
 		if have.Scope.Normalized() == c.Scope.Normalized() && have.Account == c.Account {
-			m.rows[i] = c
+			// The provider's customer is immutable once mapped: replacing it would orphan the webhooks of the old
+			// one. Only the billing email moves.
+			m.rows[i].BillingEmail = c.BillingEmail
 			return nil
 		}
 	}
@@ -960,6 +968,9 @@ func (m *MemCatalog) Resolve(_ context.Context, realm domain.Realm, code, curren
 	m.log.Add("catalog.Resolve")
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.FallbackPlan != nil {
+		return *m.FallbackPlan, "price_fallback", nil
+	}
 	for _, p := range m.plans {
 		if p.Realm.Or() == realm.Or() && p.Code == code && p.Active {
 			if id, ok := m.prices[account+"|"+string(p.Realm.Or())+"|"+code+"|"+currency]; ok {
