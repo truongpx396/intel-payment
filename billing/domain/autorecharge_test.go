@@ -277,6 +277,26 @@ func TestANewUTCDayStartsFromOne(t *testing.T) {
 	}
 }
 
+// A slot claimed just before midnight and still fresh just after it belongs to the day before, and its key says so. A trigger
+// after midnight is the new day's first, not a duplicate of it: carrying the slot across would name yesterday's charge under
+// today's key.
+func TestASlotStillInFlightAtMidnightIsNotCarriedIntoTheNewDay(t *testing.T) {
+	t.Parallel()
+	a := instruction(3)
+	before := time.Date(2026, 3, 1, 23, 58, 0, 0, time.UTC)
+	a, yesterdays, _ := a.Claim(before, stale)
+	next, c, refusal := a.Claim(before.Add(4*time.Minute), stale) // 00:02, younger than the staleness window
+	if refusal != domain.RechargeOK || c != (domain.RechargeClaim{Day: "2026-03-02", N: 1}) {
+		t.Fatalf("claim = %+v refusal = %q, want slot 1 of 2026-03-02, not a resumption of %+v", c, refusal, yesterdays)
+	}
+	if next.ChargesToday != 1 || next.InflightN != 1 {
+		t.Fatalf("state = %+v", next)
+	}
+	if domain.RechargeKey(a.Scope, yesterdays.Day, yesterdays.N) == domain.RechargeKey(a.Scope, c.Day, c.N) {
+		t.Fatal("yesterday's charge and today's share a key")
+	}
+}
+
 func TestTheDayIsTheUTCDayWhateverZoneTheClockIsIn(t *testing.T) {
 	t.Parallel()
 	bangkok := time.FixedZone("ICT", 7*3600)
