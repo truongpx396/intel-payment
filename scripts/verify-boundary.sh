@@ -109,4 +109,15 @@ expect_reject "arch: a billing adapter reaches metering through its ports (postg
   "package postgres
 import _ \"$mod/metering/adapters/driven/redis\""
 
+expect_reject "depguard 9: a provider adapter imports no other (stripe -> postgres)" lint \
+  billing/adapters/driven/stripe/zz_violation.go billing/adapters/driven/stripe \
+  "package stripe
+import \"$mod/billing/adapters/driven/postgres\"
+var _ = postgres.NewInbox"
+expect_reject "depguard 9: the books know no provider (postgres -> stripe)" lint \
+  billing/adapters/driven/postgres/zz_violation.go billing/adapters/driven/postgres \
+  "package postgres
+import \"$mod/billing/adapters/driven/stripe\"
+var _ = stripe.New"
+
 [ "$fail" -eq 0 ] && echo "boundary verified" || { echo "boundary NOT verified"; exit 1; }

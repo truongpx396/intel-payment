@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/truongpx396/intel-payment/billing/adapters/driven/stripe"
 	"github.com/truongpx396/intel-payment/billing/contracts"
+	"github.com/truongpx396/intel-payment/billing/contracts/stripefix"
 	"github.com/truongpx396/intel-payment/billing/domain"
 	"github.com/truongpx396/intel-payment/billing/ports"
 )
@@ -52,8 +54,13 @@ func (unbuilt) ChargeSaved(context.Context, domain.ProviderAccount, ports.OffSes
 type adapter func(t *testing.T) (ports.PaymentProvider, contracts.ProviderFixtures)
 
 var adapters = map[string]adapter{
-	"stripe": func(*testing.T) (ports.PaymentProvider, contracts.ProviderFixtures) {
-		return unbuilt{"stripe"}, contracts.NewHarness().Fixtures()
+	"stripe": func(t *testing.T) (ports.PaymentProvider, contracts.ProviderFixtures) {
+		fx := stripefix.New(t)
+		p, err := stripe.New(stripe.Config{Secrets: fx.Secrets(), Catalog: fx.Catalog(), Clock: fx.Clock, BaseURL: fx.APIURL()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p, fx
 	},
 	"polar": func(*testing.T) (ports.PaymentProvider, contracts.ProviderFixtures) {
 		return unbuilt{"polar"}, contracts.NewHarness().Fixtures()
