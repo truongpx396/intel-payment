@@ -131,8 +131,9 @@ type Payments interface {
 // ApplyIfNewer (invariant 12).
 type Subs interface {
 	Get(ctx context.Context, s domain.Scope) (domain.Sub, bool, error)
-	// ApplyIfNewer writes the state only when at is newer than the stored LastEventAt, by the total order of
-	// domain.Sub.Apply — in one conditional statement, so concurrent appliers converge.
+	// ApplyIfNewer writes the state only when it is newer than the one held, by the total order of domain.Sub.Apply,
+	// under an exclusive lock on the subscription, so concurrent appliers converge on the newest state. A second live
+	// subscription for a scope is md.ErrAlreadyExists; a plan the realm does not sell is domain.ErrUnknownPrice.
 	ApplyIfNewer(ctx context.Context, sub domain.Sub, at time.Time) (applied bool, err error)
 	// DueForGraceExpiry lists past_due subscriptions whose grace window has ended and has not been announced.
 	DueForGraceExpiry(ctx context.Context, now time.Time) ([]domain.Sub, error)

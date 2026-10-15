@@ -90,6 +90,9 @@ CREATE TABLE subscriptions (
     -- The provider timestamp of the newest state applied. Providers do not order deliveries, so an
     -- older event can never overwrite a newer state (payments invariant 15).
     last_event_at            TIMESTAMPTZ,
+    -- When the end of the grace window was announced (so entitlement caches evict at that instant). Once, not on
+    -- every sweep: set only while it is still the grace that ended, and cleared with any newer state.
+    grace_lapsed_at          TIMESTAMPTZ,
     created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
     canceled_at              TIMESTAMPTZ,
@@ -124,6 +127,8 @@ CREATE TABLE payments (
                            'disputed','charged_back')),
     dispute_id          TEXT,
     dispute_status      TEXT        CHECK (dispute_status IN ('open','won','lost')),
+    -- What a chargeback took, so a won dispute returns exactly that (payments invariant 17).
+    dispute_clawed      BIGINT      NOT NULL DEFAULT 0 CHECK (dispute_clawed >= 0),
     receipt_url         TEXT,
     failure_reason      TEXT,
     -- The RECONCILIATION KEY between fiat and credits: the grant's credit_idem key.
@@ -132,7 +137,8 @@ CREATE TABLE payments (
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (provider_account, provider_payment_id),
     CHECK (refunded_minor BETWEEN 0 AND amount_minor),
-    CHECK (credits_revoked BETWEEN 0 AND credits_granted)
+    CHECK (credits_revoked BETWEEN 0 AND credits_granted),
+    CHECK (dispute_clawed <= credits_granted)
 );
 CREATE INDEX payments_scope_time_idx ON payments (realm, scope_kind, scope_id, created_at DESC);
 
@@ -159,7 +165,7 @@ CREATE TABLE payment_events (
     scope_kind        TEXT,
     scope_id          TEXT,
     status            TEXT        NOT NULL CHECK (status IN
-                        ('received','processing','processed','ignored','failed','dead','unverifiable')),
+                        ('received','processing','processed','ignored','failed','dead','unverifiable','rejected')),
     attempts          INT         NOT NULL DEFAULT 0,
     next_attempt_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     lease_until       TIMESTAMPTZ,
@@ -172,6 +178,9 @@ CREATE TABLE payment_events (
 CREATE INDEX payment_events_work_idx ON payment_events (next_attempt_at)
     WHERE status IN ('received','failed','processing','unverifiable');
 CREATE INDEX payment_events_received_idx ON payment_events (received_at);
+-- A customer's events are leased one at a time: the lease asks who is being worked right now.
+CREATE INDEX payment_events_busy_idx ON payment_events (provider_account, (object->>'customer_id'))
+    WHERE status = 'processing';
 
 -- Auto top-up: when a scope's balance crosses `threshold`, charge a saved payment method off-session
 -- for `plan_code` (a one_time pack). Credits still arrive ONLY on the verified payment webhook.
@@ -191,6 +200,15 @@ CREATE TABLE auto_recharge (
     last_triggered_at    TIMESTAMPTZ,
     consecutive_failures INT         NOT NULL DEFAULT 0,
     disabled_reason      TEXT,
+    -- The day's charge slots: at most max_per_day distinct charges per UTC day however many times the trigger
+    -- fires, and while one is in flight (claimed, not settled) another claim resumes it, so a duplicated trigger
+    -- names the same idempotency key and the provider charges once (payments invariant 18).
+    day                  DATE,
+    charges_today        INT         NOT NULL DEFAULT 0 CHECK (charges_today >= 0),
+    inflight_n           INT         NOT NULL DEFAULT 0 CHECK (inflight_n >= 0),
+    inflight_since       TIMESTAMPTZ,
+    CHECK ((inflight_n = 0) = (inflight_since IS NULL)),
+    CHECK (inflight_n <= charges_today),
     created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (realm, scope_kind, scope_id)

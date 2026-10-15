@@ -418,7 +418,10 @@ type Payments interface {
 type Subs interface {
 	Get(ctx context.Context, s domain.Scope) (domain.Sub, bool, error)
 	// ApplyIfNewer writes the state only when it is newer than the stored one, by the total order of
-	// domain.Sub.Apply (invariant 15) — in one conditional statement, so concurrent appliers converge.
+	// domain.Sub.Apply (invariant 15). The store holds an exclusive lock on the subscription for the read, the
+	// decision and the write, so concurrent appliers converge on the newest state; the order is the domain's,
+	// not a second implementation in SQL. A second live subscription for a scope is ErrAlreadyExists (the event
+	// is retried until the first one ends); a plan the realm does not sell is ErrUnknownPrice.
 	ApplyIfNewer(ctx context.Context, sub domain.Sub, at time.Time) (applied bool, err error)
 	// DueForGraceExpiry lists past_due subscriptions whose grace window has ended and whose end has
 	// not been announced; MarkGraceLapsed records the announcement, only while it is still the grace
@@ -499,6 +502,21 @@ begins. The currency is the one of the subscription's latest invoice. A change t
 one-time pack, to a plan nobody sells, or for a scope with no live subscription is refused before the provider is
 asked. Neither `Change` nor `CancelAtPeriodEnd` writes subscription state: the local status moves when the
 resulting webhook is processed (invariant 12).
+
+### Persistence
+
+The stores are PostgreSQL (`billing/adapters/driven/postgres`), and each is held to a conformance suite run against
+an in-memory twin as well, so the fakes the processor suites stand on cannot be kinder than the database.
+The guarantees are the database's: the `UNIQUE (provider_account, provider_event_id)` on `payment_events` is the
+replay guard; `CHECK`s keep a payment from refunding more than it cost, revoking or clawing back more than it
+granted; a unique partial index allows one live subscription per scope; and a transaction-scoped advisory lock on
+a payment's or a subscription's name is what makes `Payments.Update` and `Subs.ApplyIfNewer` exclusive — including
+the call that creates the row. `Inbox.Lease` takes one short transaction under a lock shared by every processor, so
+"this customer is free" and "this event is due" are decided one at a time. A provider customer maps to one scope
+and never moves (`Customers.Upsert` keeps the first writer's id and moves only the email). The catalogue is read
+on every call, with no cache: a price written a moment ago is sold now; a plan since retired is no longer sold,
+but `PlanForPrice` still recognizes it, so a customer who paid a minute before it was withdrawn gets what they
+bought. `rejected` is the status of a parked delivery that failed verification or turned out to be a duplicate.
 
 ## Webhook processing
 

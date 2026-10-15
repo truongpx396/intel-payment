@@ -100,4 +100,13 @@ expect_reject "depguard 7: no infra in the fiat core (billing/app -> go-redis)" 
   "package app
 import _ \"github.com/redis/go-redis/v9\""
 
+expect_reject "arch: a billing adapter does not reach the app (billing/adapters/driven/postgres -> billing/app)" arch \
+  billing/adapters/driven/postgres/zz_violation.go billing/adapters/driven/postgres \
+  "package postgres
+import _ \"$mod/billing/app\""
+expect_reject "arch: a billing adapter reaches metering through its ports (postgres -> metering/adapters/driven/redis)" arch \
+  billing/adapters/driven/postgres/zz_violation.go billing/adapters/driven/postgres \
+  "package postgres
+import _ \"$mod/metering/adapters/driven/redis\""
+
 [ "$fail" -eq 0 ] && echo "boundary verified" || { echo "boundary NOT verified"; exit 1; }

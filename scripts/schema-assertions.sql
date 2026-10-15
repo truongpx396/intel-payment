@@ -178,7 +178,42 @@ DO $$ BEGIN
     UPDATE payments SET credits_revoked = 10000001 WHERE provider_payment_id = 'pi_1';
     RAISE EXCEPTION 'FAIL: revoked more credits than were granted';
   EXCEPTION WHEN check_violation THEN NULL; END;
-  PERFORM pg_temp.ok('refunds and clawbacks cannot exceed what was paid and granted');
+  BEGIN
+    UPDATE payments SET dispute_clawed = 10000001 WHERE provider_payment_id = 'pi_1';
+    RAISE EXCEPTION 'FAIL: a chargeback took more credits than were granted';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+  PERFORM pg_temp.ok('refunds and clawbacks (a chargeback included) cannot exceed what was paid and granted');
+END $$;
+ROLLBACK;
+
+-- ------------------------------------------- the webhook inbox and top-up bounds
+BEGIN;
+DO $$ BEGIN
+  -- a parked delivery that failed verification ends in a status of its own, without its raw body
+  INSERT INTO payment_events (provider_account, provider, provider_event_id, event_type, payload_hash, status)
+  VALUES ('stripe-test', 'stripe', 'parked:rejected', 'parked', 'h', 'rejected');
+  BEGIN
+    INSERT INTO payment_events (provider_account, provider, provider_event_id, event_type, payload_hash, status, parked_body)
+    VALUES ('stripe-test', 'stripe', 'evt_with_body', 'x', 'h', 'received', '\x00');
+    RAISE EXCEPTION 'FAIL: a verified event kept its raw body';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+  PERFORM pg_temp.ok('a rejected parked delivery has a status of its own, and only an unverifiable one keeps a body');
+
+  INSERT INTO auto_recharge (realm, scope_kind, scope_id, threshold, plan_code, currency, provider_account, payment_method_ref)
+  VALUES ('verify', 'org', 'o1', 1000, 'pack', 'USD', 'stripe-test', 'pm_1');
+  BEGIN
+    UPDATE auto_recharge SET inflight_n = 1 WHERE scope_id = 'o1';
+    RAISE EXCEPTION 'FAIL: a charge in flight with no claim time';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+  BEGIN
+    UPDATE auto_recharge SET charges_today = 1, inflight_n = 2, inflight_since = now() WHERE scope_id = 'o1';
+    RAISE EXCEPTION 'FAIL: a slot in flight that was never claimed today';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+  BEGIN
+    UPDATE auto_recharge SET max_per_day = 51 WHERE scope_id = 'o1';
+    RAISE EXCEPTION 'FAIL: max_per_day above its bound';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+  PERFORM pg_temp.ok('an auto top-up slot in flight is claimed and timed, and max_per_day is bounded');
 END $$;
 ROLLBACK;
 

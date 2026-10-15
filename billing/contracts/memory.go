@@ -1026,7 +1026,12 @@ func (m *MemCatalog) List(_ context.Context, realm domain.Realm, currency string
 			out = append(out, p)
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].SortOrder < out[j].SortOrder })
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].SortOrder != out[j].SortOrder {
+			return out[i].SortOrder < out[j].SortOrder
+		}
+		return out[i].Code < out[j].Code
+	})
 	return out, nil
 }
 
