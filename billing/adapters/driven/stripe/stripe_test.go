@@ -16,6 +16,7 @@ import (
 	"github.com/truongpx396/intel-payment/billing/contracts/stripefix"
 	"github.com/truongpx396/intel-payment/billing/domain"
 	"github.com/truongpx396/intel-payment/billing/ports"
+	mcontracts "github.com/truongpx396/intel-payment/metering/contracts"
 	md "github.com/truongpx396/intel-payment/metering/domain"
 )
 
@@ -673,3 +674,18 @@ func TestACancelledContextStopsTheCall(t *testing.T) {
 }
 
 var _ = fmt.Sprintf
+
+func TestFetchedStateIsDatedByStripesClockNotOurs(t *testing.T) {
+	t.Parallel()
+	fx := stripefix.New(t)
+	ours := mcontracts.NewFakeClock(fx.Now().Add(7 * 24 * time.Hour)) // a clock a week ahead of Stripe's
+	p, err := stripe.New(stripe.Config{Secrets: fx.Secrets(), Catalog: fx.Catalog(), Clock: ours, BaseURL: fx.APIURL()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fx.Subscriptions["sub_1"] = stripefix.Subscription("sub_1", "cus_1", contracts.ProPriceID, "active", fx.Now(), fx.Now().Add(30*24*time.Hour), false)
+	_, at, err := p.FetchSubscription(ctx(), fx.Account(), "sub_1")
+	if err != nil || !at.Equal(fx.Now()) {
+		t.Fatalf("at = %v (%v), want Stripe's own %v: a subscription is ordered by the provider's time, never ours", at, err, fx.Now())
+	}
+}
