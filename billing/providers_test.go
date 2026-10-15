@@ -9,8 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/truongpx396/intel-payment/billing/adapters/driven/polar"
 	"github.com/truongpx396/intel-payment/billing/adapters/driven/stripe"
 	"github.com/truongpx396/intel-payment/billing/contracts"
+	"github.com/truongpx396/intel-payment/billing/contracts/polarfix"
 	"github.com/truongpx396/intel-payment/billing/contracts/stripefix"
 	"github.com/truongpx396/intel-payment/billing/domain"
 	"github.com/truongpx396/intel-payment/billing/ports"
@@ -62,8 +64,13 @@ var adapters = map[string]adapter{
 		}
 		return p, fx
 	},
-	"polar": func(*testing.T) (ports.PaymentProvider, contracts.ProviderFixtures) {
-		return unbuilt{"polar"}, contracts.NewHarness().Fixtures()
+	"polar": func(t *testing.T) (ports.PaymentProvider, contracts.ProviderFixtures) {
+		fx := polarfix.New(t)
+		p, err := polar.New(polar.Config{Secrets: fx.Secrets(), Catalog: fx.Catalog(), Clock: fx.Clock, BaseURL: fx.APIURL()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p, fx
 	},
 	"paypal": func(*testing.T) (ports.PaymentProvider, contracts.ProviderFixtures) {
 		return unbuilt{"paypal"}, contracts.NewHarness().Fixtures()
