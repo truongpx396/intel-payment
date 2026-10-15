@@ -689,6 +689,22 @@ with `failed`, so the host can ask the customer to update their card. The saved 
 through `CreateCheckout` in `setup` mode or the provider portal; this service stores only the
 provider's reference.
 
+### The Stripe adapter
+
+`billing/adapters/driven/stripe` speaks Stripe's HTTP API directly (a few form-encoded calls) at API version
+2024-06-20, to which a webhook endpoint must be pinned. **A payment is keyed on its payment intent**, the one
+id every event about it carries — the paid invoice (`invoice.paid`, `invoice.payment_succeeded`; the invoice's own
+id when there is no intent), the refunded charge (`charge.refunded`: `amount_refunded` is already cumulative, and
+the newest refund's id names the clawback), the four dispute events (which carry no customer: the processor takes
+the scope from the payment) and an off-session payment intent. A one-time checkout is created with
+`invoice_creation`, so it too is fulfilled by `invoice.paid`; a payment intent that belongs to an invoice is
+ignored because the invoice fulfils it once, and **`checkout.session.completed` is ignored, always**: a checkout return
+never fulfils. The provider's current subscription is dated by the `Date` of Stripe's own response, and a price the
+catalogue does not sell comes back with no plan code. A plan change now is a subscription update with Stripe's
+proration (or none); a change at the period's end is a schedule that keeps the running phase, adds the new price
+after it and releases itself. A secret is read from its reference at each call and is scrubbed from every error.
+The event bodies the tests use are built from the documentation, not captured: a sandbox rehearsal is still owed.
+
 ### Per-provider notes
 
 | Provider | Verification | Notable events | Gotcha |

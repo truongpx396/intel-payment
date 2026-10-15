@@ -27,6 +27,8 @@ import (
 )
 
 // The secrets of the fixtures' two accounts. They are references' targets, never real keys.
+//
+//nolint:gosec // fixture values, not credentials
 const (
 	APIKeyA     = "fixture-api-key-a"
 	APIKeyB     = "fixture-api-key-b"

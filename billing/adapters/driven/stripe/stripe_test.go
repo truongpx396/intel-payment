@@ -552,8 +552,16 @@ func TestChangePlanFollowsThePolicyAtStripe(t *testing.T) {
 		if err := p.ChangePlan(ctx(), fx.Account(), "sub_1", contracts.TeamPriceID, domain.AtPeriodEnd); err != nil {
 			t.Fatal(err)
 		}
-		create, ok := fx.Last(http.MethodPost, "/v1/subscription_schedules")
-		update, ok2 := fx.Last(http.MethodPost, "/v1/subscription_schedules/sub_sched_1")
+		var create, update stripefix.Request
+		var ok, ok2 bool
+		for _, r := range fx.Requests() { // by exact path: the schedule's create and its update share a prefix
+			switch r.Path {
+			case "/v1/subscription_schedules":
+				create, ok = r, true
+			case "/v1/subscription_schedules/sub_sched_1":
+				update, ok2 = r, true
+			}
+		}
 		if !ok || !ok2 || create.Form.Get("from_subscription") != "sub_1" {
 			t.Fatalf("create = %+v update = %+v", create, update)
 		}

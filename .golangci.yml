@@ -127,6 +127,40 @@ linters:
           deny:
             - { pkg: github.com/truongpx396/intel-payment/metering/adapters/driving/grpcserver, desc: "transports share auth and wire, nothing else" }
             - { pkg: github.com/truongpx396/intel-payment/metering/adapters/driving/grpcclient, desc: "transports share auth and wire, nothing else" }
+        # Each provider adapter, and the books, stand alone: an adapter that imported another would be a second path to
+        # a provider's wire format, and the contract that holds every adapter to the same behaviour could not tell.
+        billing-adapter-stripe-is-alone:
+          list-mode: lax
+          files: [ '**/billing/adapters/driven/stripe/**' ]
+          deny:
+            - { pkg: github.com/truongpx396/intel-payment/billing/adapters/driven/polar, desc: "a provider adapter imports no other adapter" }
+            - { pkg: github.com/truongpx396/intel-payment/billing/adapters/driven/paypal, desc: "a provider adapter imports no other adapter" }
+            - { pkg: github.com/truongpx396/intel-payment/billing/adapters/driven/postgres, desc: "a provider adapter does not reach the books" }
+            - { pkg: github.com/truongpx396/intel-payment/billing/app, desc: "an adapter implements ports; it does not call the use cases" }
+        billing-adapter-polar-is-alone:
+          list-mode: lax
+          files: [ '**/billing/adapters/driven/polar/**' ]
+          deny:
+            - { pkg: github.com/truongpx396/intel-payment/billing/adapters/driven/stripe, desc: "a provider adapter imports no other adapter" }
+            - { pkg: github.com/truongpx396/intel-payment/billing/adapters/driven/paypal, desc: "a provider adapter imports no other adapter" }
+            - { pkg: github.com/truongpx396/intel-payment/billing/adapters/driven/postgres, desc: "a provider adapter does not reach the books" }
+            - { pkg: github.com/truongpx396/intel-payment/billing/app, desc: "an adapter implements ports; it does not call the use cases" }
+        billing-adapter-paypal-is-alone:
+          list-mode: lax
+          files: [ '**/billing/adapters/driven/paypal/**' ]
+          deny:
+            - { pkg: github.com/truongpx396/intel-payment/billing/adapters/driven/stripe, desc: "a provider adapter imports no other adapter" }
+            - { pkg: github.com/truongpx396/intel-payment/billing/adapters/driven/polar, desc: "a provider adapter imports no other adapter" }
+            - { pkg: github.com/truongpx396/intel-payment/billing/adapters/driven/postgres, desc: "a provider adapter does not reach the books" }
+            - { pkg: github.com/truongpx396/intel-payment/billing/app, desc: "an adapter implements ports; it does not call the use cases" }
+        billing-postgres-is-the-books:
+          list-mode: lax
+          files: [ '**/billing/adapters/driven/postgres/**' ]
+          deny:
+            - { pkg: github.com/truongpx396/intel-payment/billing/adapters/driven/stripe, desc: "the books know no provider" }
+            - { pkg: github.com/truongpx396/intel-payment/billing/adapters/driven/polar, desc: "the books know no provider" }
+            - { pkg: github.com/truongpx396/intel-payment/billing/adapters/driven/paypal, desc: "the books know no provider" }
+            - { pkg: github.com/truongpx396/intel-payment/billing/app, desc: "an adapter implements ports; it does not call the use cases" }
         provider-sdk-containment:
           list-mode: lax
           files:
