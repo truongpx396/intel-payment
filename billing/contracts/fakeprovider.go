@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -420,7 +419,7 @@ func (p *FakeProvider) Cancels() []string {
 	return append([]string(nil), p.cancels...)
 }
 
-var errCardDeclined = errors.New("fake provider: the card was declined")
+var errCardDeclined = fmt.Errorf("%w: fake provider: the card was declined", domain.ErrChargeDeclined)
 
 // DeclineCharges makes ChargeSaved fail, as a declined card does.
 func (p *FakeProvider) DeclineCharges(v bool) {
