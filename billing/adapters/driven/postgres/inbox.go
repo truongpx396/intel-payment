@@ -290,7 +290,7 @@ func (in *Inbox) LeaseParked(ctx context.Context, n int, ttl time.Duration) ([]p
 		if err := lockKey(ctx, tx, leaseLock); err != nil {
 			return err
 		}
-		rows, err := tx.Query(ctx, `SELECT id::text, provider, provider_account, parked_body, parked_headers FROM payment_events
+		rows, err := tx.Query(ctx, `SELECT id::text, provider, provider_account, parked_body, parked_headers, received_at FROM payment_events
 			WHERE status = 'unverifiable' AND next_attempt_at <= $1 AND (lease_until IS NULL OR lease_until <= $1)
 			ORDER BY received_at, id LIMIT $2`, now, n)
 		if err != nil {
@@ -300,7 +300,7 @@ func (in *Inbox) LeaseParked(ctx context.Context, n int, ttl time.Duration) ([]p
 			var d ports.ParkedDelivery
 			var provider string
 			var hdr []byte
-			if err := rows.Scan(&d.ID, &provider, &d.Account, &d.Body, &hdr); err != nil {
+			if err := rows.Scan(&d.ID, &provider, &d.Account, &d.Body, &hdr, &d.ReceivedAt); err != nil {
 				rows.Close()
 				return err
 			}
