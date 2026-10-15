@@ -3,10 +3,13 @@ package app_test
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/truongpx396/intel-payment/billing/app"
 	"github.com/truongpx396/intel-payment/billing/contracts"
 	"github.com/truongpx396/intel-payment/billing/domain"
 	"github.com/truongpx396/intel-payment/billing/ports"
@@ -14,17 +17,15 @@ import (
 
 // ---- plan change ----
 
-// unbuiltSubscriptions accepts every request and does nothing about it. The variable below that binds it is the
-// only edit T090 makes to the wiring.
-type unbuiltSubscriptions struct{}
-
-func (unbuiltSubscriptions) Change(context.Context, domain.Scope, string) error { return nil }
-func (unbuiltSubscriptions) CancelAtPeriodEnd(context.Context, domain.Scope) error {
-	return nil
-}
-
-var subscriptionsUnderTest contracts.SubscriptionsFactory = func(_ testing.TB, _ *contracts.Harness, _ domain.PlanChangePolicy, _ ports.PlanChangeGuard) ports.Subscriptions {
-	return unbuiltSubscriptions{}
+// subscriptionsUnderTest builds the plan-change service over a harness's collaborators.
+var subscriptionsUnderTest contracts.SubscriptionsFactory = func(t testing.TB, h *contracts.Harness, policy domain.PlanChangePolicy, guard ports.PlanChangeGuard) ports.Subscriptions {
+	t.Helper()
+	s, err := app.NewSubscriptions(app.SubscriptionsDeps{Providers: h.Providers(), Accounts: h.Accounts, Catalog: h.Catalog, Subs: h.Subs,
+		Payments: h.Payments, Policy: policy, Guard: guard, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
 }
 
 func TestPlanChangeContract(t *testing.T) {
@@ -89,4 +90,26 @@ func (w writesStatus) Change(ctx context.Context, s domain.Scope, plan string) e
 	cur.PlanCode = plan
 	_, _ = w.h.Subs.ApplyIfNewer(ctx, cur, cur.LastEventAt.Add(time.Second))
 	return errors.Join(err)
+}
+
+func TestASubscriptionServiceNeedsAValidPolicyAndItsPorts(t *testing.T) {
+	t.Parallel()
+	h := contracts.NewHarness()
+	ok := app.SubscriptionsDeps{Providers: h.Providers(), Accounts: h.Accounts, Catalog: h.Catalog, Subs: h.Subs, Payments: h.Payments, Policy: domain.AtPeriodEnd}
+	if _, err := app.NewSubscriptions(ok); err != nil {
+		t.Fatalf("a complete configuration was refused: %v", err)
+	}
+	for name, mutate := range map[string]func(*app.SubscriptionsDeps){
+		"a policy nobody defined": func(d *app.SubscriptionsDeps) { d.Policy = "whenever" },
+		"no policy at all":        func(d *app.SubscriptionsDeps) { d.Policy = "" },
+		"no providers":            func(d *app.SubscriptionsDeps) { d.Providers = nil },
+		"no catalogue":            func(d *app.SubscriptionsDeps) { d.Catalog = nil },
+		"no subscriptions":        func(d *app.SubscriptionsDeps) { d.Subs = nil },
+	} {
+		d := ok
+		mutate(&d)
+		if _, err := app.NewSubscriptions(d); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
+	}
 }

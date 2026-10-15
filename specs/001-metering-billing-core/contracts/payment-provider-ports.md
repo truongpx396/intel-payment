@@ -486,6 +486,20 @@ given no `Meter`: it cannot grant.
 read from the record the processor writes, within a window (30 minutes) of the payment beginning. It is the only
 sanctioned way for a UI to learn that credits arrived.
 
+### Plan changes and cancellation
+
+`Subscriptions.Change` moves a scope's live subscription to another recurring plan under the deployment's
+`PlanChangePolicy` (D11): `at_period_end` (default) asks the provider for the change when the paid period
+ends; `immediate_prorate` and `immediate_no_prorate` ask for it now, with that policy — proration is the
+provider's math, since it owns the invoice. A change that takes effect **now** is first put to the entitlement
+layer's `PlanChangeGuard`: one that would take a quota below what the scope uses is refused with
+`ErrBelowUsage`, and so is one the guard cannot answer (an outage denies; it never permits). One deferred to
+the period's end is allowed whatever the usage, because metering's ceilings answer for the new plan when it
+begins. The currency is the one of the subscription's latest invoice. A change to the plan the scope is on, to a
+one-time pack, to a plan nobody sells, or for a scope with no live subscription is refused before the provider is
+asked. Neither `Change` nor `CancelAtPeriodEnd` writes subscription state: the local status moves when the
+resulting webhook is processed (invariant 12).
+
 ## Webhook processing
 
 ### Stage 1 — ingress (`paymentd`, synchronous, provider-facing)
