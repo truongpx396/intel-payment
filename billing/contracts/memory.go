@@ -180,6 +180,21 @@ func (m *MemAccounts) Account(_ context.Context, id string) (domain.ProviderAcco
 	return a, ok, nil
 }
 
+// ForRealm implements ports.Accounts.
+func (m *MemAccounts) ForRealm(_ context.Context, realm domain.Realm) ([]domain.ProviderAccount, error) {
+	m.log.Add("accounts.ForRealm")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.ProviderAccount
+	for _, a := range m.accs {
+		if a.Serves(realm) {
+			out = append(out, a)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
 // ------------------------------------------------------------------- inbox --
 
 // Statuses of an inbox row, as payment_events has them, plus the one a rejected parked delivery ends in.

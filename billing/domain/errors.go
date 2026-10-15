@@ -16,6 +16,8 @@ var (
 	// ErrUnknownPrice is a provider price id (or a plan code and currency) the catalogue does not know. It never
 	// falls back to a default plan (FR-021).
 	ErrUnknownPrice = errors.New("unknown price")
+	// ErrBelowUsage is a plan change that would take an entitlement below what the scope is using now (FR-029).
+	ErrBelowUsage = errors.New("plan change would take an entitlement below current usage")
 	// ErrNotImplemented is what a stub answers; production code never returns it.
 	ErrNotImplemented = errors.New("not implemented")
 )

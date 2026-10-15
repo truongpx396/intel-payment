@@ -6,6 +6,10 @@ import (
 	"github.com/truongpx396/intel-payment/billing/domain"
 )
 
+// TaxHook is the host's own tax service, called before a checkout under the external_hook strategy. It may add what
+// the provider needs (a tax code, a calculation reference) to the input; its failure fails the checkout closed.
+type TaxHook func(ctx context.Context, in *CheckoutInput) error
+
 // TaxStrategy names WHO computes tax, so the answer is never "nobody". The engine does not compute tax; there is
 // no compute-it-here mode.
 type TaxStrategy interface {
