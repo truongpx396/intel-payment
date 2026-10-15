@@ -721,6 +721,27 @@ counts either way: a good charge clears the count of failures, a failed one adds
 gave none, so the customer can always be told) and reports that this settling did it, so the news is made once. Nothing
 switches an instruction back on but its owner writing a new one.
 
+**The handler** (`billing/app.AutoRecharge`) takes `billing.balance.low.<tag>` as a **hint** and checks it. The message —
+`{realm, scope, watch, seq}` — is read only if its subject, its realm and its scope tag agree, and a message that cannot be read
+is an error that takes no slot. The instruction must exist, be enabled, and be for the pool whose watch was crossed (a host's own
+watch on another pool is ignored); and the balance is **read** and must be below the threshold, so a duplicate delivered after a
+recharge already restored it charges nothing. Only then is a slot claimed. The price is the catalogue's today for the plan and
+currency the instruction names — never an amount the instruction holds (invariant 4) — and the plan must be a credit pack. The
+charge is `ChargeSaved` under the slot's key, and **the handler grants nothing**. A charge the provider **refused**
+(`domain.ErrChargeDeclined`), a plan nobody sells, an account that is off, a customer the account has never seen, or a provider
+that cannot charge a saved method fails the slot — acknowledged, not retried, since resending would only fail again — and counts
+toward switching the instruction off. Any other error leaves the outcome **unknown**: the message is not acknowledged, the slot
+stays held, and the redelivery resumes it under the same key. An accepted charge leaves a **pending payment** of kind
+`auto_recharge` keyed on the slot (its idempotency key is the slot's key), waiting for its webhook; if the webhook already
+arrived, the payment the processor made is left as it is and the slot is settled at once.
+
+**The processor** fulfils that payment like any purchase — the grant is keyed on the slot, with reason `auto_recharge` — and its
+outcome settles **its** slot, once: the payment's key names the slot, and only the first outcome of a payment reaches the
+settlement, so a replayed failure counts once and a success that arrives after its slot went stale does not release the slot that
+replaced it. That is deliberately at-most-once: an undercount only delays switching an instruction off, and an overcount would
+switch a good card off, so a settlement that cannot be made is logged and does not fail the event. Every outcome of a trigger is
+counted in `billing_autorecharge_total{result}`.
+
 Three consecutive failures disable the row (`disabled_reason`) and emit `billing.payment.<tag>`
 with `failed`, so the host can ask the customer to update their card. The saved method is set up
 through `CreateCheckout` in `setup` mode or the provider portal; this service stores only the
