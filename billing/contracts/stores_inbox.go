@@ -346,6 +346,28 @@ func InboxCases() []StoreCase[InboxFactory] {
 				t.Fatal("the parked copy is still waiting")
 			}
 		}},
+		{"only a parked delivery can be promoted, and nothing else is harmed by trying", func(t testing.TB, mk InboxFactory) {
+			clock := mcontracts.NewFakeClock(Start)
+			in := mk(t, clock, 5)
+			a := fullEvent("a", us(time.Second), "cus_1")
+			persist(t, in, a)
+			got := leaseAll(t, in, 10, ttl)
+			if len(got) != 1 {
+				t.Fatalf("leased %v", ids(got))
+			}
+			forged := fullEvent("forged", us(2*time.Second), "cus_1")
+			if _, err := in.Promote(Ctx(), got[0].ID, forged); !errors.Is(err, md.ErrNotFound) {
+				t.Fatalf("Promote of a verified event's row = %v, want ErrNotFound: a processed or leased event is not a parked delivery", err)
+			}
+			if _, err := in.Promote(Ctx(), "00000000-0000-0000-0000-000000000000", forged); !errors.Is(err, md.ErrNotFound) {
+				t.Fatalf("Promote of nothing = %v, want ErrNotFound", err)
+			}
+			clock.Advance(ttl + time.Second)
+			again := leaseAll(t, in, 10, ttl)
+			if len(again) != 1 || jsonOf(t, again[0].Event) != jsonOf(t, a) {
+				t.Fatalf("the event was rewritten by a refused Promote: %+v", again)
+			}
+		}},
 		{"a parked delivery can back off, and a rejected one is never tried again", func(t testing.TB, mk InboxFactory) {
 			clock := mcontracts.NewFakeClock(Start)
 			in := mk(t, clock, 5)
