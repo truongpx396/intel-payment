@@ -153,15 +153,17 @@ func isZero(e domain.Event) bool { return e.ProviderEventID == "" && e.Type == "
 func TestWhenPayPalCannotAnswerTheDeliveryIsNeitherRejectedNorTrusted(t *testing.T) {
 	t.Parallel()
 	for name, set := range map[string]func(*paypalfix.Fixtures){
-		"a 500 from the verify call":         func(f *paypalfix.Fixtures) { f.VerifyStatus = http.StatusInternalServerError },
-		"a 503 from the verify call":         func(f *paypalfix.Fixtures) { f.VerifyStatus = http.StatusServiceUnavailable },
-		"a 429 from the verify call":         func(f *paypalfix.Fixtures) { f.VerifyStatus = http.StatusTooManyRequests },
-		"a 401 from the verify call":         func(f *paypalfix.Fixtures) { f.VerifyStatus = http.StatusUnauthorized },
-		"a 403 from the verify call":         func(f *paypalfix.Fixtures) { f.VerifyStatus = http.StatusForbidden },
-		"a token service that is down":       func(f *paypalfix.Fixtures) { f.TokenStatus = http.StatusServiceUnavailable },
-		"credentials PayPal does not accept": func(f *paypalfix.Fixtures) { f.TokenStatus = http.StatusUnauthorized },
-		"a PayPal that is not answering":     func(f *paypalfix.Fixtures) { f.Stop() },
-		"tokens that stay unauthorized":      func(f *paypalfix.Fixtures) { f.RejectAllTokens = true },
+		"a 500 from the verify call":               func(f *paypalfix.Fixtures) { f.VerifyStatus = http.StatusInternalServerError },
+		"a 503 from the verify call":               func(f *paypalfix.Fixtures) { f.VerifyStatus = http.StatusServiceUnavailable },
+		"a 429 from the verify call":               func(f *paypalfix.Fixtures) { f.VerifyStatus = http.StatusTooManyRequests },
+		"a 401 from the verify call":               func(f *paypalfix.Fixtures) { f.VerifyStatus = http.StatusUnauthorized },
+		"a 403 from the verify call":               func(f *paypalfix.Fixtures) { f.VerifyStatus = http.StatusForbidden },
+		"a token service that is down":             func(f *paypalfix.Fixtures) { f.TokenStatus = http.StatusServiceUnavailable },
+		"a token call PayPal rejects as malformed": func(f *paypalfix.Fixtures) { f.TokenStatus = http.StatusBadRequest },
+		"a token call PayPal cannot process":       func(f *paypalfix.Fixtures) { f.TokenStatus = http.StatusUnprocessableEntity },
+		"credentials PayPal does not accept":       func(f *paypalfix.Fixtures) { f.TokenStatus = http.StatusUnauthorized },
+		"a PayPal that is not answering":           func(f *paypalfix.Fixtures) { f.Stop() },
+		"tokens that stay unauthorized":            func(f *paypalfix.Fixtures) { f.RejectAllTokens = true },
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -679,7 +681,8 @@ func TestASalesSubscriptionThatCannotBeReadParksTheDeliveryAndNeverGuesses(t *te
 	}
 	p, fx := setup(t) // PayPal does not have the subscription at all
 	body := fx.Event("WH-S2", "PAYMENT.SALE.COMPLETED", fx.Now(), paypalfix.Sale("sale-1", "I-NOPE", "20.00"))
-	if e, err := p.VerifyWebhook(ctx(), fx.Account(), body, paypalfix.Headers(paypalfix.WebhookIDA, "tx-s2", fx.Now(), body)); err == nil || errors.Is(err, domain.ErrInvalidSignature) || !isZero(e) {
+	if e, err := p.VerifyWebhook(ctx(), fx.Account(), body, paypalfix.Headers(paypalfix.WebhookIDA, "tx-s2", fx.Now(), body)); err == nil ||
+		errors.Is(err, domain.ErrInvalidSignature) || errors.Is(err, domain.ErrVerificationUnavailable) || !errors.Is(err, md.ErrNotFound) || !isZero(e) {
 		t.Errorf("a sale of a subscription PayPal does not know: %+v, %v", e, err)
 	}
 }
@@ -873,6 +876,14 @@ func TestFetchSubscriptionIsPayPalsCurrentObjectInTheEnginesTerms(t *testing.T) 
 			t.Errorf("PayPal's %q = %q, want %q", paypalStatus, got.Status, want)
 		}
 	}
+	// A renewed subscription's period starts at its last payment, not at the subscription's own start.
+	renewed := paypalfix.Subscription("I-SUB5", contracts.ProPriceID, "ACTIVE", ours, start.Add(-60*24*time.Hour), next)
+	lastPaid := start.Add(-time.Hour)
+	renewed["billing_info"].(map[string]any)["last_payment"] = map[string]any{"time": lastPaid.UTC().Format("2006-01-02T15:04:05.000Z")}
+	fx.Subscriptions["I-SUB5"] = renewed
+	if got, _, err := p.FetchSubscription(ctx(), fx.Account(), "I-SUB5"); err != nil || !got.CurrentPeriodStart.Equal(lastPaid.Truncate(time.Millisecond)) {
+		t.Errorf("a renewed subscription: period start %v (%v), want its last payment %v", got.CurrentPeriodStart, err, lastPaid)
+	}
 	// Before the first payment there is no last payment: the period starts when the subscription did.
 	first := paypalfix.Subscription("I-SUB3", contracts.ProPriceID, "ACTIVE", ours, start, next)
 	delete(first["billing_info"].(map[string]any), "last_payment")
@@ -987,7 +998,8 @@ func TestAmountsAreDecimalStringsInTheCurrencysOwnExponent(t *testing.T) {
 	if _, err := paypal.FormatAmount(1, ""); err == nil {
 		t.Error("an amount in no currency was formatted")
 	}
-	for _, bad := range []string{"", ".", "1.", ".5", "-1.00", "+1.00", "1e3", "1,000.00", " 1.00", "1.00 ", "1.001", "0x10", "ten", "1.0.0", "९.००"} {
+	// 184467440737095517 × 100 is 2^64 + 84: without the check on the high word it would read as eighty-four cents.
+	for _, bad := range []string{"184467440737095517.00", "184467440737095517", "", ".", "1.", ".5", "-1.00", "+1.00", "1e3", "1,000.00", " 1.00", "1.00 ", "1.001", "0x10", "ten", "1.0.0", "९.००"} {
 		if n, err := paypal.ParseAmount(bad, "USD"); err == nil {
 			t.Errorf("ParseAmount(%q, USD) = %d, want an error", bad, n)
 		}
@@ -1023,7 +1035,7 @@ func reference(text string, exponent int) (int64, bool) {
 }
 
 func FuzzParseAmountAgreesWithArbitraryPrecisionArithmetic(f *testing.F) {
-	for _, s := range []string{"10.00", "0.05", "0", "1000", "9223372036854775807", "92233720368547758.07", "92233720368547758.08", "1.001", "1.", ".5", "-1", "1e3", "00012.30", "٣.٠٠"} {
+	for _, s := range []string{"184467440737095517.00", "10.00", "0.05", "0", "1000", "9223372036854775807", "92233720368547758.07", "92233720368547758.08", "1.001", "1.", ".5", "-1", "1e3", "00012.30", "٣.٠٠"} {
 		f.Add(s, true)
 		f.Add(s, false)
 	}
