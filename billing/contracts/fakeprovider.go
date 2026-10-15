@@ -83,6 +83,7 @@ type FakeProvider struct {
 	customers    map[string]string // idem key → provider customer id
 	ensureCalls  int
 	failCheckout error
+	declined     map[string]error // checkout mode → the error it is declined with
 	// NonIdempotentCustomers makes EnsureCustomer create a new customer on every call: a provider that ignores the
 	// key, so two first checkouts at once leave two customers and one of them unmapped.
 	NonIdempotentCustomers bool
@@ -317,11 +318,29 @@ func (p *FakeProvider) FailCheckout(err error) {
 	p.mu.Unlock()
 }
 
+// DeclineMode makes CreateCheckout answer err for one mode ("payment", "subscription" or "setup"), as a provider that
+// cannot do it does; nil clears it.
+func (p *FakeProvider) DeclineMode(mode string, err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.declined == nil {
+		p.declined = map[string]error{}
+	}
+	if err == nil {
+		delete(p.declined, mode)
+		return
+	}
+	p.declined[mode] = err
+}
+
 // CreateCheckout implements ports.PaymentProvider. It returns a URL and nothing else: fulfilment is the webhook's.
 func (p *FakeProvider) CreateCheckout(_ context.Context, acct domain.ProviderAccount, in ports.CheckoutInput) (string, error) {
 	p.log.Add("provider.CreateCheckout")
 	p.mu.Lock()
 	err := p.failCheckout
+	if err == nil {
+		err = p.declined[in.Mode]
+	}
 	if err == nil {
 		p.checkouts = append(p.checkouts, in)
 	}
