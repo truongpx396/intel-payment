@@ -110,10 +110,11 @@ func TestAnInstructionKeepsABalanceWatchSoTheWriterPublishesBalanceLow(t *testin
 	// Three failed charges in a row switch it off, and with it the watch: nothing is left to trigger a charge that cannot be made.
 	now := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
 	for i := range 3 {
-		if _, refusal, err := store.Claim(ctx, a.Scope, now.Add(time.Duration(i)*time.Minute), 10*time.Minute); err != nil || refusal != "" {
+		slot, refusal, err := store.Claim(ctx, a.Scope, now.Add(time.Duration(i)*time.Minute), 10*time.Minute)
+		if err != nil || refusal != "" {
 			t.Fatalf("claim %d: %q %v", i, refusal, err)
 		}
-		if _, err := store.Settle(ctx, a.Scope, false, "card_declined", now); err != nil {
+		if _, err := store.Settle(ctx, a.Scope, slot, false, "card_declined", now); err != nil {
 			t.Fatal(err)
 		}
 	}

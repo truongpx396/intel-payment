@@ -23,6 +23,11 @@ func instruction(maxPerDay int) domain.AutoRecharge {
 
 const stale = 10 * time.Minute
 
+// settleInflight settles the slot that is in flight, which is what a handler does with the slot it has just claimed.
+func settleInflight(a domain.AutoRecharge, ok bool, reason string) (domain.AutoRecharge, bool) {
+	return a.Settle(domain.RechargeClaim{Day: a.Day, N: a.InflightN}, ok, reason)
+}
+
 // ------------------------------------------------------------------- the key --
 
 func TestARechargeKeyNamesTheScopeTheDayAndTheSlot(t *testing.T) {
@@ -182,7 +187,7 @@ func TestAfterASlotIsSettledTheNextClaimIsTheNextSlot(t *testing.T) {
 	t.Parallel()
 	a := instruction(3)
 	a, _, _ = a.Claim(dayStart, stale)
-	a, _ = a.Settle(true, "")
+	a, _ = settleInflight(a, true, "")
 	a, c, refusal := a.Claim(dayStart.Add(time.Minute), stale)
 	if refusal != domain.RechargeOK || c != (domain.RechargeClaim{Day: "2026-03-01", N: 2}) {
 		t.Fatalf("claim = %+v refusal = %q", c, refusal)
@@ -202,7 +207,7 @@ func TestADayHoldsAtMostMaxPerDayCharges(t *testing.T) {
 			if a, c, refusal = a.Claim(dayStart.Add(time.Duration(n)*time.Minute), stale); refusal != domain.RechargeOK || c.N != n || c.Resumed {
 				t.Fatalf("perDay %d, claim %d = %+v refusal = %q", perDay, n, c, refusal)
 			}
-			a, _ = a.Settle(true, "")
+			a, _ = settleInflight(a, true, "")
 		}
 		before := a
 		next, c, refusal := a.Claim(dayStart.Add(time.Hour), stale)
@@ -219,7 +224,7 @@ func TestResumingASlotIsAllowedAtTheDailyMaximum(t *testing.T) {
 	t.Parallel()
 	a := instruction(2)
 	a, _, _ = a.Claim(dayStart, stale)
-	a, _ = a.Settle(true, "")
+	a, _ = settleInflight(a, true, "")
 	a, last, _ := a.Claim(dayStart.Add(time.Minute), stale) // the second and last of the day, still in flight
 	_, c, refusal := a.Claim(dayStart.Add(2*time.Minute), stale)
 	if refusal != domain.RechargeOK || c != (domain.RechargeClaim{Day: last.Day, N: 2, Resumed: true}) {
@@ -261,7 +266,7 @@ func TestANewUTCDayStartsFromOne(t *testing.T) {
 	t.Parallel()
 	a := instruction(2)
 	a, _, _ = a.Claim(dayStart, stale)
-	a, _ = a.Settle(true, "")
+	a, _ = settleInflight(a, true, "")
 	a, _, _ = a.Claim(dayStart.Add(time.Minute), stale)
 	// Still in flight from yesterday: it is yesterday's, and its key names yesterday.
 	tomorrow := time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC)
@@ -313,9 +318,9 @@ func TestAClockThatRunsBackwardsDoesNotResetTheDay(t *testing.T) {
 	a := instruction(2)
 	today := time.Date(2026, 3, 2, 0, 5, 0, 0, time.UTC)
 	a, _, _ = a.Claim(today, stale)
-	a, _ = a.Settle(true, "")
+	a, _ = settleInflight(a, true, "")
 	a, _, _ = a.Claim(today.Add(time.Minute), stale)
-	a, _ = a.Settle(true, "")
+	a, _ = settleInflight(a, true, "")
 	yesterday := today.Add(-time.Hour) // 2026-03-01 23:05
 	_, _, refusal := a.Claim(yesterday, stale)
 	if refusal != domain.RechargeMaxPerDay {
@@ -330,7 +335,7 @@ func TestASuccessClearsTheSlotAndTheFailures(t *testing.T) {
 	a := instruction(3)
 	a.ConsecutiveFailed = 2
 	a, _, _ = a.Claim(dayStart, stale)
-	next, disabled := a.Settle(true, "")
+	next, disabled := settleInflight(a, true, "")
 	if disabled || next.InflightN != 0 || next.InflightSince != nil || next.ConsecutiveFailed != 0 || !next.Enabled {
 		t.Fatalf("state = %+v disabled = %v", next, disabled)
 	}
@@ -345,7 +350,7 @@ func TestThreeFailuresInARowSwitchTheInstructionOffWithTheReason(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		a, _, _ = a.Claim(dayStart.Add(time.Duration(i)*time.Minute), stale)
 		var disabled bool
-		a, disabled = a.Settle(false, "card_declined")
+		a, disabled = settleInflight(a, false, "card_declined")
 		if want := i == 3; disabled != want || a.Enabled == want {
 			t.Fatalf("failure %d: disabled = %v enabled = %v", i, disabled, a.Enabled)
 		}
@@ -366,7 +371,7 @@ func TestASuccessBetweenFailuresStartsTheCountAgain(t *testing.T) {
 	a := instruction(50)
 	for _, ok := range []bool{false, false, true, false, false} {
 		a, _, _ = a.Claim(dayStart, stale)
-		a, _ = a.Settle(ok, "card_declined")
+		a, _ = settleInflight(a, ok, "card_declined")
 	}
 	if !a.Enabled || a.ConsecutiveFailed != 2 {
 		t.Fatalf("state = %+v: two failures, a success and two failures is two in a row", a)
@@ -377,15 +382,15 @@ func TestADisabledInstructionIsNotDisabledAgainAndKeepsItsFirstReason(t *testing
 	t.Parallel()
 	a := instruction(3)
 	a.ConsecutiveFailed = 2
-	a, disabled := a.Settle(false, "card_declined")
+	a, disabled := settleInflight(a, false, "card_declined")
 	if !disabled {
 		t.Fatal("the third failure did not disable it")
 	}
-	a, disabled = a.Settle(false, "expired_card")
+	a, disabled = settleInflight(a, false, "expired_card")
 	if disabled || a.DisabledReason != "card_declined" {
 		t.Fatalf("disabled = %v reason = %q: a late failure must neither announce again nor overwrite why it was switched off", disabled, a.DisabledReason)
 	}
-	if a, _ = a.Settle(true, ""); a.Enabled {
+	if a, _ = settleInflight(a, true, ""); a.Enabled {
 		t.Fatal("a late success switched a disabled instruction back on: only its owner may do that")
 	}
 }
@@ -394,9 +399,106 @@ func TestAFailureWithNoReasonIsStillRecordedWhyItWasDisabled(t *testing.T) {
 	t.Parallel()
 	a := instruction(3)
 	a.ConsecutiveFailed = 2
-	if a, _ = a.Settle(false, ""); a.Enabled || a.DisabledReason == "" {
+	if a, _ = settleInflight(a, false, ""); a.Enabled || a.DisabledReason == "" {
 		t.Fatalf("state = %+v: the customer must be able to be told why", a)
 	}
+}
+
+// A settlement says WHICH slot it is about. A webhook can be late: if slot one's arrives after slot two was claimed, it must not
+// release slot two, or a duplicate trigger would claim a third slot under a new key and the customer would be charged twice for
+// one low balance.
+func TestASettlementReleasesOnlyTheSlotItNames(t *testing.T) {
+	t.Parallel()
+	a := instruction(5)
+	a, one, _ := a.Claim(dayStart, stale)
+	a, _ = a.Settle(one, true, "")
+	a, two, _ := a.Claim(dayStart.Add(time.Minute), stale)
+	inflight := *a.InflightSince
+
+	// Slot one's report arrives again, late — a replayed webhook — and fails.
+	late, disabled := a.Settle(one, false, "card_declined")
+	if disabled || late.InflightN != two.N || late.InflightSince == nil || !late.InflightSince.Equal(inflight) {
+		t.Fatalf("a late report of slot %d released slot %d: %+v", one.N, two.N, late)
+	}
+	if late.ConsecutiveFailed != 1 {
+		t.Fatalf("a late failure still counts as a failure: %+v", late)
+	}
+	// A late success clears the failures and still leaves the slot in flight alone.
+	late.ConsecutiveFailed = 2
+	if late, _ = late.Settle(one, true, ""); late.ConsecutiveFailed != 0 || late.InflightN != two.N {
+		t.Fatalf("a late success: %+v", late)
+	}
+	// A report of a slot from another day is not this day's slot either.
+	other := domain.RechargeClaim{Day: "2026-02-28", N: two.N}
+	if late, _ = late.Settle(other, true, ""); late.InflightN != two.N {
+		t.Fatalf("a report of another day's slot %d released today's: %+v", other.N, late)
+	}
+	// The slot's own report releases it.
+	if done, _ := late.Settle(two, true, ""); done.InflightN != 0 || done.InflightSince != nil {
+		t.Fatalf("slot %d's own report did not release it: %+v", two.N, done)
+	}
+}
+
+func TestARechargeKeyCanBeReadBack(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		scope domain.Scope
+		day   string
+		n     int
+	}{
+		{workspace("w1"), "2026-03-01", 1},
+		{workspace("w:1:2026-03-01"), "2026-03-01", 12},
+		{domain.Scope{Realm: "acme", Kind: "user", ID: "u/9"}, "2026-12-31", 50},
+		{domain.Scope{Kind: "workspace", ID: "x"}, "2026-03-01", 3},
+	} {
+		key := domain.RechargeKey(tc.scope, tc.day, tc.n)
+		tag, day, n, ok := domain.ParseRechargeKey(key)
+		if !ok || tag != tc.scope.Tag() || day != tc.day || n != tc.n {
+			t.Errorf("ParseRechargeKey(%q) = (%q, %q, %d, %v), want (%q, %q, %d)", key, tag, day, n, ok, tc.scope.Tag(), tc.day, tc.n)
+		}
+	}
+	for _, bad := range []string{"", "recharge:", "recharge:default/workspace:w1", "recharge:default/workspace:w1:2026-03-01", "recharge:default/workspace:w1:2026-03-01:x",
+		"recharge:default/workspace:w1:2026-03-01:0", "recharge:default/workspace:w1:2026-03-01:-1", "recharge:default/workspace:w1:2026-3-01:1",
+		"recharge:default/workspace:w1:2026-03-01:", "payment-pi_123", "refund:re_1", ":2026-03-01:1", "recharge::2026-03-01:1"} {
+		if tag, day, n, ok := domain.ParseRechargeKey(bad); ok {
+			t.Errorf("ParseRechargeKey(%q) = (%q, %q, %d), want not ok: it is not a recharge key", bad, tag, day, n)
+		}
+	}
+}
+
+func FuzzParseRechargeKeyReadsBackWhatRechargeKeyWrote(f *testing.F) {
+	f.Add("w1", 1)
+	f.Add("a:2026-03-01:1", 7)
+	f.Add("", 3)
+	f.Add("w/1", 50)
+	f.Fuzz(func(t *testing.T, id string, n int) {
+		s := workspace(id)
+		if s.Validate() != nil || n < 1 {
+			t.Skip()
+		}
+		key := domain.RechargeKey(s, "2026-03-01", n)
+		if tag, day, got, ok := domain.ParseRechargeKey(key); !ok || tag != s.Tag() || day != "2026-03-01" || got != n {
+			t.Fatalf("%q reads back as (%q, %q, %d, %v)", key, tag, day, got, ok)
+		}
+	})
+}
+
+// FuzzParseRechargeKeyNeverReadsWhatIsNotAKey holds the reader to what the writer promises, on arbitrary text: whatever it
+// accepts is exactly a key the writer would have made.
+func FuzzParseRechargeKeyNeverReadsWhatIsNotAKey(f *testing.F) {
+	f.Add("recharge:default/workspace:w1:2026-03-01:1")
+	f.Add("recharge:default/workspace:w1:2026-03-01:01")
+	f.Add("recharge:default/workspace:w1:2026-03-01:+1")
+	f.Add("recharge:default/workspace:w1:2026-13-45:1")
+	f.Fuzz(func(t *testing.T, key string) {
+		tag, day, n, ok := domain.ParseRechargeKey(key)
+		if !ok {
+			return
+		}
+		if _, err := time.Parse(time.DateOnly, day); err != nil || n < 1 || key != "recharge:"+tag+":"+day+":"+strconv.Itoa(n) {
+			t.Fatalf("%q was read as (%q, %q, %d), which is not what would write it", key, tag, day, n)
+		}
+	})
 }
 
 // ------------------------------------------------------------ the whole ledger --
@@ -419,7 +521,7 @@ func FuzzTheLedgerHoldsItsBoundsWhateverTheOrderOfEvents(f *testing.F) {
 		everEnabledFalse := false
 		for i, b := range ops {
 			before := a
-			switch b % 4 {
+			switch b % 6 {
 			case 0:
 				next, c, refusal := a.Claim(now, staleAfter)
 				switch {
@@ -451,9 +553,23 @@ func FuzzTheLedgerHoldsItsBoundsWhateverTheOrderOfEvents(f *testing.F) {
 				}
 				a = next
 			case 1:
-				a, _ = a.Settle(true, "")
+				a, _ = settleInflight(a, true, "")
 			case 2:
-				a, _ = a.Settle(false, "card_declined")
+				a, _ = settleInflight(a, false, "card_declined")
+			case 4, 5:
+				// A late report about an earlier slot: it counts, and never releases the slot in flight.
+				late := domain.RechargeClaim{Day: a.Day, N: int(b>>3)%perDay + 1}
+				if late.N == a.InflightN {
+					late.N = a.InflightN%perDay + 1
+					if late.N == a.InflightN { // a day of one slot: the only other slot is another day's
+						late.Day = "1999-01-01"
+					}
+				}
+				next, _ := a.Settle(late, b%6 == 4, "card_declined")
+				if next.InflightN != a.InflightN || (a.InflightSince == nil) != (next.InflightSince == nil) {
+					t.Fatalf("op %d: a report of slot %+v released the slot in flight (%d): %+v", i, late, a.InflightN, next)
+				}
+				a = next
 			case 3:
 				// A step of up to a day in either direction, in units that land on both sides of midnight.
 				now = now.Add(time.Duration(int8(b>>2)) * 23 * time.Minute)
