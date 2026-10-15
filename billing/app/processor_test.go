@@ -24,7 +24,7 @@ var processorUnderTest contracts.ProcessorFactory = func(t testing.TB, h *contra
 	t.Helper()
 	p, err := app.NewProcessor(app.ProcessorDeps{
 		Inbox: h.Inbox, Accounts: h.Accounts, Providers: h.Providers(), Customers: h.Customers, Catalog: h.Catalog,
-		Payments: h.Payments, Subs: h.Subs, Meter: h.Meter, Lots: h.Lots, Clock: h.Clock, Metrics: h.Metrics, Bus: h.Bus,
+		Payments: h.Payments, Subs: h.Subs, Meter: h.Meter, Lots: h.Lots, Clock: h.Clock, Metrics: h.Metrics, Bus: h.Bus, Recharges: h.Recharges,
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Grace: contracts.GraceWindow,
 	})
 	if err != nil {
@@ -225,5 +225,50 @@ func TestOnlyTheProcessorWritesSubscriptionStatus(t *testing.T) {
 	}
 	if want := []string{"../../billing/app/processor.go"}; !slices.Equal(writers, want) {
 		t.Fatalf("Subs.ApplyIfNewer is called from %v, want only %v (payments invariant 12)", writers, want)
+	}
+}
+
+func TestProcessorAutoRecharge(t *testing.T) {
+	t.Parallel()
+	contracts.ProcessorAutoRecharge(t, processorUnderTest)
+}
+
+// The settlement of an auto top-up is shown to reject a store that settles carelessly: one that releases whichever slot a
+// report names is caught by the late replay, and one that never switches an instruction off by the third failure.
+func TestProcessorAutoRechargeRejectsEveryBrokenStoreByName(t *testing.T) {
+	t.Parallel()
+	const (
+		lateReplay = "a success that arrives after its slot went stale does not release the slot that replaced it, and replaying it grants nothing more"
+		thirdFail  = "the third failure switches the instruction off and tells the customer why"
+	)
+	broken := []struct {
+		name     string
+		breakIt  func(w *contracts.RechargeWorld)
+		caughtBy string
+	}{
+		{"a store that releases whichever slot a report names", func(w *contracts.RechargeWorld) { w.Recharges.ReleasesAnySlot = true }, lateReplay},
+		{"a store that never switches an instruction off", func(w *contracts.RechargeWorld) { w.Recharges.NeverDisables = true }, thirdFail},
+	}
+	for _, b := range broken {
+		t.Run(b.name, func(t *testing.T) {
+			t.Parallel()
+			var rejected []string
+			for _, c := range contracts.AutoRechargeSettlementCases() {
+				mk := func(t testing.TB, h *contracts.Harness) ports.WebhookProcessor {
+					return processorUnderTest(t, h)
+				}
+				// The case builds its own world; the defect is applied to the store the processor is given.
+				broke := func(t testing.TB, h *contracts.Harness) ports.WebhookProcessor {
+					b.breakIt(&contracts.RechargeWorld{Harness: h})
+					return mk(t, h)
+				}
+				if failed, _ := contracts.Probe(30*time.Second, func(t testing.TB) { c.Run(t, broke) }); failed {
+					rejected = append(rejected, c.Name)
+				}
+			}
+			if !slices.Contains(rejected, b.caughtBy) {
+				t.Errorf("the suite PASSED a processor over %s on %q (rejected only by %q)", b.name, b.caughtBy, rejected)
+			}
+		})
 	}
 }

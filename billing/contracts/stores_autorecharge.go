@@ -455,6 +455,15 @@ func NewMemAutoRecharges(log *CallLog) *MemAutoRecharges {
 	return &MemAutoRecharges{log: log, rows: map[string]domain.AutoRecharge{}}
 }
 
+// SetFailures sets how many failed charges in a row an instruction has, as the settlements before the test would have left it.
+func (m *MemAutoRecharges) SetFailures(s domain.Scope, n int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur := m.rows[s.Tag()]
+	cur.ConsecutiveFailed = n
+	m.rows[s.Tag()] = cur
+}
+
 // Get implements ports.AutoRecharges.
 func (m *MemAutoRecharges) Get(_ context.Context, s domain.Scope) (domain.AutoRecharge, bool, error) {
 	m.log.Add("autorecharge.Get")

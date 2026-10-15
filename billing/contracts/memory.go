@@ -1263,3 +1263,46 @@ var (
 	_ mports.LotReader = (*FakeLots)(nil)
 	_ mports.Metrics   = (*RecordingMetrics)(nil)
 )
+
+// FakeBalances answers what a scope has left in each pool: the balance reader the auto top-up handler asks.
+type FakeBalances struct {
+	mu   sync.Mutex
+	m    map[string]map[md.Pool]md.Credits
+	fail error
+}
+
+// NewFakeBalances is a reader of balances nobody has set: every scope has nothing.
+func NewFakeBalances() *FakeBalances { return &FakeBalances{m: map[string]map[md.Pool]md.Credits{}} }
+
+// Set sets a scope's balance in a pool.
+func (b *FakeBalances) Set(s md.Scope, p md.Pool, c md.Credits) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.m[s.Tag()] == nil {
+		b.m[s.Tag()] = map[md.Pool]md.Credits{}
+	}
+	b.m[s.Tag()][p] = c
+}
+
+// Fail makes Balance fail with err; nil clears it.
+func (b *FakeBalances) Fail(err error) {
+	b.mu.Lock()
+	b.fail = err
+	b.mu.Unlock()
+}
+
+// Balance implements ports.BalanceReader.
+func (b *FakeBalances) Balance(_ context.Context, s md.Scope) (map[md.Pool]md.Credits, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.fail != nil {
+		return nil, b.fail
+	}
+	out := map[md.Pool]md.Credits{}
+	for p, c := range b.m[s.Tag()] {
+		out[p] = c
+	}
+	return out, nil
+}
+
+var _ mports.BalanceReader = (*FakeBalances)(nil)
