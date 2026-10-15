@@ -180,6 +180,33 @@ func AutoRechargeHandlerCases() []StoreCase[AutoRechargerFactory] {
 				t.Fatalf("%d charges for a balance of 999 against a threshold of 1000", n)
 			}
 		}},
+		{"the balance that matters is the pool the instruction names", func(t testing.TB, mk AutoRechargerFactory) {
+			w := NewRechargeWorld()
+			h := mk(t, w)
+			a := w.instruction(t)
+			a.Pool = "promo"
+			if err := w.Recharges.Put(Ctx(), a); err != nil {
+				t.Fatal(err)
+			}
+			subject, payload := LowBalance(w.Scope, "promo", 1000, 1)
+			// The general pool is empty and the promo pool is fine: the customer is not low where the instruction looks.
+			w.Balances.Set(w.Scope, md.GeneralPool, 0)
+			w.Balances.Set(w.Scope, "promo", 5000)
+			if err := h.Handle(Ctx(), subject, payload); err != nil {
+				t.Fatal(err)
+			}
+			if n := len(w.Provider.ChargeCalls()); n != 0 {
+				t.Fatalf("%d charges for a pool that is not low", n)
+			}
+			w.Balances.Set(w.Scope, md.GeneralPool, 5000)
+			w.Balances.Set(w.Scope, "promo", 400)
+			if err := h.Handle(Ctx(), subject, payload); err != nil {
+				t.Fatal(err)
+			}
+			if n := len(w.Provider.ChargeCalls()); n != 1 {
+				t.Fatalf("%d charges for a pool that is low", n)
+			}
+		}},
 		{"a trigger about another pool, a scope with no instruction, or a disabled instruction charges nothing", func(t testing.TB, mk AutoRechargerFactory) {
 			w := NewRechargeWorld()
 			h := mk(t, w)
@@ -296,40 +323,87 @@ func AutoRechargeHandlerCases() []StoreCase[AutoRechargerFactory] {
 				t.Fatalf("calls = %+v, want the catalogue's $12.50", calls)
 			}
 		}},
-		{"an instruction that cannot buy what it names fails its slot and charges nothing", func(t testing.TB, mk AutoRechargerFactory) {
-			for name, mutate := range map[string]func(*RechargeWorld, *domain.AutoRecharge){
-				"a plan nobody sells":                     func(_ *RechargeWorld, a *domain.AutoRecharge) { a.PlanCode = "nope" },
-				"a plan not sold in the currency":         func(_ *RechargeWorld, a *domain.AutoRecharge) { a.Currency = "EUR" },
-				"a subscription, which is not a pack":     func(_ *RechargeWorld, a *domain.AutoRecharge) { a.PlanCode = ProCode },
-				"a provider account that is not there":    func(_ *RechargeWorld, a *domain.AutoRecharge) { a.Account = "no-such-account" },
-				"a provider account that is switched off": func(_ *RechargeWorld, a *domain.AutoRecharge) { a.Account = InactiveID },
-				"a customer the account has never seen":   func(_ *RechargeWorld, a *domain.AutoRecharge) { a.Account = OtherAccountID },
+		{"an instruction that cannot buy what it names fails its slot, for a reason it records, and charges nothing", func(t testing.TB, mk AutoRechargerFactory) {
+			negotiated := domain.Plan{Realm: md.DefaultRealm, Code: "negotiated", Name: "Negotiated", Kind: domain.OneTime, Pool: md.GeneralPool, Active: true,
+				Prices: map[string]domain.Money{"USD": {MinorUnits: 1000, Currency: "USD"}}} // a pack whose credits are agreed case by case: it has no allotment
+			for name, tc := range map[string]struct {
+				mutate func(*domain.AutoRecharge)
+				reason string
+			}{
+				"a plan nobody sells":                     {func(a *domain.AutoRecharge) { a.PlanCode = "nope" }, "plan_not_sold"},
+				"a plan not sold in the currency":         {func(a *domain.AutoRecharge) { a.Currency = "EUR" }, "plan_not_sold"},
+				"a subscription, which is not a pack":     {func(a *domain.AutoRecharge) { a.PlanCode = ProCode }, "plan_is_not_a_credit_pack"},
+				"a pack with no allotment of credits":     {func(a *domain.AutoRecharge) { a.PlanCode = "negotiated" }, "plan_is_not_a_credit_pack"},
+				"a provider account that is not there":    {func(a *domain.AutoRecharge) { a.Account = "no-such-account" }, "provider_account_unavailable"},
+				"a provider account that is switched off": {func(a *domain.AutoRecharge) { a.Account = InactiveID }, "provider_account_unavailable"},
+				"a customer the account has never seen":   {func(a *domain.AutoRecharge) { a.Account = OtherAccountID }, "no_customer_on_the_account"},
+				"a provider account of another realm":     {func(a *domain.AutoRecharge) { a.Account = "acct-elsewhere" }, "provider_account_unavailable"},
 			} {
 				w := NewRechargeWorld()
 				h := mk(t, w)
+				w.Catalog.Add(negotiated, AccountID, "USD", "price_negotiated")
+				// The inactive account and the account that has never seen the customer sell the pack too, so the failure is the account's
+				// or the customer's and not the price's.
+				pack, _, _ := w.Catalog.Resolve(Ctx(), md.DefaultRealm, PackCode, "USD", AccountID)
+				w.Catalog.Add(pack, OtherAccountID, "USD", "price_pack_other")
+				w.Catalog.Add(pack, InactiveID, "USD", "price_pack_inactive")
+				// An account that serves only another realm, and has this customer and sells this pack: the only thing wrong is the realm.
+				const elsewhere = "acct-elsewhere"
+				w.Accounts.Put(domain.ProviderAccount{ID: elsewhere, Provider: ProviderName, Realms: []domain.Realm{"other"}, Mode: "test", Active: true,
+					SecretRef: "env:FAKE_SECRET_" + elsewhere, WebhookSecretRef: "env:FAKE_WEBHOOK_" + elsewhere})
+				_ = w.Customers.Upsert(Ctx(), domain.Customer{Scope: w.Scope, Account: "acct-elsewhere", ProviderCustomerID: "cus_elsewhere"})
+				w.Catalog.Add(pack, "acct-elsewhere", "USD", "price_pack_elsewhere")
 				a := w.instruction(t)
-				mutate(w, &a)
+				tc.mutate(&a)
 				if err := w.Recharges.Put(Ctx(), a); err != nil {
 					t.Fatalf("%s: %v", name, err)
 				}
+				// Two refusals already, so that this failure is the third and the reason it records is plain to see.
+				w.Recharges.SetFailures(w.Scope, 2)
 				if err := w.trigger(h); err != nil {
 					t.Errorf("%s: %v — a configuration that cannot work is acknowledged and counted, not retried for ever", name, err)
 				}
 				if n := len(w.Provider.ChargeCalls()); n != 0 {
 					t.Errorf("%s: %d charges", name, n)
 				}
-				if got := w.instruction(t); got.ConsecutiveFailed != 1 || got.InflightN != 0 {
-					t.Errorf("%s: %+v, want one failure and the slot released", name, got)
+				if got := w.instruction(t); got.ConsecutiveFailed != 3 || got.InflightN != 0 || got.Enabled || got.DisabledReason != tc.reason {
+					t.Errorf("%s: %+v, want the slot released, the third failure, and the instruction switched off because %q", name, got, tc.reason)
 				}
 			}
 			w := NewRechargeWorld()
 			h := mk(t, w)
 			w.Provider.UnsupportedCharges(true)
+			w.Recharges.SetFailures(w.Scope, 2)
 			if err := w.trigger(h); err != nil {
 				t.Errorf("a provider that cannot charge a saved method: %v", err)
 			}
-			if got := w.instruction(t); got.ConsecutiveFailed != 1 || got.InflightN != 0 {
+			if got := w.instruction(t); got.ConsecutiveFailed != 3 || got.InflightN != 0 || got.DisabledReason != "provider_cannot_charge_saved_methods" {
 				t.Errorf("a provider that cannot charge a saved method: %+v", got)
+			}
+		}},
+		{"a slot abandoned past the staleness window is replaced by the next trigger, and not a minute sooner", func(t testing.TB, mk AutoRechargerFactory) {
+			w := NewRechargeWorld()
+			h := mk(t, w)
+			w.Provider.FailCharges(errors.New("connection reset by peer"))
+			if err := w.trigger(h); err == nil {
+				t.Fatal("an outage was acknowledged")
+			}
+			w.Clock.Advance(time.Minute)
+			if err := w.trigger(h); err == nil { // still down, and still the same slot
+				t.Fatal("an outage was acknowledged")
+			}
+			if keys := w.keysCharged(); len(keys) != 1 || !keys[w.key(1)] {
+				t.Fatalf("a minute later the charge was tried under %v: still slot one", keys)
+			}
+			// Nothing ever settled slot one: the process that held it died, and no webhook is coming.
+			w.Provider.FailCharges(nil)
+			w.Clock.Advance(16 * time.Minute)
+			w.mustTrigger(t, h)
+			if keys := w.keysCharged(); len(keys) != 2 || !keys[w.key(2)] {
+				t.Fatalf("keys = %v: past the window the next trigger must take a slot of its own (key %s), or a customer is never charged again", keys, w.key(2))
+			}
+			if a := w.instruction(t); a.ChargesToday != 2 || a.InflightN != 2 {
+				t.Fatalf("instruction = %+v: the abandoned slot still counts", a)
 			}
 		}},
 		{"a charge whose webhook beat the handler is settled at once", func(t testing.TB, mk AutoRechargerFactory) {
@@ -367,10 +441,16 @@ func AutoRechargeHandlerCases() []StoreCase[AutoRechargerFactory] {
 				"a watch with no threshold":                     `{"realm":"default","scope":"default/workspace:w1","watch":"general","seq":1}`,
 				"a watch with a threshold that is not a number": `{"realm":"default","scope":"default/workspace:w1","watch":"general:lots","seq":1}`,
 				"a watch of no pool":                            `{"realm":"default","scope":"default/workspace:w1","watch":":1000","seq":1}`,
+				"a watch with a threshold of zero":              `{"realm":"default","scope":"default/workspace:w1","watch":"general:0","seq":1}`,
+				"a watch with a negative threshold":             `{"realm":"default","scope":"default/workspace:w1","watch":"general:-5","seq":1}`,
 			} {
 				if err := h.Handle(Ctx(), subject, []byte(payload)); !errors.Is(err, md.ErrInvalid) {
 					t.Errorf("%s: err = %v, want ErrInvalid", name, err)
 				}
+			}
+			// A message published for one scope's subject that names another scope is not read either.
+			if err := h.Handle(Ctx(), "billing.balance.low."+w.Scope2.SubjectToken(), good); !errors.Is(err, md.ErrInvalid) {
+				t.Errorf("a message on another scope's subject: err = %v, want ErrInvalid", err)
 			}
 			if err := h.Handle(Ctx(), subject, good); err != nil {
 				t.Fatalf("the good trigger: %v", err)
@@ -518,6 +598,23 @@ func AutoRechargeSettlementCases() []ProcessorCase {
 			}
 			if !told {
 				t.Fatalf("the customer was not told why: %v", w.Bus.On("billing.payment."+w.Scope.SubjectToken()))
+			}
+		}},
+		{"a payment keyed on another scope's slot settles nothing", func(t testing.TB, mk ProcessorFactory) {
+			w := NewRechargeWorld()
+			p := mk(t, w.Harness)
+			slot, _ := w.rechargeInFlight(t, "pi_1") // cus_1's slot one is in flight
+			// A payment of cus_1's whose key names cus_2's slot one of the same day: whatever made it, it must not release cus_1's.
+			foreign := domain.RechargeKey(w.Scope2, slot.Day, slot.N)
+			pay, _, _ := w.Payments.Get(Ctx(), AccountID, "pi_1")
+			pay.IdemKey = foreign
+			if err := w.Payments.Upsert(Ctx(), pay); err != nil {
+				t.Fatal(err)
+			}
+			w.Persisted(w.paymentFailed("evt_1", "pi_1"))
+			w.Tick(t, p)
+			if got := w.instruction(t); got.InflightN != slot.N || got.ConsecutiveFailed != 0 {
+				t.Fatalf("instruction = %+v: a payment whose key is not its own scope's slot settled something", got)
 			}
 		}},
 		{"a payment that is not an auto top-up never touches the instruction", func(t testing.TB, mk ProcessorFactory) {
