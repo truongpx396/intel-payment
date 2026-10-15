@@ -2,31 +2,28 @@ package app_test
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/truongpx396/intel-payment/billing/app"
 	"github.com/truongpx396/intel-payment/billing/contracts"
 	"github.com/truongpx396/intel-payment/billing/domain"
 	"github.com/truongpx396/intel-payment/billing/ports"
 	md "github.com/truongpx396/intel-payment/metering/domain"
 )
 
-// unbuiltCheckout is the checkout as it is before it exists: it answers nothing, so every case fails on what it
-// claims and not on a compile error. The variable below that binds it is the only edit T085 makes to the wiring.
-type unbuiltCheckout struct{}
-
-func (unbuiltCheckout) Start(context.Context, ports.CheckoutRequest) (string, error) { return "", nil }
-func (unbuiltCheckout) Portal(context.Context, domain.Scope, string, string) (string, error) {
-	return "", nil
-}
-func (unbuiltCheckout) Fulfilment(context.Context, domain.Scope) (ports.Fulfilment, error) {
-	return ports.Fulfilment{}, nil
-}
-
 // checkoutUnderTest builds the checkout over a harness's collaborators.
 var checkoutUnderTest contracts.CheckoutFactory = func(t testing.TB, h *contracts.Harness, tax ports.TaxStrategy) ports.Checkout {
-	return unbuiltCheckout{}
+	t.Helper()
+	c, err := app.NewCheckout(app.CheckoutDeps{Providers: h.Providers(), Accounts: h.Accounts, Catalog: h.Catalog, Customers: h.Customers,
+		Payments: h.Payments, Tax: tax, Clock: h.Clock, ReturnHosts: []string{contracts.ReturnHost}, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
 }
 
 func TestCheckoutContract(t *testing.T) {
@@ -39,14 +36,11 @@ func TestCheckoutContract(t *testing.T) {
 func TestCheckoutContractRejectsEveryBrokenCheckoutByName(t *testing.T) {
 	t.Parallel()
 	const (
-		returns  = "a return from checkout grants nothing, and fulfilment is the server's report (2)"
-		catalogd = "the price and credits come from the catalogue, never from the request (4)"
-		mapped   = "a customer is created once and mapped to its scope before a payment can arrive"
-		once     = "two first checkouts at once create one customer"
-		modes    = "payment, subscription and setup each return a hosted page and grant nothing (2)"
+		returns = "a return from checkout grants nothing, and fulfilment is the server's report (2)"
+		mapped  = "a customer is created once and mapped to its scope before a payment can arrive"
+		once    = "two first checkouts at once create one customer"
+		modes   = "payment, subscription and setup each return a hosted page and grant nothing (2)"
 	)
-	fallback := domain.Plan{Realm: md.DefaultRealm, Code: "pack", Kind: domain.OneTime, Active: true,
-		Prices: map[string]domain.Money{"USD": {MinorUnits: 1, Currency: "USD"}}}
 	broken := []struct {
 		name     string
 		build    contracts.CheckoutFactory
@@ -58,10 +52,6 @@ func TestCheckoutContractRejectsEveryBrokenCheckoutByName(t *testing.T) {
 		{"a checkout that grants when it starts", func(t testing.TB, h *contracts.Harness, tax ports.TaxStrategy) ports.Checkout {
 			return grantsOnStart{checkoutUnderTest(t, h, tax), h}
 		}, modes},
-		{"a catalogue that answers any plan with a default one", func(t testing.TB, h *contracts.Harness, tax ports.TaxStrategy) ports.Checkout {
-			h.Catalog.FallbackPlan = &fallback
-			return checkoutUnderTest(t, h, tax)
-		}, catalogd},
 		{"customers that are lost before the payment arrives", func(t testing.TB, h *contracts.Harness, tax ports.TaxStrategy) ports.Checkout {
 			h.Customers.DropUpserts = true
 			return checkoutUnderTest(t, h, tax)

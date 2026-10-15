@@ -256,6 +256,7 @@ func CheckoutCases() []CheckoutCase {
 			h := NewHarness()
 			c := mk(t, h, nil)
 			fresh := md.Scope{Realm: md.DefaultRealm, Kind: "workspace", ID: "w4"}
+			h.Customers.SyncGets(8) // all eight find no customer before any of them makes one
 			var wg sync.WaitGroup
 			errs := make([]error, 8)
 			for i := range errs {
@@ -391,7 +392,7 @@ func CheckoutCases() []CheckoutCase {
 type failingTax struct{ err error }
 
 func (failingTax) Mode() domain.TaxMode { return domain.TaxExternalHook }
-func (f failingTax) Annotate(ctx context.Context, _ *ports.CheckoutInput) error {
+func (f failingTax) Annotate(_ context.Context, _ *ports.CheckoutInput) error {
 	return fmt.Errorf("tax: %w", f.err)
 }
 
