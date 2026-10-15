@@ -336,6 +336,13 @@ type TaxStrategy interface {
 
 There is no `compute_it_here` mode. Rate tables and filing obligations are a specialist product.
 
+`provider_managed` and `none` add nothing to the checkout and never call the host. `external_hook` calls the
+host's service once, before the checkout is created, with what is being sold; the service may annotate the
+checkout (a tax code, a calculation reference) but may not change what is sold — the scope, mode, plan,
+price, currency, customer, buyer, idempotency key and both redirects were resolved from the catalogue and the
+customer records, and a changed one is refused as invalid. A hook that fails fails the checkout closed: an
+unpriced tax is not a checkout. A deployment that names `external_hook` and supplies no service does not start.
+
 ---
 
 ## Stores

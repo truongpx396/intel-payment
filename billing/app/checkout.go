@@ -61,7 +61,7 @@ func NewCheckout(d CheckoutDeps) (*Checkout, error) {
 		return nil, fmt.Errorf("billing checkout: %w", err)
 	}
 	if d.Tax == nil {
-		d.Tax = noTax{}
+		d.Tax = passthroughTax{domain.TaxProviderManaged}
 	}
 	if d.Window == 0 {
 		d.Window = DefaultFulfilmentWindow
@@ -75,12 +75,6 @@ func NewCheckout(d CheckoutDeps) (*Checkout, error) {
 	}
 	return &Checkout{d: d, hosts: hosts}, nil
 }
-
-// noTax is provider_managed: the provider computes it, and nothing is added here.
-type noTax struct{}
-
-func (noTax) Mode() domain.TaxMode                                 { return domain.TaxProviderManaged }
-func (noTax) Annotate(context.Context, *ports.CheckoutInput) error { return nil }
 
 // returnURL refuses a URL a buyer should not be sent to: not https, with credentials in it, naming no host, or a
 // host outside the configured list.
