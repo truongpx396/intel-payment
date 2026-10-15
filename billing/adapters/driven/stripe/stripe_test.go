@@ -633,6 +633,73 @@ func TestADeclinedCardIsATypedErrorThatNeverCarriesTheKey(t *testing.T) {
 	}
 }
 
+// The auto top-up handler must tell a charge the provider REFUSED — which counts toward switching the instruction off, since
+// the card is the customer's to fix — from one whose outcome is not known, which is tried again under the same key so the
+// provider charges at most once. The error says which, and nothing else does.
+func TestAChargeTheProviderRefusesIsErrChargeDeclinedAndNothingElseIs(t *testing.T) {
+	t.Parallel()
+	in := ports.OffSessionInput{CustomerID: "cus_1", PaymentMethodRef: "pm_1", Amount: domain.Money{MinorUnits: 1000, Currency: "USD"}, IdemKey: "recharge:k"}
+	type tc struct {
+		name     string
+		set      func(*stripefix.Fixtures)
+		declined bool
+	}
+	for _, c := range []tc{
+		{"a card error", func(f *stripefix.Fixtures) { f.DeclineCharges = true }, true},
+		{"an invalid request (a payment method that is not there)", func(f *stripefix.Fixtures) { f.ChargeStatus = 400 }, true},
+		{"a refusal (403)", func(f *stripefix.Fixtures) { f.ChargeStatus = 403 }, true},
+		{"a method that is not found (404)", func(f *stripefix.Fixtures) { f.ChargeStatus = 404 }, true},
+		{"a request Stripe cannot process (422)", func(f *stripefix.Fixtures) { f.ChargeStatus = 422 }, true},
+		{"an intent that needs the customer (requires_action)", func(f *stripefix.Fixtures) { f.IntentStatus = "requires_action" }, true},
+		{"an intent with no usable method (requires_payment_method)", func(f *stripefix.Fixtures) { f.IntentStatus = "requires_payment_method" }, true},
+		{"a canceled intent", func(f *stripefix.Fixtures) { f.IntentStatus = "canceled" }, true},
+		{"too many requests (429)", func(f *stripefix.Fixtures) { f.ChargeStatus = 429 }, false},
+		{"a request that timed out (408)", func(f *stripefix.Fixtures) { f.ChargeStatus = 408 }, false},
+		{"the same key still being processed (409)", func(f *stripefix.Fixtures) { f.ChargeStatus = 409 }, false},
+		{"a Stripe error (500)", func(f *stripefix.Fixtures) { f.ChargeStatus = 500 }, false},
+		{"a bad gateway (502)", func(f *stripefix.Fixtures) { f.ChargeStatus = 502 }, false},
+		{"an API key Stripe does not accept (401)", func(f *stripefix.Fixtures) { f.ChargeStatus = 401 }, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			p, fx := setup(t)
+			c.set(fx)
+			id, err := p.ChargeSaved(ctx(), fx.Account(), in)
+			if err == nil {
+				t.Fatalf("ChargeSaved = %q with no error", id)
+			}
+			if got := errors.Is(err, domain.ErrChargeDeclined); got != c.declined {
+				t.Fatalf("errors.Is(err, ErrChargeDeclined) = %v for %v, want %v", got, err, c.declined)
+			}
+		})
+	}
+	t.Run("a Stripe that is not answering", func(t *testing.T) {
+		t.Parallel()
+		p, fx := setup(t)
+		fx.Stop()
+		if _, err := p.ChargeSaved(ctx(), fx.Account(), in); err == nil || errors.Is(err, domain.ErrChargeDeclined) {
+			t.Fatalf("err = %v: an outage is not a refusal", err)
+		}
+	})
+	t.Run("a cancelled call", func(t *testing.T) {
+		t.Parallel()
+		p, fx := setup(t)
+		c, cancel := context.WithCancel(ctx())
+		cancel()
+		if _, err := p.ChargeSaved(c, fx.Account(), in); !errors.Is(err, context.Canceled) || errors.Is(err, domain.ErrChargeDeclined) {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("a charge still processing is a charge", func(t *testing.T) {
+		t.Parallel()
+		p, fx := setup(t)
+		fx.IntentStatus = "processing"
+		if id, err := p.ChargeSaved(ctx(), fx.Account(), in); err != nil || id == "" {
+			t.Fatalf("ChargeSaved = %q, %v: the webhook says how it ends", id, err)
+		}
+	})
+}
+
 func TestAnAPIFailureIsAnErrorAndNeverTheSecret(t *testing.T) {
 	t.Parallel()
 	p, fx := setup(t)
