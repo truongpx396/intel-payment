@@ -52,7 +52,7 @@ Switching is a `cmd/` wiring change. No subject, payload, handler or invariant d
 | Subject | Publisher | Consumer | Payload (key fields) |
 |---|---|---|---|
 | *intents* on `billing:outbox:{s<n>}` | the hot functions only | `payment-worker`, the shard's owner | see [hot-path-consistency.md §2](./hot-path-consistency.md#2-the-hot-account-and-the-intent) |
-| `billing.balance.low.<tag>` | the writer, after booking an intent that crossed a balance watch | billing auto top-up; outbound events (`credits.low`) | `{realm, scope, pool, watch_key, threshold, balance, seq}` |
+| `billing.balance.low.<tag>` | the writer, after booking an intent that crossed a balance watch | billing auto top-up; outbound events (`credits.low`) | `{realm, scope, watch, seq}` — `scope` is the scope's tag (`<realm>/<kind>:<id>`) and `watch` is `<pool>:<threshold>`, the watch that was crossed. A **hint**: a consumer that acts on it re-reads what it needs, and treats a duplicate as normal (the intent that crossed is booked once, but the message is delivered at least once) |
 | `billing.warn.<tag>` | the `Admit` path crossing `WarnAt` | outbound events (`credits.warning`) | `{realm, scope, limit_name, subject?, used, cap, window, resets_at}` — **coalesced** per scope + limit + window |
 | `billing.blocked.<tag>` | the `Admit` path on a denial | outbound events (`credits.blocked`) | `{realm, scope, limit_name, deny_code, upgrade_path?}` — coalesced likewise |
 | `billing.payment.<tag>` | the webhook processor | outbound events (`payment.*`) | `{realm, scope, event: succeeded\|failed\|refunded\|disputed\|charged_back\|renewed\|canceled, amount, currency, grace_until?, receipt_url?}` |
