@@ -142,6 +142,34 @@ func PlanChangeCases() []PlanChangeCase {
 				t.Fatalf("the provider was asked for %v", h.Provider.Changes())
 			}
 		}},
+		{"the catalogue is checked, and the currency is the subscription's own", func(t testing.TB, mk SubscriptionsFactory) {
+			// A catalogue that answers with another plan than the one asked for is not believed.
+			h := NewHarness()
+			h.GivenSubscription()
+			s := mk(t, h, domain.ImmediateProrate, nil)
+			credits := ProCredits
+			month := domain.Monthly
+			h.Catalog.FallbackPlan = &domain.Plan{Realm: md.DefaultRealm, Code: "cheap", Kind: domain.Subscription, CreditAllotment: &credits, Pool: "plan",
+				Interval: &month, Active: true, Prices: map[string]domain.Money{"USD": {MinorUnits: 1, Currency: "USD"}}}
+			if err := s.Change(Ctx(), h.Scope, TeamCode); !errors.Is(err, domain.ErrUnknownPrice) {
+				t.Errorf("Change = %v, want domain.ErrUnknownPrice: a catalogue is checked, not trusted", err)
+			}
+			if len(h.Provider.Changes()) != 0 {
+				t.Fatalf("a plan that was not asked for reached the provider: %v", h.Provider.Changes())
+			}
+
+			// A newer purchase in another currency does not change what the subscription is billed in.
+			h2 := NewHarness()
+			h2.GivenSubscription()
+			if err := h2.Payments.Upsert(Ctx(), domain.Payment{Scope: h2.Scope, Account: AccountID, ProviderPaymentID: "pay-eur", PlanCode: PackCode, Kind: "one_time",
+				Amount: domain.Money{MinorUnits: 900, Currency: "EUR"}, CreditsGranted: PackCredits, Pool: md.GeneralPool, Status: domain.Succeeded, IdemKey: "pay-eur",
+				CreatedAt: Start.Add(time.Hour)}); err != nil {
+				t.Fatal(err)
+			}
+			if err := mk(t, h2, domain.ImmediateProrate, nil).Change(Ctx(), h2.Scope, TeamCode); err != nil {
+				t.Fatalf("Change = %v: the subscription is billed in USD, whatever else the scope bought since", err)
+			}
+		}},
 		{"changing or canceling writes no status: the webhook does (12)", func(t testing.TB, mk SubscriptionsFactory) {
 			h := NewHarness()
 			before := h.GivenSubscription()
