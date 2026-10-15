@@ -709,12 +709,50 @@ proration (or none); a change at the period's end is a schedule that keeps the r
 after it and releases itself. A secret is read from its reference at each call and is scrubbed from every error.
 The event bodies the tests use are built from the documentation, not captured: a sandbox rehearsal is still owed.
 
+### The Polar adapter
+
+`billing/adapters/driven/polar` speaks Polar's HTTP API directly (a few JSON calls); an account in `live` mode is
+served by `api.polar.sh` and one in `test` mode by `sandbox-api.polar.sh`, and any other mode is refused before a call
+is made. **The provider price id the engine stores is the Polar product id.** A webhook carries Standard Webhooks
+headers, `webhook-id`, `webhook-timestamp` and `webhook-signature` (`v1,<base64>` entries, space-separated), and the
+signature is HMAC-SHA256 over `id.timestamp.body` — so the message id and the time are authenticated along with the
+body, and a captured delivery can be replayed neither as a new event nor as a fresh one. A secret made before
+8 September 2026 is keyed with the UTF-8 bytes of the whole `whsec_…` string and a later one with the base64 after the
+prefix, decoded; the dashboard does not say which, so both are tried, and a key that is empty is never one. **The
+event id is the signed `webhook-id`** (the body has none), and the event is dated by its own `timestamp`, or by the
+signed header when it carries none.
+
+**A payment is keyed on the order.** `order.paid` is a payment; `order.created` is one only if the order is already
+paid, and an `order.paid` for an order that is not paid is an error, never a grant. They name one order, so they are one
+grant. The amount is `total_amount`, what the customer was charged with the sales tax in it, and `tax_amount` is that
+tax. **A refund is the order's cumulative total**: `refunded_amount` (the money, before tax) plus `refunded_tax_amount`
+(its tax), because the customer got back both and the total they paid includes both; it arrives as `order.refunded` or
+as an `order.updated` that carries a refund, and a refund event that refunded nothing is ignored. A subscription's
+events (`created`, `active`, `updated`, `canceled`, `uncanceled`, `past_due`, `paused`, `resumed`, `cycled`) are all
+updates and `subscription.revoked` is its end; the state applied is `FetchSubscription`'s, dated by the `Date` of
+Polar's response. Checkouts, refund objects, benefit grants and customers are ignored — a checkout never fulfils, and
+the order a refund belongs to carries the cumulative total. Polar is the merchant of record: it remits the tax and
+settles chargebacks itself, so it sends no dispute events, and a failing renewal is `subscription.past_due`, not a
+failed-payment event.
+
+**What Polar cannot do, it says with `domain.ErrUnsupported` and does not call Polar:** a checkout that only saves a
+payment method (mode `setup`), `ChargeSaved` (so auto top-up is unavailable on a Polar account), and a plan change
+"now" without proration — Polar's only such option restarts the billing cycle and invoices the full price of the new
+plan, which is not that policy. A plan change at the period's end is `proration_behavior: next_period` and a prorated
+one `prorate`. **Two Polar limits the host should know:** an email address is unique within a Polar organization, so a
+second scope that bills to an address already used on the account gets an error from `EnsureCustomer` (never the
+first scope's customer); and a checkout cannot be made idempotent, so a double-clicked buy button makes two checkout
+pages, which fulfil nothing until an order is paid. The checkout tells Polar the catalogue's price and currency as well
+as the product: Polar honours them for a product whose price is set by the caller and ignores them for a fixed one. An
+unresolvable secret is a misconfiguration (never an invalid signature), and an access token is scrubbed from every
+error. The event bodies the tests use are built from the documentation, not captured: a sandbox rehearsal is still owed.
+
 ### Per-provider notes
 
 | Provider | Verification | Notable events | Gotcha |
 |---|---|---|---|
 | **Stripe** | `Stripe-Signature`: HMAC-SHA256 over `timestamp.payload`, constant-time, with a tolerance window | `invoice.paid`, `checkout.session.completed`, `invoice.payment_failed`, `customer.subscription.updated\|deleted`, `charge.refunded` (`amount_refunded` is cumulative), `charge.dispute.created\|funds_withdrawn\|funds_reinstated\|closed` | `invoice.paid` **and** `checkout.session.completed` can both arrive for one purchase: key the grant on the **payment/invoice id**, never the session. Deliveries are unordered — hence `FetchSubscription` |
-| **Polar** | webhook secret HMAC | `order.created`, `subscription.active\|updated\|canceled`, `refund.created`, `benefit_grant.*` | `benefit_grant` can double with `order.created` — same keying discipline |
+| **Polar** | Standard Webhooks: HMAC-SHA256 over `webhook-id.webhook-timestamp.body` (either of the secret's two keys), constant-time, with a tolerance window | `order.paid`, `order.created`, `order.refunded`, `order.updated`, `subscription.*` | the same order is named by `order.created`, `order.paid` and `order.updated` — key the grant on the **order id**; `refund.created` and `benefit_grant.*` are ignored, and `refunded_amount` is before tax |
 | **PayPal** | **not a local HMAC** — a call to `verify-webhook-signature` with the transmission headers and `webhook_id` | `PAYMENT.CAPTURE.COMPLETED\|REFUNDED\|REVERSED`, `BILLING.SUBSCRIPTION.*`, `CUSTOMER.DISPUTE.*` | verification does I/O: a PayPal outage means deliveries can be neither verified nor rejected, so they are **parked** with their raw body and retried — never processed optimistically, never dropped |
 
 ---
