@@ -513,6 +513,10 @@ func TestAVerifiedBodyThatIsNotAnEventIsAnErrorNotAPartialEvent(t *testing.T) {
 		"an order with no id":              []byte(`{"type":"order.paid","timestamp":"2026-03-01T00:00:00Z","data":{"status":"paid","paid":true,"total_amount":1,"currency":"usd"}}`),
 		"a subscription with no id":        []byte(`{"type":"subscription.updated","timestamp":"2026-03-01T00:00:00Z","data":{"status":"active"}}`),
 		"an order with no currency":        []byte(`{"type":"order.paid","timestamp":"2026-03-01T00:00:00Z","data":{"id":"o","status":"paid","paid":true,"total_amount":1}}`),
+		"a negative refund":                []byte(`{"type":"order.refunded","timestamp":"2026-03-01T00:00:00Z","data":{"id":"o","status":"paid","paid":true,"total_amount":1000,"refunded_amount":-5,"currency":"usd"}}`),
+		"a negative refunded tax":          []byte(`{"type":"order.refunded","timestamp":"2026-03-01T00:00:00Z","data":{"id":"o","status":"paid","paid":true,"total_amount":1000,"refunded_tax_amount":-5,"currency":"usd"}}`),
+		"a negative total":                 []byte(`{"type":"order.paid","timestamp":"2026-03-01T00:00:00Z","data":{"id":"o","status":"paid","paid":true,"total_amount":-1,"currency":"usd"}}`),
+		"an order with no total":           []byte(`{"type":"order.paid","timestamp":"2026-03-01T00:00:00Z","data":{"id":"o","status":"paid","paid":true,"currency":"usd"}}`),
 		"an amount that is not an integer": []byte(`{"type":"order.paid","timestamp":"2026-03-01T00:00:00Z","data":{"id":"o","status":"paid","paid":true,"total_amount":10.5,"currency":"usd"}}`),
 	} {
 		e, err := p.VerifyWebhook(ctx(), fx.Account(), body, polarfix.Sign(polarfix.WebhookSecA, "msg_n", fx.Now(), body))
@@ -762,6 +766,17 @@ func TestChangePlanFollowsThePolicyAtPolarOrSaysItCannot(t *testing.T) {
 		p, fx := setup(t)
 		seed(fx)
 		if err := p.ChangePlan(ctx(), fx.Account(), "sub_1", contracts.TeamPriceID, domain.ImmediateNoProrate); !errors.Is(err, domain.ErrUnsupported) {
+			t.Fatalf("err = %v", err)
+		}
+		if len(fx.Requests()) != 0 {
+			t.Fatalf("Polar was called: %v", fx.Requests())
+		}
+	})
+	t.Run("a change to no product is refused before Polar is asked", func(t *testing.T) {
+		t.Parallel()
+		p, fx := setup(t)
+		seed(fx)
+		if err := p.ChangePlan(ctx(), fx.Account(), "sub_1", "", domain.AtPeriodEnd); !errors.Is(err, md.ErrInvalid) {
 			t.Fatalf("err = %v", err)
 		}
 		if len(fx.Requests()) != 0 {
