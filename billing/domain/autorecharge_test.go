@@ -459,7 +459,9 @@ func TestARechargeKeyCanBeReadBack(t *testing.T) {
 	}
 	for _, bad := range []string{"", "recharge:", "recharge:default/workspace:w1", "recharge:default/workspace:w1:2026-03-01", "recharge:default/workspace:w1:2026-03-01:x",
 		"recharge:default/workspace:w1:2026-03-01:0", "recharge:default/workspace:w1:2026-03-01:-1", "recharge:default/workspace:w1:2026-3-01:1",
-		"recharge:default/workspace:w1:2026-03-01:", "payment-pi_123", "refund:re_1", ":2026-03-01:1", "recharge::2026-03-01:1"} {
+		"recharge:default/workspace:w1:2026-03-01:", "payment-pi_123", "refund:re_1", ":2026-03-01:1", "recharge::2026-03-01:1",
+		// well-formed in every way but the prefix: the key of something else is not a recharge key
+		"refund:default/workspace:w1:2026-03-01:1", "default/workspace:w1:2026-03-01:1", "RECHARGE:default/workspace:w1:2026-03-01:1"} {
 		if tag, day, n, ok := domain.ParseRechargeKey(bad); ok {
 			t.Errorf("ParseRechargeKey(%q) = (%q, %q, %d), want not ok: it is not a recharge key", bad, tag, day, n)
 		}
