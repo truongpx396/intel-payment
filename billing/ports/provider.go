@@ -48,7 +48,9 @@ type PaymentProvider interface {
 
 	// ChargeSaved charges a saved payment method off-session — auto top-up. Idempotent on in.IdemKey at the
 	// provider. It returns the provider payment id; credits still arrive only on the verified payment webhook
-	// (invariant 18).
+	// (invariant 18). An error wraps domain.ErrChargeDeclined exactly when the provider REFUSED the charge for
+	// good; any other error leaves the outcome unknown, and the caller tries the same key again. A provider that
+	// cannot charge a saved method answers domain.ErrUnsupported.
 	ChargeSaved(ctx context.Context, acct domain.ProviderAccount, in OffSessionInput) (providerPaymentID string, err error)
 }
 
