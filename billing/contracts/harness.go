@@ -25,10 +25,14 @@ const (
 	ElsewhereID    = "acct-x"        // belongs to another provider
 	PackCode       = "pack"          // a one-time pack: $10.00 for 10,000,000 credits
 	ProCode        = "pro"           // a monthly subscription: $20.00 for 5,000,000 credits into the `plan` pool
+	TeamCode       = "team"          // a dearer monthly plan: $50.00 — an upgrade from pro
+	LiteCode       = "lite"          // a cheaper monthly plan: $5.00 — a downgrade from pro
 	PackCredits    = md.Credits(10_000_000)
 	ProCredits     = md.Credits(5_000_000)
 	PackPriceID    = "price_pack"
 	ProPriceID     = "price_pro"
+	TeamPriceID    = "price_team"
+	LitePriceID    = "price_lite"
 	// MaxWebhookBody is the largest delivery the ingress is built to accept.
 	MaxWebhookBody = 1 << 20
 )
@@ -86,6 +90,15 @@ func NewHarness() *Harness {
 		Pool: md.GeneralPool, Active: true, Prices: map[string]domain.Money{"USD": {MinorUnits: 1000, Currency: "USD"}}}, AccountID, "USD", PackPriceID)
 	h.Catalog.Add(domain.Plan{Realm: md.DefaultRealm, Code: ProCode, Name: "Pro", Kind: domain.Subscription, CreditAllotment: &plan,
 		Pool: "plan", Interval: &month, Active: true, SortOrder: 1, Prices: map[string]domain.Money{"USD": {MinorUnits: 2000, Currency: "USD"}}}, AccountID, "USD", ProPriceID)
+	for code, spec := range map[string]struct {
+		minor int64
+		price string
+		order int
+	}{TeamCode: {5000, TeamPriceID, 2}, LiteCode: {500, LitePriceID, 3}} {
+		h.Catalog.Add(domain.Plan{Realm: md.DefaultRealm, Code: code, Name: code, Kind: domain.Subscription, CreditAllotment: &plan, Pool: "plan",
+			Interval: &month, Active: true, SortOrder: spec.order, Prices: map[string]domain.Money{"USD": {MinorUnits: spec.minor, Currency: "USD"}}},
+			AccountID, "USD", spec.price)
+	}
 	for id, s := range map[string]md.Scope{"cus_1": h.Scope, "cus_2": h.Scope2, "cus_foreign": h.Foreign} {
 		_ = h.Customers.Upsert(context.Background(), domain.Customer{Scope: s, Account: AccountID, ProviderCustomerID: id})
 	}
