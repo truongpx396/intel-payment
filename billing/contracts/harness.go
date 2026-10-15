@@ -53,6 +53,9 @@ type Harness struct {
 	Lots      *FakeLots
 	Metrics   *RecordingMetrics
 	Bus       *MemBus
+	// Recharges holds the standing instructions to top up, and Balances answers what a scope has left.
+	Recharges *MemAutoRecharges
+	Balances  *FakeBalances
 
 	// Scope is the customer cus_1's scope; Scope2 is cus_2's. Foreign is cus_foreign's, in a realm the account
 	// does not serve.
@@ -115,7 +118,7 @@ func NewHarness() *Harness {
 		Accounts: NewMemAccounts(log, accts...),
 		Inbox:    NewMemInbox(clock, log), Payments: NewMemPayments(log), Subs: NewMemSubs(log),
 		Customers: NewMemCustomers(log), Catalog: NewMemCatalog(log), Meter: NewFakeMeter(log), Lots: NewFakeLots(log),
-		Metrics: &RecordingMetrics{}, Bus: &MemBus{},
+		Metrics: &RecordingMetrics{}, Bus: &MemBus{}, Recharges: NewMemAutoRecharges(log), Balances: NewFakeBalances(),
 		Scope:   md.Scope{Realm: md.DefaultRealm, Kind: "workspace", ID: "w1"},
 		Scope2:  md.Scope{Realm: md.DefaultRealm, Kind: "workspace", ID: "w2"},
 		Foreign: md.Scope{Realm: "other", Kind: "workspace", ID: "x1"},

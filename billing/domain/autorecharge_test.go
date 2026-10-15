@@ -590,3 +590,58 @@ func FuzzTheLedgerHoldsItsBoundsWhateverTheOrderOfEvents(f *testing.F) {
 		}
 	})
 }
+
+// ------------------------------------------------------------------ scope tags --
+
+func TestAScopeIsReadBackFromItsTag(t *testing.T) {
+	t.Parallel()
+	for _, s := range []domain.Scope{
+		workspace("w1"),
+		{Realm: "acme", Kind: "user", ID: "u:9"},
+		{Realm: "default", Kind: "workspace", ID: "a/b:c d"},
+		{Realm: "t-1_x", Kind: "api_key", ID: "k"},
+		{Kind: "workspace", ID: "no-realm"}, // an empty realm is the default realm
+	} {
+		got, err := domain.ParseScopeTag(s.Tag())
+		if err != nil || got != s.Normalized() {
+			t.Errorf("ParseScopeTag(%q) = %+v, %v; want %+v", s.Tag(), got, err, s.Normalized())
+		}
+	}
+	for _, bad := range []string{"", "workspace:w1", "default/workspace", "default/workspace:", "default/:w1", "/workspace:w1", "default/Workspace:w1",
+		"Default/workspace:w1", "default/work space:w1", "default/workspace:w1\n", "default/work/space:w1", "a b/workspace:w1"} {
+		if got, err := domain.ParseScopeTag(bad); err == nil {
+			t.Errorf("ParseScopeTag(%q) = %+v, want an error: it is not a scope's tag", bad, got)
+		}
+	}
+}
+
+func FuzzParseScopeTagReadsBackWhatTagWrote(f *testing.F) {
+	f.Add("default", "workspace", "w1")
+	f.Add("acme", "user", "a/b:c")
+	f.Add("", "api_key", "x y")
+	f.Fuzz(func(t *testing.T, realm, kind, id string) {
+		s := domain.Scope{Realm: domain.Realm(realm), Kind: kind, ID: id}
+		if s.Validate() != nil {
+			t.Skip()
+		}
+		got, err := domain.ParseScopeTag(s.Tag())
+		if err != nil || got != s.Normalized() {
+			t.Fatalf("%q reads back as %+v, %v; want %+v", s.Tag(), got, err, s.Normalized())
+		}
+	})
+}
+
+func FuzzParseScopeTagAcceptsNothingTagWouldNotWrite(f *testing.F) {
+	f.Add("default/workspace:w1")
+	f.Add("default/workspace:")
+	f.Add("a/b:c:d")
+	f.Fuzz(func(t *testing.T, tag string) {
+		s, err := domain.ParseScopeTag(tag)
+		if err != nil {
+			return
+		}
+		if s.Validate() != nil || s.Tag() != tag {
+			t.Fatalf("%q was read as %+v, whose tag is %q", tag, s, s.Tag())
+		}
+	})
+}
