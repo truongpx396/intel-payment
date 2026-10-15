@@ -161,3 +161,8 @@ func TestPostgresAccountsHonourTheAccountsContract(t *testing.T) {
 		return pgadapter.NewAccounts(pool), func(a domain.ProviderAccount) { seedAccount(t, pool, a) }
 	})
 }
+
+func TestPostgresAutoRechargesHonourTheAutoRechargesContract(t *testing.T) {
+	t.Parallel()
+	contracts.AutoRechargesContract(t, func(t testing.TB) ports.AutoRecharges { return pgadapter.NewAutoRecharges(world(t)) })
+}
