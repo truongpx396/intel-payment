@@ -116,24 +116,30 @@ func SubsCases() []StoreCase[SubsFactory] {
 		}},
 		{"concurrent appliers converge on the newest state", func(t testing.TB, mk SubsFactory) {
 			s := mk(t)
-			sc := scope(3)
-			var wg sync.WaitGroup
-			for i := range 8 {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					st := domain.Active
-					if i == 7 {
-						st = domain.Canceled
-					}
-					if _, err := s.ApplyIfNewer(Ctx(), subOf(sc, "sub-3", st, ProCode), us(time.Duration(i)*time.Minute)); err != nil {
-						t.Errorf("ApplyIfNewer: %v", err)
-					}
-				}()
-			}
-			wg.Wait()
-			if got, _ := getSub(t, s, sc); got.Status != domain.Canceled || !got.LastEventAt.Equal(us(7*time.Minute)) {
-				t.Fatalf("subscription = %+v: the newest state must win however the appliers interleave", got)
+			// Many rounds, each a new subscription with eight appliers racing to create and change it: a store that
+			// does not hold the subscription exclusive loses an update somewhere in them.
+			for round := range 30 {
+				sc := scope(200 + round)
+				id := fmt.Sprintf("sub-r%d", round)
+				newest := round % 8 // which applier carries the newest instant varies, so no arrival order is the right one
+				var wg sync.WaitGroup
+				for i := range 8 {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						st, at := domain.Active, us(time.Duration(i)*time.Minute)
+						if i == newest {
+							st, at = domain.Canceled, us(10*time.Minute)
+						}
+						if _, err := s.ApplyIfNewer(Ctx(), subOf(sc, id, st, ProCode), at); err != nil {
+							t.Errorf("ApplyIfNewer: %v", err)
+						}
+					}()
+				}
+				wg.Wait()
+				if got, _ := getSub(t, s, sc); got.Status != domain.Canceled || !got.LastEventAt.Equal(us(10*time.Minute)) {
+					t.Fatalf("round %d: subscription = %+v: the newest state must win however the appliers interleave", round, got)
+				}
 			}
 		}},
 		{"Get is the live subscription, else the newest the scope ever had", func(t testing.TB, mk SubsFactory) {
