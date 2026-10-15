@@ -271,6 +271,20 @@ func CheckoutCases() []CheckoutCase {
 				t.Fatalf("input customer %q, %d ensure calls: a mapped scope is not created again", in.CustomerID, h.Provider.EnsureCalls())
 			}
 		}},
+		{"a mapping that cannot be stored fails the checkout instead of sending the buyer to pay as a stranger", func(t testing.TB, mk CheckoutFactory) {
+			h := NewHarness()
+			c := mk(t, h, nil)
+			h.Customers.DropUpserts = true
+			fresh := md.Scope{Realm: md.DefaultRealm, Kind: "workspace", ID: "w5"}
+			req := h.CheckoutRequest(PackCode)
+			req.Scope = fresh
+			if url, err := c.Start(Ctx(), req); err == nil || url != "" {
+				t.Fatalf("Start = %q, %v: the buyer would pay, and the webhook could not say whose payment it was", url, err)
+			}
+			if len(h.Provider.Checkouts()) != 0 {
+				t.Fatal("a checkout for an unmapped customer reached the provider")
+			}
+		}},
 		{"two first checkouts at once create one customer", func(t testing.TB, mk CheckoutFactory) {
 			h := NewHarness()
 			c := mk(t, h, nil)
