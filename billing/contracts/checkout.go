@@ -121,6 +121,25 @@ func CheckoutCases() []CheckoutCase {
 				t.Fatalf("input = %+v: the price is the catalogue's mapping for this account and currency", in)
 			}
 		}},
+		{"a catalogue that answers with another plan than the one asked for is not believed", func(t testing.TB, mk CheckoutFactory) {
+			credits := PackCredits
+			prices := map[string]domain.Money{"USD": {MinorUnits: 1, Currency: "USD"}}
+			for name, answer := range map[string]domain.Plan{
+				"another plan":            {Realm: md.DefaultRealm, Code: "cheap", Kind: domain.OneTime, CreditAllotment: &credits, Active: true, Prices: prices},
+				"a retired plan":          {Realm: md.DefaultRealm, Code: PackCode, Kind: domain.OneTime, CreditAllotment: &credits, Active: false, Prices: prices},
+				"a plan of another realm": {Realm: "other", Code: PackCode, Kind: domain.OneTime, CreditAllotment: &credits, Active: true, Prices: prices},
+			} {
+				h := NewHarness()
+				c := mk(t, h, nil)
+				h.Catalog.FallbackPlan = &answer
+				if url, err := c.Start(Ctx(), h.CheckoutRequest(PackCode)); !errors.Is(err, domain.ErrUnknownPrice) || url != "" {
+					t.Errorf("%s: Start = %q, %v; want domain.ErrUnknownPrice — a catalogue is checked, not trusted", name, url, err)
+				}
+				if len(h.Provider.Checkouts()) != 0 {
+					t.Errorf("%s: a checkout for a plan that was not asked for reached the provider", name)
+				}
+			}
+		}},
 		{"the mode must match the plan", func(t testing.TB, mk CheckoutFactory) {
 			h := NewHarness()
 			c := mk(t, h, nil)
