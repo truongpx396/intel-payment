@@ -62,17 +62,53 @@ type Harness struct {
 // Start is the harness clock's first instant.
 var Start = time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 
-// NewHarness builds the world: three accounts of the provider "fake" (and one of another provider), the catalogue,
-// and three customers.
-func NewHarness() *Harness {
-	log := &CallLog{}
-	clock := mcontracts.NewFakeClock(Start)
+// WorldAccounts are the provider accounts of the world every suite runs in: three of the provider "fake" (one switched
+// off) and one of another provider.
+func WorldAccounts() []domain.ProviderAccount {
 	acct := func(id string, p domain.Provider, active bool) domain.ProviderAccount {
 		return domain.ProviderAccount{ID: id, Provider: p, Realms: []domain.Realm{md.DefaultRealm}, Mode: "test",
 			SecretRef: "env:FAKE_SECRET_" + id, WebhookSecretRef: "env:FAKE_WEBHOOK_" + id, Active: active}
 	}
-	accts := []domain.ProviderAccount{acct(AccountID, ProviderName, true), acct(OtherAccountID, ProviderName, true),
+	return []domain.ProviderAccount{acct(AccountID, ProviderName, true), acct(OtherAccountID, ProviderName, true),
 		acct(InactiveID, ProviderName, false), acct(ElsewhereID, "elsewhere", true)}
+}
+
+// WorldPlan is a plan on sale and the provider price that sells it through one account in one currency.
+type WorldPlan struct {
+	Plan            domain.Plan
+	Account         string
+	Currency        string
+	ProviderPriceID string
+}
+
+// WorldPlans are the plans of the world: a pack, and the Pro, Team and Lite subscriptions, all sold through AccountID in
+// USD.
+func WorldPlans() []WorldPlan {
+	pack, pro := PackCredits, ProCredits
+	month := domain.Monthly
+	usd := func(minor int64) map[string]domain.Money {
+		return map[string]domain.Money{"USD": {MinorUnits: minor, Currency: "USD"}}
+	}
+	sub := func(code string, minor int64, order int) domain.Plan {
+		return domain.Plan{Realm: md.DefaultRealm, Code: code, Name: code, Kind: domain.Subscription, CreditAllotment: &pro, Pool: "plan",
+			Interval: &month, Active: true, SortOrder: order, Prices: usd(minor)}
+	}
+	proPlan := sub(ProCode, 2000, 1)
+	proPlan.Name = "Pro"
+	return []WorldPlan{
+		{domain.Plan{Realm: md.DefaultRealm, Code: PackCode, Name: "Credit pack", Kind: domain.OneTime, CreditAllotment: &pack, Pool: md.GeneralPool,
+			Active: true, Prices: usd(1000)}, AccountID, "USD", PackPriceID},
+		{proPlan, AccountID, "USD", ProPriceID},
+		{sub(TeamCode, 5000, 2), AccountID, "USD", TeamPriceID},
+		{sub(LiteCode, 500, 3), AccountID, "USD", LitePriceID},
+	}
+}
+
+// NewHarness builds the world: the accounts and plans above, and three customers.
+func NewHarness() *Harness {
+	log := &CallLog{}
+	clock := mcontracts.NewFakeClock(Start)
+	accts := WorldAccounts()
 	h := &Harness{
 		Clock: clock, Log: log,
 		Provider: NewFakeProvider(ProviderName, clock, log, accts...),
@@ -84,20 +120,8 @@ func NewHarness() *Harness {
 		Scope2:  md.Scope{Realm: md.DefaultRealm, Kind: "workspace", ID: "w2"},
 		Foreign: md.Scope{Realm: "other", Kind: "workspace", ID: "x1"},
 	}
-	credits, plan := PackCredits, ProCredits
-	month := domain.Monthly
-	h.Catalog.Add(domain.Plan{Realm: md.DefaultRealm, Code: PackCode, Name: "Credit pack", Kind: domain.OneTime, CreditAllotment: &credits,
-		Pool: md.GeneralPool, Active: true, Prices: map[string]domain.Money{"USD": {MinorUnits: 1000, Currency: "USD"}}}, AccountID, "USD", PackPriceID)
-	h.Catalog.Add(domain.Plan{Realm: md.DefaultRealm, Code: ProCode, Name: "Pro", Kind: domain.Subscription, CreditAllotment: &plan,
-		Pool: "plan", Interval: &month, Active: true, SortOrder: 1, Prices: map[string]domain.Money{"USD": {MinorUnits: 2000, Currency: "USD"}}}, AccountID, "USD", ProPriceID)
-	for code, spec := range map[string]struct {
-		minor int64
-		price string
-		order int
-	}{TeamCode: {5000, TeamPriceID, 2}, LiteCode: {500, LitePriceID, 3}} {
-		h.Catalog.Add(domain.Plan{Realm: md.DefaultRealm, Code: code, Name: code, Kind: domain.Subscription, CreditAllotment: &plan, Pool: "plan",
-			Interval: &month, Active: true, SortOrder: spec.order, Prices: map[string]domain.Money{"USD": {MinorUnits: spec.minor, Currency: "USD"}}},
-			AccountID, "USD", spec.price)
+	for _, w := range WorldPlans() {
+		h.Catalog.Add(w.Plan, w.Account, w.Currency, w.ProviderPriceID)
 	}
 	for id, s := range map[string]md.Scope{"cus_1": h.Scope, "cus_2": h.Scope2, "cus_foreign": h.Foreign} {
 		_ = h.Customers.Upsert(context.Background(), domain.Customer{Scope: s, Account: AccountID, ProviderCustomerID: id})

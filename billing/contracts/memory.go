@@ -662,9 +662,28 @@ func (m *MemPayments) Get(_ context.Context, account, id string) (domain.Payment
 	return p, ok, nil
 }
 
+// checkPayment is the database's CHECK constraints: a payment cannot refund more than it cost, revoke or claw back
+// more than it granted, or be negative.
+func checkPayment(p domain.Payment) error {
+	switch {
+	case p.Amount.MinorUnits < 0:
+		return fmt.Errorf("%w: payment %s has a negative amount", md.ErrInvalid, p.ProviderPaymentID)
+	case p.RefundedMinor < 0 || p.RefundedMinor > p.Amount.MinorUnits:
+		return fmt.Errorf("%w: payment %s refunded %d of %d", md.ErrInvalid, p.ProviderPaymentID, p.RefundedMinor, p.Amount.MinorUnits)
+	case p.CreditsGranted < 0 || p.CreditsRevoked < 0 || p.CreditsRevoked > p.CreditsGranted:
+		return fmt.Errorf("%w: payment %s revoked %d of %d credits", md.ErrInvalid, p.ProviderPaymentID, p.CreditsRevoked, p.CreditsGranted)
+	case p.DisputeClawed < 0 || p.DisputeClawed > p.CreditsGranted:
+		return fmt.Errorf("%w: payment %s had %d credits clawed back by a dispute of %d granted", md.ErrInvalid, p.ProviderPaymentID, p.DisputeClawed, p.CreditsGranted)
+	}
+	return nil
+}
+
 // Upsert implements ports.Payments.
 func (m *MemPayments) Upsert(_ context.Context, p domain.Payment) error {
 	m.log.Add("payments.Upsert")
+	if err := checkPayment(p); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.rows[paymentKey(p.Account, p.ProviderPaymentID)] = p
@@ -693,6 +712,9 @@ func (m *MemPayments) Update(_ context.Context, account, id string, fn func(doma
 	if err != nil {
 		return cur, err
 	}
+	if err := checkPayment(next); err != nil {
+		return cur, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.failCommit > 0 {
@@ -706,6 +728,14 @@ func (m *MemPayments) Update(_ context.Context, account, id string, fn func(doma
 // List implements ports.Payments (newest first; the cursor is an index).
 func (m *MemPayments) List(_ context.Context, s domain.Scope, cursor string, limit int) ([]domain.Payment, string, error) {
 	m.log.Add("payments.List")
+	switch {
+	case limit < 0:
+		return nil, "", fmt.Errorf("%w: limit %d", md.ErrInvalid, limit)
+	case limit == 0:
+		limit = 50
+	case limit > 200:
+		limit = 200
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var all []domain.Payment
@@ -801,6 +831,13 @@ func (m *MemSubs) ApplyIfNewer(_ context.Context, sub domain.Sub, at time.Time) 
 	defer m.mu.Unlock()
 	k := subKey(sub.Account, sub.ProviderSubscriptionID)
 	next, applied := m.rows[k].Apply(sub, at)
+	if applied && next.Live() {
+		for other, have := range m.rows {
+			if other != k && have.Live() && have.Scope.Normalized() == next.Scope.Normalized() {
+				return false, fmt.Errorf("%w: %s already has a live subscription (%s)", md.ErrAlreadyExists, next.Scope.Tag(), have.ProviderSubscriptionID)
+			}
+		}
+	}
 	if m.NoOrder {
 		sub.LastEventAt = at
 		next, applied = sub, true
@@ -912,6 +949,11 @@ func (m *MemCustomers) Upsert(_ context.Context, c domain.Customer) error {
 	defer m.mu.Unlock()
 	if m.DropUpserts {
 		return nil
+	}
+	for _, have := range m.rows {
+		if have.Account == c.Account && have.ProviderCustomerID == c.ProviderCustomerID && have.Scope.Normalized() != c.Scope.Normalized() {
+			return fmt.Errorf("%w: provider customer %s is already mapped to another scope", md.ErrAlreadyExists, c.ProviderCustomerID)
+		}
 	}
 	for i, have := range m.rows {
 		if have.Scope.Normalized() == c.Scope.Normalized() && have.Account == c.Account {
