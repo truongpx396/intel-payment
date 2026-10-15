@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/truongpx396/intel-payment/billing/domain"
 	"github.com/truongpx396/intel-payment/billing/ports"
@@ -250,6 +251,26 @@ func IngressCases() []IngressCase {
 			wantStatus(t, handle(ing, "fake", AccountID, body, hdr), 200, "the provider's own redelivery afterwards")
 			if n := h.Inbox.Count(); n != 1 {
 				t.Fatalf("the redelivery made it %d events", n)
+			}
+		}},
+		{"a parked delivery is not made stale by waiting to be verified", func(t testing.TB, mk IngressFactory) {
+			h := NewHarness()
+			ing := mk(t, h)
+			body, hdr := h.Deliver(h.PaymentSucceeded("evt_1", "pay-1"))
+			h.Provider.SetDown(true)
+			wantStatus(t, handle(ing, "fake", AccountID, body, hdr), 202, "verification is down")
+			// The outage outlasts the signature tolerance. The provider was told 202 and will not send this again, so
+			// if the wait made the signature stale a genuine payment would be rejected as a replay and lost.
+			h.Clock.Advance(time.Hour)
+			h.Provider.SetDown(false)
+			if err := ing.Retry(Ctx()); err != nil {
+				t.Fatal(err)
+			}
+			if n := h.Inbox.Count(); n != 1 {
+				t.Fatalf("a genuine delivery that waited an hour in the parked half became %d events, want 1: it was judged by the time it was retried, not the time it arrived", n)
+			}
+			if n := len(h.Inbox.Parked()); n != 0 {
+				t.Fatalf("%d deliveries are still parked", n)
 			}
 		}},
 		{"a parked delivery that fails verification is rejected, never processed", func(t testing.TB, mk IngressFactory) {

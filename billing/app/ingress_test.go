@@ -48,6 +48,7 @@ func TestIngressContractRejectsEveryBrokenIngressByName(t *testing.T) {
 		parks         = "unavailable verification parks the raw body and answers 202"
 		rejects       = "a parked delivery that fails verification is rejected, never processed"
 		oversized     = "an oversized body is refused before it is verified"
+		waited        = "a parked delivery is not made stale by waiting to be verified"
 	)
 	broken := []struct {
 		name     string
@@ -79,6 +80,10 @@ func TestIngressContractRejectsEveryBrokenIngressByName(t *testing.T) {
 			h.Inbox.DropParkedBody = true
 			return ingressUnderTest(t, h)
 		}, parks},
+		{"judges a parked delivery by the time it is retried, not the time it arrived", func(t testing.TB, h *contracts.Harness) contracts.Ingress {
+			h.Provider = h.Provider.WithDefect(contracts.DefectIgnoreArrival)
+			return ingressUnderTest(t, h)
+		}, waited},
 		{"promotes a parked delivery without verifying it", func(t testing.TB, h *contracts.Harness) contracts.Ingress {
 			return promotesUnverified{ingressUnderTest(t, h), h}
 		}, rejects},

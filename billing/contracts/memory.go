@@ -487,7 +487,7 @@ func (m *MemInbox) LeaseParked(_ context.Context, n int, ttl time.Duration) ([]p
 		r.LeaseUntil = now.Add(ttl)
 		r.Attempts++
 		out = append(out, ports.ParkedDelivery{ID: r.ID, Provider: r.Provider, Account: r.Account,
-			Body: append([]byte(nil), r.ParkedBody...), Header: r.ParkedHeader.Clone(), Attempts: r.Attempts})
+			Body: append([]byte(nil), r.ParkedBody...), Header: r.ParkedHeader.Clone(), Attempts: r.Attempts, ReceivedAt: r.ReceivedAt})
 	}
 	return out, nil
 }
