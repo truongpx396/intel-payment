@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/truongpx396/intel-payment/billing/domain"
+	"github.com/truongpx396/intel-payment/billing/ports"
 )
 
 // VerifyWebhook implements ports.PaymentProvider: the raw body is authenticated with the account's webhook secret —
@@ -33,7 +34,7 @@ func (p *Provider) VerifyWebhook(ctx context.Context, acct domain.ProviderAccoun
 	if id == "" || perr != nil || ts <= 0 || len(sigs) == 0 {
 		return domain.Event{}, fmt.Errorf("%w: no usable webhook-id, webhook-timestamp and webhook-signature", domain.ErrInvalidSignature)
 	}
-	age := p.cfg.Clock.Now().Sub(time.Unix(ts, 0))
+	age := ports.ReceivedAt(ctx, p.cfg.Clock.Now()).Sub(time.Unix(ts, 0)) // as of when it arrived: a parked delivery is verified later
 	if age < 0 {
 		age = -age
 	}

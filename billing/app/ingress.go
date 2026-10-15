@@ -257,7 +257,9 @@ func (g *Ingress) retryOne(ctx context.Context, d ports.ParkedDelivery) error {
 		return err
 	}
 	label := string(p.Name())
-	e, err := g.verify(ctx, p, acct, d.Body, d.Header)
+	// A signature's age is judged as of when the delivery arrived: the provider was told 202 and will not send it again,
+	// so an outage longer than the tolerance must not turn a genuine delivery into a replay.
+	e, err := g.verify(ports.WithReceivedAt(ctx, d.ReceivedAt), p, acct, d.Body, d.Header)
 	switch {
 	case errors.Is(err, domain.ErrInvalidSignature):
 		g.verifyFailed(label, acct.ID, err)

@@ -258,6 +258,10 @@ type PaymentProvider interface {
 	// TIME, enforce a timestamp tolerance, and return an error — never a partial Event — on any
 	// failure. It MAY perform I/O (PayPal verifies by API call), so callers give it a deadline, and
 	// it returns ErrVerificationUnavailable when verification itself cannot run.
+	// A signature's age is measured against ports.ReceivedAt(ctx, now): when the delivery ARRIVED. The
+	// ingress sets it when it verifies a parked delivery again, because the provider was answered 202 and will
+	// not resend it — judged by the time of the retry, an outage longer than the tolerance would make every
+	// genuine delivery in the parked half look like a replay, and a rejected parked delivery is dropped.
 	VerifyWebhook(ctx context.Context, acct domain.ProviderAccount, rawBody []byte, headers http.Header) (domain.Event, error)
 
 	// FetchSubscription returns the provider's CURRENT subscription object. The processor applies
@@ -395,6 +399,7 @@ type Inbox interface {
 	// The parked half. A parked delivery is retried by billing.webhook.tick: Promote when it now
 	// verifies (the body is deleted that moment), RetryParked while verification is still
 	// unavailable, Reject when it FAILS to verify — a security event; never trusted, body dropped.
+	// A ParkedDelivery carries ReceivedAt, when it FIRST arrived (a redelivery of the same bytes does not move it).
 	LeaseParked(ctx context.Context, n int, ttl time.Duration) ([]ParkedDelivery, error)
 	Promote(ctx context.Context, id string, e domain.Event) (inserted bool, err error)
 	RetryParked(ctx context.Context, id string, retryAt time.Time) error
@@ -545,7 +550,9 @@ and verifies nothing. A delivery is parked under a name made of the SHA-256 of i
 (`parked:<hash>`) — nothing in it may be parsed yet — so the provider's redelivery of the same bytes is
 one row. `billing.webhook.tick` calls `Ingress.Retry`: a parked delivery that now verifies becomes an
 ordinary event and loses its raw body; one that fails is rejected (a security event, body dropped, never
-processed); one that still cannot be verified backs off (30 s doubling, one hour at most). An event whose
+processed); one that still cannot be verified backs off (30 s doubling, one hour at most). A parked delivery is
+verified again as of when it ARRIVED (`ports.WithReceivedAt`), so waiting out an outage longer than the signature
+tolerance does not turn a genuine delivery — which the provider was told `202` for and will not resend — into a replay. An event whose
 provider or account differs from the route's is an adapter defect, answered `500`, never filed. Metrics
 are counted only after the route has resolved to a registered provider and a live account, so no
 label is ever keyed on what an unauthenticated caller typed.
