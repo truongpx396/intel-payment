@@ -130,6 +130,23 @@ func AutoRechargeCases() []StoreCase[AutoRechargesFactory] {
 				t.Fatalf("a fourth claim = %+v %q, want max_per_day", c, refusal)
 			}
 		}},
+		{"a slot nobody settled is replaced once it is stale, and still counts", func(t testing.TB, mk AutoRechargesFactory) {
+			s := mk(t)
+			sc := rechargeScope(1)
+			a := rechargeFor(1)
+			a.MaxPerDay = 2
+			put(t, s, a)
+			claim(t, s, sc, rechargeDay)
+			if c, refusal := claim(t, s, sc, rechargeDay.Add(rechargeStale-time.Second)); refusal != ports.RechargeOK || !c.Resumed || c.N != 1 {
+				t.Fatalf("a second before it is stale: %+v %q, want slot 1 resumed", c, refusal)
+			}
+			if c, refusal := claim(t, s, sc, rechargeDay.Add(rechargeStale)); refusal != ports.RechargeOK || c.Resumed || c.N != 2 {
+				t.Fatalf("exactly stale: %+v %q, want a slot of its own: the process that held slot 1 died, and nothing will ever settle it", c, refusal)
+			}
+			if _, refusal := claim(t, s, sc, rechargeDay.Add(3*rechargeStale)); refusal != ports.RechargeMaxPerDay {
+				t.Fatalf("both slots abandoned: %q — abandoning slots must not get round the maximum", refusal)
+			}
+		}},
 		{"an unknown scope or a disabled instruction claims nothing", func(t testing.TB, mk AutoRechargesFactory) {
 			s := mk(t)
 			if c, refusal := claim(t, s, rechargeScope(1), rechargeDay); refusal != ports.RechargeDisabled || c != (ports.RechargeClaim{}) {
@@ -389,6 +406,8 @@ type MemAutoRecharges struct {
 	NeverDisables bool
 	// ForgetLedger makes Claim answer with a slot but not remember it: every trigger is the first.
 	ForgetLedger bool
+	// NeverStale makes Claim ignore how long a slot has been in flight: an abandoned one is resumed for ever.
+	NeverStale bool
 
 	mu   sync.Mutex
 	log  *CallLog
@@ -444,6 +463,9 @@ func (m *MemAutoRecharges) Claim(_ context.Context, s domain.Scope, now time.Tim
 	cur, ok := m.rows[s.Tag()]
 	if !ok {
 		return ports.RechargeClaim{}, ports.RechargeDisabled, nil
+	}
+	if m.NeverStale {
+		staleAfter = time.Duration(1 << 62)
 	}
 	next, c, refusal := cur.Claim(now, staleAfter)
 	if refusal == ports.RechargeOK && !m.ForgetLedger {
