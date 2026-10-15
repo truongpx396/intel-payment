@@ -282,6 +282,7 @@ type CheckoutInput struct {
 	PlanCode        string
 	Currency        string
 	ProviderPriceID string
+	Amount          Money  // the catalogue's price for the plan in the currency (zero for setup): providers that price a purchase themselves charge it
 	CustomerID      string // existing provider customer, or "" to create
 	BillingEmail    string
 	SuccessURL      string

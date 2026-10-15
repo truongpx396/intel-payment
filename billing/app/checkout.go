@@ -163,6 +163,13 @@ func (c *Checkout) Start(ctx context.Context, req ports.CheckoutRequest) (string
 	if err != nil {
 		return "", err
 	}
+	var amount domain.Money
+	if mode != "setup" {
+		var ok bool
+		if amount, ok = plan.Prices[req.Currency]; !ok {
+			return "", fmt.Errorf("%w: plan %s has no price in %s", domain.ErrUnknownPrice, plan.Code, req.Currency)
+		}
+	}
 	provider, ok := c.d.Providers[acct.Provider]
 	if !ok {
 		return "", fmt.Errorf("%w: no adapter for provider %s", domain.ErrUnknownAccount, acct.Provider)
@@ -172,7 +179,7 @@ func (c *Checkout) Start(ctx context.Context, req ports.CheckoutRequest) (string
 	if err != nil {
 		return "", err
 	}
-	in := ports.CheckoutInput{Scope: scope, Mode: mode, PlanCode: plan.Code, Currency: req.Currency, ProviderPriceID: priceID, CustomerID: customerID,
+	in := ports.CheckoutInput{Scope: scope, Mode: mode, PlanCode: plan.Code, Currency: req.Currency, ProviderPriceID: priceID, Amount: amount, CustomerID: customerID,
 		BillingEmail: req.BillingEmail, SuccessURL: req.SuccessURL, CancelURL: req.CancelURL, IdemKey: req.IdemKey,
 		// Correlation only, echoed back by the provider; the webhook never trusts it (invariant 4).
 		Metadata: map[string]string{"realm": string(scope.Realm), "scope_kind": scope.Kind, "scope_id": scope.ID, "plan": plan.Code}}
