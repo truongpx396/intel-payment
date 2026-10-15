@@ -754,13 +754,71 @@ as the product: Polar honours them for a product whose price is set by the calle
 unresolvable secret is a misconfiguration (never an invalid signature), and an access token is scrubbed from every
 error. The event bodies the tests use are built from the documentation, not captured: a sandbox rehearsal is still owed.
 
+### The PayPal adapter
+
+`billing/adapters/driven/paypal` speaks PayPal's REST API directly (a few JSON calls); an account in `live` mode is
+served by `api-m.paypal.com` and one in `test` mode by `api-m.sandbox.paypal.com`, and any other mode is refused before a
+call is made. An account's `SecretRef` resolves to `client_id:client_secret` and its `WebhookSecretRef` to the **id of the
+webhook** as configured in PayPal's developer portal, which PayPal needs to verify a delivery. The access token is fetched
+when needed, kept until a minute before it expires, replaced once (never in a loop) if PayPal withdraws it, and never
+appears in an error, nor does the client secret.
+
+**Verification is PayPal's, by a call** (`POST /v1/notifications/verify-webhook-signature`): PayPal signs with a certificate
+the adapter never sees, so the five `PAYPAL-*` headers, the webhook id and the event are sent and PayPal answers
+`SUCCESS` or not. Nothing is read out of the body until it does. **The event reaches PayPal byte for byte** — PayPal checks
+the signature of exactly what it sent — spliced into the request rather than decoded and encoded again; and so it is sent
+**only if it is exactly one JSON value**, because anything else could carry fields of its own into the request (a
+`webhook_id` of the sender's choosing, so that PayPal vouches for an event it signed for the sender's own webhook). A
+delivery with a header missing, or a transmission time that is not a time or is outside the tolerance **measured from when
+the delivery arrived** (`ports.ReceivedAt`: a delivery parked through an outage is verified as of its arrival), is refused
+without a call, not even for a token. A verdict other than `SUCCESS`, and a request PayPal rejects (400, 422), are
+`ErrInvalidSignature`. **Everything else — PayPal down, slow or rate-limiting, a token it refuses, a cancelled context — is
+`ErrVerificationUnavailable`**: the delivery is neither rejected (the provider was told `202` and will not resend it) nor
+trusted, and the ingress parks it with its raw body. A reference that does not resolve, or credentials that are not
+`client_id:client_secret`, are our misconfiguration and neither.
+
+**A capture carries neither the customer nor the product**, so the order or subscription is made with a `custom_id` of
+`<customer>~<product>` (the customer being what `EnsureCustomer` made: PayPal has no customer object, so it is an opaque id
+made from the key, the same for the same key and carrying nothing of the scope) and a payment whose `custom_id` is not of
+that form — a sale of the PayPal account's that this service did not make — is **ignored and grants nothing**. A payment is
+keyed on the **capture** (`PAYMENT.CAPTURE.COMPLETED`; `DENIED` and `DECLINED` are failures); a subscription's cycle is a
+`PAYMENT.SALE.COMPLETED`, which names only its subscription, so the subscription is read from PayPal for its customer and its
+plan — and if PayPal cannot be asked, the delivery is parked, not guessed at. **A refund is the total refunded from the
+capture to date** (`seller_payable_breakdown.total_refunded_amount`), against the capture its `up` link names. **Every phase of
+a dispute shares one id per transaction** (`dp:<transaction>`), because PayPal's own dispute id is on only some of the events
+of one dispute: `CUSTOMER.DISPUTE.CREATED` opens it, `PAYMENT.CAPTURE.REVERSED` is the funds withdrawn, and
+`CUSTOMER.DISPUTE.RESOLVED` closes it won or lost by PayPal's `outcome_code` — an outcome the adapter has not been told how to
+settle is an error, never a guess. Subscription events update or end it (`CANCELLED`, `EXPIRED`); `PAYMENT.FAILED` is a
+failed payment of the subscription. An approved order is ignored: a checkout return never fulfils. Amounts are decimal
+strings, parsed without floats in the currency's own exponent (`HUF`, `JPY` and `TWD` have none) and held by two fuzz targets
+to arbitrary-precision arithmetic.
+
+**A payment checkout is an order with `intent: CAPTURE` and `processing_instruction: ORDER_COMPLETE_ON_PAYMENT_APPROVAL`**,
+so PayPal captures when the buyer approves and no call of ours sits between approval and payment; without it a buyer could
+approve and never be charged. A subscription checkout is a billing plan the buyer approves. Both are idempotent on
+`PayPal-Request-Id`. **What PayPal cannot do for a server, it says with `domain.ErrUnsupported` and does not call PayPal:** a
+checkout that only saves a payment method (mode `setup`) and `ChargeSaved` (so auto top-up is unavailable on a PayPal
+account), a customer portal (PayPal has none), cancelling at the period's end (PayPal cancels at once), and changing a plan
+(PayPal's revision needs the buyer's approval at a link the port has no way to hand back). A PayPal subscription is
+cancelled by the buyer at PayPal, which arrives as `BILLING.SUBSCRIPTION.CANCELLED`.
+
+**Known limits.** A refund of a subscription's payment arrives as `PAYMENT.SALE.REFUNDED`, which carries no cumulative
+total; it is ignored, not guessed, and an operator reverses those credits. A dispute names a transaction and not a
+customer, so a dispute over a sale this service did not make is retried until it is dead. **What the tests cannot show:** the
+fake PayPal signs with a private scheme, so they show that the adapter forwards a delivery faithfully and obeys the verdict,
+not that PayPal's cryptography holds; and the event bodies are built from the documentation, not captured — the shape of
+`PAYMENT.CAPTURE.REVERSED`, the presence of `total_refunded_amount` on every refund, and whether a wallet order is captured
+on approval are exactly what a sandbox rehearsal before the first real order must confirm. If a wallet order is not
+captured on approval, nothing is charged and nothing is granted: the failure is safe, and visible as orders approved and never
+paid.
+
 ### Per-provider notes
 
 | Provider | Verification | Notable events | Gotcha |
 |---|---|---|---|
 | **Stripe** | `Stripe-Signature`: HMAC-SHA256 over `timestamp.payload`, constant-time, with a tolerance window | `invoice.paid`, `checkout.session.completed`, `invoice.payment_failed`, `customer.subscription.updated\|deleted`, `charge.refunded` (`amount_refunded` is cumulative), `charge.dispute.created\|funds_withdrawn\|funds_reinstated\|closed` | `invoice.paid` **and** `checkout.session.completed` can both arrive for one purchase: key the grant on the **payment/invoice id**, never the session. Deliveries are unordered — hence `FetchSubscription` |
 | **Polar** | Standard Webhooks: HMAC-SHA256 over `webhook-id.webhook-timestamp.body` (either of the secret's two keys), constant-time, with a tolerance window | `order.paid`, `order.created`, `order.refunded`, `order.updated`, `subscription.*` | the same order is named by `order.created`, `order.paid` and `order.updated` — key the grant on the **order id**; `refund.created` and `benefit_grant.*` are ignored, and `refunded_amount` is before tax |
-| **PayPal** | **not a local HMAC** — a call to `verify-webhook-signature` with the transmission headers and `webhook_id` | `PAYMENT.CAPTURE.COMPLETED\|REFUNDED\|REVERSED`, `BILLING.SUBSCRIPTION.*`, `CUSTOMER.DISPUTE.*` | verification does I/O: a PayPal outage means deliveries can be neither verified nor rejected, so they are **parked** with their raw body and retried — never processed optimistically, never dropped |
+| **PayPal** | **not a local HMAC** — a call to `verify-webhook-signature` with the transmission headers and `webhook_id`; the event is sent byte for byte and only if it is one JSON value | `PAYMENT.CAPTURE.COMPLETED\|REFUNDED\|REVERSED`, `PAYMENT.SALE.COMPLETED`, `BILLING.SUBSCRIPTION.*`, `CUSTOMER.DISPUTE.*` | verification does I/O: a PayPal outage means deliveries can be neither verified nor rejected, so they are **parked** with their raw body and retried — never processed optimistically, never dropped |
 
 ---
 
