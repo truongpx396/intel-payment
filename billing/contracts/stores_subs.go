@@ -97,7 +97,7 @@ func SubsCases() []StoreCase[SubsFactory] {
 					{subOf(sc, "sub-p", domain.Canceled, TeamCode), us(2 * time.Minute)}, // the same instant: the more final state wins
 				}
 			}
-			rng := rand.New(rand.NewPCG(7, 11))
+			rng := rand.New(rand.NewPCG(7, 11)) //nolint:gosec // a seeded shuffle of test events, not a secret
 			for n := range 12 {
 				sc := scope(100 + n)
 				evs := build(sc)

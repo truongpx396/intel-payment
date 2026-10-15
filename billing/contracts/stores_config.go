@@ -121,7 +121,7 @@ func CatalogCases() []StoreCase[CatalogFactory] {
 			for _, w := range WorldPlans() {
 				if w.Plan.Code == ProCode {
 					flag, quota, text := true, int64(-1), "gold"
-					w.Plan.Entitlements = []domain.Entitlement{{Key: "sso", Kind: "flag", Bool: &flag}, {Key: "seats", Kind: "quota", Int: &quota}, {Key: "support", Kind: "enum", Text: &text}}
+					w.Plan.Entitlements = []domain.Entitlement{{Key: "seats", Kind: "quota", Int: &quota}, {Key: "sso", Kind: "flag", Bool: &flag}, {Key: "support", Kind: "enum", Text: &text}} // by key
 					w.Plan.Prices["EUR"] = domain.Money{MinorUnits: 1800, Currency: "EUR"}
 					proWant = w.Plan
 				}
@@ -250,7 +250,7 @@ func AccountsCases() []StoreCase[AccountsFactory] {
 	return []StoreCase[AccountsFactory]{
 		{"an account round-trips every field, and an unknown one is not found", func(t testing.TB, mk AccountsFactory) {
 			acc, seed := mk(t)
-			want := domain.ProviderAccount{ID: "stripe-live", Provider: "stripe", Realms: []domain.Realm{"acme", "default"}, Mode: "live",
+			want := domain.ProviderAccount{ID: "stripe-live", Provider: "stripe", Realms: []domain.Realm{"acme", "default"}, Mode: "live", //nolint:gosec // references (env:NAME), never secrets
 				SecretRef: "env:STRIPE_SECRET_KEY", WebhookSecretRef: "env:STRIPE_WEBHOOK_SECRET", Active: true}
 			seed(want)
 			got, ok, err := acc.Account(Ctx(), "stripe-live")
@@ -264,7 +264,7 @@ func AccountsCases() []StoreCase[AccountsFactory] {
 		{"ForRealm is the active accounts that serve the realm, by id", func(t testing.TB, mk AccountsFactory) {
 			acc, seed := mk(t)
 			mkAcct := func(id string, active bool, realms ...domain.Realm) domain.ProviderAccount {
-				return domain.ProviderAccount{ID: id, Provider: "stripe", Realms: realms, Mode: "live", SecretRef: "env:S", WebhookSecretRef: "env:W", Active: active}
+				return domain.ProviderAccount{ID: id, Provider: "stripe", Realms: realms, Mode: "live", SecretRef: "env:REF_A", WebhookSecretRef: "env:REF_B", Active: active} //nolint:gosec // references, never secrets
 			}
 			seed(mkAcct("b-both", true, "default", "acme"))
 			seed(mkAcct("a-default", true, "default"))

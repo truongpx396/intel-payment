@@ -14,7 +14,7 @@ import (
 
 func TestMemoryInboxHonoursTheInboxContract(t *testing.T) {
 	t.Parallel()
-	contracts.InboxContract(t, func(t testing.TB, clock *mcontracts.FakeClock, maxAttempts int) ports.Inbox {
+	contracts.InboxContract(t, func(_ testing.TB, clock *mcontracts.FakeClock, maxAttempts int) ports.Inbox {
 		in := contracts.NewMemInbox(clock, &contracts.CallLog{})
 		in.MaxAttempts = maxAttempts
 		return in
