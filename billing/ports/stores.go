@@ -84,6 +84,36 @@ type Inbox interface {
 	Purge(ctx context.Context, olderThan time.Time) (int, error)
 }
 
+// RechargeClaim is a slot to charge a saved method in.
+type RechargeClaim struct {
+	Day     string // the UTC day, 2006-01-02
+	N       int    // this day's nth charge, 1-based
+	Resumed bool   // the slot was already claimed and not settled: a duplicate trigger, which must reuse it
+}
+
+// RechargeRefusal says why no slot was claimed.
+type RechargeRefusal string
+
+// The refusals; the zero value means a slot was claimed.
+const (
+	RechargeOK        RechargeRefusal = ""
+	RechargeDisabled  RechargeRefusal = "disabled"
+	RechargeMaxPerDay RechargeRefusal = "max_per_day"
+)
+
+// AutoRecharges holds each scope's standing instruction to top up, and bounds what it may do.
+type AutoRecharges interface {
+	Get(ctx context.Context, s domain.Scope) (domain.AutoRecharge, bool, error)
+	Put(ctx context.Context, a domain.AutoRecharge) error
+	// Claim reserves the next charge slot, atomically: at most MaxPerDay distinct slots per UTC day however many
+	// times a trigger fires, and while one is in flight (claimed, not settled, younger than staleAfter) another
+	// claim RESUMES it — so a duplicated trigger names the same idempotency key and the provider charges once.
+	Claim(ctx context.Context, s domain.Scope, now time.Time, staleAfter time.Duration) (RechargeClaim, RechargeRefusal, error)
+	// Settle ends the in-flight slot: a good charge clears the failure count; a failed one adds one, and the third
+	// in a row disables the instruction with the reason recorded. It reports whether this settling disabled it.
+	Settle(ctx context.Context, s domain.Scope, ok bool, reason string, now time.Time) (disabled bool, err error)
+}
+
 // Payments are the fiat transactions. A payment is NOT a ledger row; its IdemKey joins the two.
 type Payments interface {
 	Get(ctx context.Context, account, providerPaymentID string) (domain.Payment, bool, error)

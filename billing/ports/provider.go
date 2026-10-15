@@ -13,6 +13,11 @@ import (
 type PaymentProvider interface {
 	Name() domain.Provider
 
+	// EnsureCustomer creates the provider's customer for a scope — once, idempotent on in.IdemKey — and returns its id.
+	// It is called BEFORE a checkout, so the mapping from provider customer to scope exists before any payment can
+	// arrive: a webhook learns whom it is about only from our own customer records, never from metadata.
+	EnsureCustomer(ctx context.Context, acct domain.ProviderAccount, in CustomerInput) (providerCustomerID string, err error)
+
 	// CreateCheckout starts a hosted checkout and returns a URL to hand off to. Mode "payment" and
 	// "subscription" sell a plan; mode "setup" only saves a payment method (for auto top-up). It MUST NOT grant
 	// anything: fulfilment arrives later on a verified webhook (invariant 2).
@@ -63,6 +68,13 @@ type CheckoutInput struct {
 	Metadata        map[string]string // echoed back; correlation ONLY, never authority (invariant 4)
 }
 
+// CustomerInput is a provider customer to create for a scope.
+type CustomerInput struct {
+	Scope        domain.Scope
+	BillingEmail string
+	IdemKey      string // customer:<account>:<scope tag> — two first checkouts at once create one customer
+}
+
 // OffSessionInput is a charge of a saved payment method.
 type OffSessionInput struct {
 	CustomerID       string
@@ -83,6 +95,8 @@ type Accounts interface {
 	// Account returns one account. found=false for an unknown id; the caller decides whether an inactive one
 	// is also a 404.
 	Account(ctx context.Context, id string) (domain.ProviderAccount, bool, error)
+	// ForRealm lists the active accounts that serve a realm, by id.
+	ForRealm(ctx context.Context, realm domain.Realm) ([]domain.ProviderAccount, error)
 }
 
 // Providers resolves a provider adapter by name.

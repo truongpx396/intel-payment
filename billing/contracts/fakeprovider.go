@@ -80,6 +80,8 @@ type FakeProvider struct {
 	mu          sync.Mutex
 	subs        map[string]fetchedSub
 	checkouts   []ports.CheckoutInput
+	customers   map[string]string // idem key → provider customer id
+	ensureCalls int
 	charges     map[string]string // idem key → provider payment id
 	chargeCalls []ports.OffSessionInput
 	changes     []string
@@ -95,7 +97,7 @@ type fetchedSub struct {
 // NewFakeProvider serves the accounts given, each with a secret of its own.
 func NewFakeProvider(name domain.Provider, clock mports.Clock, log *CallLog, accts ...domain.ProviderAccount) *FakeProvider {
 	p := &FakeProvider{Tolerance: 5 * time.Minute, name: name, clock: clock, log: log, secrets: map[string]string{},
-		subs: map[string]fetchedSub{}, charges: map[string]string{}}
+		subs: map[string]fetchedSub{}, charges: map[string]string{}, customers: map[string]string{}}
 	for _, a := range accts {
 		p.secrets[a.ID] = "whsec-" + a.ID
 	}
@@ -267,6 +269,34 @@ func (p *FakeProvider) normalize(acct domain.ProviderAccount, fe FakeEvent) doma
 		}
 	}
 	return e
+}
+
+// EnsureCustomer implements ports.PaymentProvider: idempotent on the key, as a provider's is.
+func (p *FakeProvider) EnsureCustomer(_ context.Context, _ domain.ProviderAccount, in ports.CustomerInput) (string, error) {
+	p.log.Add("provider.EnsureCustomer")
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.ensureCalls++
+	if id, ok := p.customers[in.IdemKey]; ok {
+		return id, nil
+	}
+	id := "cus_new_" + strconv.Itoa(len(p.customers)+1)
+	p.customers[in.IdemKey] = id
+	return id, nil
+}
+
+// EnsureCalls is how many times EnsureCustomer was called, retries included.
+func (p *FakeProvider) EnsureCalls() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.ensureCalls
+}
+
+// CustomersCreated is how many distinct customers the provider holds.
+func (p *FakeProvider) CustomersCreated() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.customers)
 }
 
 // CreateCheckout implements ports.PaymentProvider. It returns a URL and nothing else: fulfilment is the webhook's.
