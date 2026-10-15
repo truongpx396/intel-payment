@@ -129,6 +129,11 @@ func ProviderCases() []ProviderCase {
 				in := fx.Checkout()
 				in.Mode = mode
 				url, err := p.CreateCheckout(Ctx(), acct, in)
+				// Selling a plan is what every provider does. Saving a method for later is not: a provider that cannot says
+				// so with the typed error — never a stub's ErrNotImplemented, never a page that sells something else.
+				if mode == "setup" && errors.Is(err, domain.ErrUnsupported) {
+					continue
+				}
 				if err != nil {
 					t.Fatalf("mode %s: %v", mode, err)
 				}
