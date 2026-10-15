@@ -164,7 +164,7 @@ func (s *AutoRecharges) Claim(ctx context.Context, sc domain.Scope, now time.Tim
 
 // Settle implements ports.AutoRecharges: the domain's Settle, applied under the instruction's row lock. When it switches
 // the instruction off, its balance watch goes with it.
-func (s *AutoRecharges) Settle(ctx context.Context, sc domain.Scope, ok bool, reason string, now time.Time) (bool, error) {
+func (s *AutoRecharges) Settle(ctx context.Context, sc domain.Scope, slot ports.RechargeClaim, ok bool, reason string, now time.Time) (bool, error) {
 	var disabled bool
 	err := inTx(ctx, s.pool, func(tx pgx.Tx) error {
 		cur, found, err := locked(ctx, tx, sc)
@@ -174,11 +174,11 @@ func (s *AutoRecharges) Settle(ctx context.Context, sc domain.Scope, ok bool, re
 		if !found {
 			return fmt.Errorf("%w: no auto top-up for %s", md.ErrNotFound, sc.Tag())
 		}
-		next, off := cur.Settle(ok, reason)
+		next, off := cur.Settle(slot, ok, reason)
 		disabled = off
-		if _, err := tx.Exec(ctx, `UPDATE auto_recharge SET enabled = $4, consecutive_failures = $5, disabled_reason = $6, inflight_n = 0, inflight_since = NULL,
-				updated_at = $7 WHERE realm = $1 AND scope_kind = $2 AND scope_id = $3`,
-			realmOf(sc), sc.Kind, sc.ID, next.Enabled, next.ConsecutiveFailed, nilIfEmpty(next.DisabledReason), utc(now)); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE auto_recharge SET enabled = $4, consecutive_failures = $5, disabled_reason = $6, inflight_n = $7, inflight_since = $8,
+				updated_at = $9 WHERE realm = $1 AND scope_kind = $2 AND scope_id = $3`,
+			realmOf(sc), sc.Kind, sc.ID, next.Enabled, next.ConsecutiveFailed, nilIfEmpty(next.DisabledReason), next.InflightN, utcPtr(next.InflightSince), utc(now)); err != nil {
 			return fmt.Errorf("postgres: settle the slot of %s: %w", sc.Tag(), mapErr(err))
 		}
 		if off {

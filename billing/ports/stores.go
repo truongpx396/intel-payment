@@ -111,9 +111,11 @@ type AutoRecharges interface {
 	// times a trigger fires, and while one is in flight (claimed, not settled, younger than staleAfter) another
 	// claim RESUMES it — so a duplicated trigger names the same idempotency key and the provider charges once.
 	Claim(ctx context.Context, s domain.Scope, now time.Time, staleAfter time.Duration) (RechargeClaim, RechargeRefusal, error)
-	// Settle ends the in-flight slot: a good charge clears the failure count; a failed one adds one, and the third
-	// in a row disables the instruction with the reason recorded. It reports whether this settling disabled it.
-	Settle(ctx context.Context, s domain.Scope, ok bool, reason string, now time.Time) (disabled bool, err error)
+	// Settle reports the outcome of ONE slot. The slot in flight is released only if it is the slot named — a late
+	// webhook about slot one must not release slot two — and the outcome counts either way: a good charge clears the
+	// failure count; a failed one adds one, and the third in a row disables the instruction with the reason recorded.
+	// It reports whether this settling disabled it.
+	Settle(ctx context.Context, s domain.Scope, slot RechargeClaim, ok bool, reason string, now time.Time) (disabled bool, err error)
 }
 
 // Payments are the fiat transactions. A payment is NOT a ledger row; its IdemKey joins the two.
