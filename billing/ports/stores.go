@@ -86,21 +86,18 @@ type Inbox interface {
 	Purge(ctx context.Context, olderThan time.Time) (int, error)
 }
 
-// RechargeClaim is a slot to charge a saved method in.
-type RechargeClaim struct {
-	Day     string // the UTC day, 2006-01-02
-	N       int    // this day's nth charge, 1-based
-	Resumed bool   // the slot was already claimed and not settled: a duplicate trigger, which must reuse it
-}
-
-// RechargeRefusal says why no slot was claimed.
-type RechargeRefusal string
+// RechargeClaim, RechargeRefusal and the refusals are the domain's: the rules of a slot are pure and live there, so every
+// store applies the same ones.
+type (
+	RechargeClaim   = domain.RechargeClaim
+	RechargeRefusal = domain.RechargeRefusal
+)
 
 // The refusals; the zero value means a slot was claimed.
 const (
-	RechargeOK        RechargeRefusal = ""
-	RechargeDisabled  RechargeRefusal = "disabled"
-	RechargeMaxPerDay RechargeRefusal = "max_per_day"
+	RechargeOK        = domain.RechargeOK
+	RechargeDisabled  = domain.RechargeDisabled
+	RechargeMaxPerDay = domain.RechargeMaxPerDay
 )
 
 // AutoRecharges holds each scope's standing instruction to top up, and bounds what it may do.

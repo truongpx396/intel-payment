@@ -695,6 +695,19 @@ billing owns what it triggers), and the recharge handler:
 3. does **nothing else**: credits arrive when the `payment_succeeded` webhook is processed, like any
    purchase, with `kind = auto_recharge`.
 
+The bound on step 1 is a pure rule, `domain.AutoRecharge.Claim`, which every store applies and a fuzz target holds to
+its promises. A day is the UTC day, and it never goes back: a clock that steps back across midnight keeps counting the
+later day, so it cannot hand out a day's charges twice. A day hands out at most `max_per_day` slots, numbered 1, 2, 3…, and
+the key of a slot (`domain.RechargeKey`, read from the right so it is unambiguous however many colons a scope id has) is
+what the provider de-duplicates on. While a slot is in flight and younger than the staleness window, a claim **resumes**
+it — the same slot, so the same key, and the provider charges once however many replicas see the trigger — and resuming
+costs nothing, so it is allowed at the maximum. A slot claimed and never settled is replaced once it is stale, but it was
+spent and still counts, so abandoning slots cannot get round the maximum. A new UTC day starts from slot 1 and drops
+whatever was in flight on the day before. Settling a slot clears it: a good charge clears the count of failures, a failed
+one adds one, and **the third in a row switches the instruction off** with the reason recorded (a default if the provider
+gave none, so the customer can always be told) and reports that this settling did it, so the news is made once. Nothing
+switches an instruction back on but its owner writing a new one.
+
 Three consecutive failures disable the row (`disabled_reason`) and emit `billing.payment.<tag>`
 with `failed`, so the host can ask the customer to update their card. The saved method is set up
 through `CreateCheckout` in `setup` mode or the provider portal; this service stores only the
