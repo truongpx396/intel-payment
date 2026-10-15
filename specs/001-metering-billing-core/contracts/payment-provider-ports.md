@@ -460,6 +460,25 @@ type WebhookProcessor interface {
 
 ---
 
+## Checkout
+
+`Checkout.Start` sells what the catalogue has, at the catalogue's price, and nothing else: the request names a
+plan code and a currency, never an amount. It resolves the provider price for one account and currency (and
+verifies that what came back is the plan asked for, live, in the realm), maps the customer to its scope
+**before** the buyer reaches the provider — `PaymentProvider.EnsureCustomer` creates the provider's customer
+once, idempotent on `customer:<account>:<scope tag>`, `Customers.Upsert` keeps the first writer's id, and the
+checkout reads the winner back — runs the `TaxStrategy` (whose failure fails the checkout closed), and only then
+asks the provider for a hosted page. The webhook for the payment that follows can therefore name a customer we
+know. Return URLs must be `https` pages on a configured host (host as the URL spells it, so a port is part
+of it); credentials in a URL and look-alike hosts are refused. The mode follows the plan (`payment` for a
+pack, `subscription` for a recurring plan, `setup` for saving a method and selling nothing). `Checkout` is
+given no `Meter`: it cannot grant.
+
+`Checkout.Fulfilment` is the server's report on the scope's latest payment — **none** (no recent payment),
+**processing** (pending), **failed** (with the provider's reason), **granted** (what the books were given) —
+read from the record the processor writes, within a window (30 minutes) of the payment beginning. It is the only
+sanctioned way for a UI to learn that credits arrived.
+
 ## Webhook processing
 
 ### Stage 1 — ingress (`paymentd`, synchronous, provider-facing)

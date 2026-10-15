@@ -262,17 +262,35 @@ func NewMemInbox(clock mports.Clock, log *CallLog) *MemInbox {
 
 func inboxKey(account, eventID string) string { return account + "|" + eventID }
 
-// leaseGate holds the first n callers of Lease until all n have arrived, once.
+// leaseGate holds the first n callers until all n have arrived, once.
 type leaseGate struct {
 	n       int32
 	arrived atomic.Int32
 	open    chan struct{}
 }
 
+func newGate(n int) *leaseGate {
+	return &leaseGate{n: int32(n), open: make(chan struct{})} //nolint:gosec // n is a handful of goroutines in a test
+}
+
+// wait blocks until n callers have arrived or the timeout passes, and reports whether they all did. A caller that
+// is alone because the code under test serializes its callers is released by the timeout, not wedged.
+func (g *leaseGate) wait(timeout time.Duration) bool {
+	if g.arrived.Add(1) == g.n {
+		close(g.open)
+	}
+	select {
+	case <-g.open:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
 // SyncLeases makes the next n calls to Lease rendezvous before any of them proceeds, so a test of concurrent
 // processors does not depend on one finishing before another starts. Set it before the callers run.
 func (m *MemInbox) SyncLeases(n int) {
-	m.gate = &leaseGate{n: int32(n), open: make(chan struct{})} //nolint:gosec // n is a handful of goroutines in a test
+	m.gate = newGate(n)
 }
 
 // FailPersist makes the next Persists fail with err; nil clears it.
@@ -350,15 +368,8 @@ func (m *MemInbox) Lease(_ context.Context, n int, ttl time.Duration) ([]ports.L
 	out := m.leaseLocked(n, ttl)
 	// With SyncLeases, nobody goes on until every caller has taken its lease: the lease alone decides who has
 	// the event, not who got there first.
-	if g := m.gate; g != nil {
-		if g.arrived.Add(1) == g.n {
-			close(g.open)
-		}
-		select {
-		case <-g.open:
-		case <-time.After(10 * time.Second):
-			return nil, errors.New("memory inbox: the lease rendezvous never completed")
-		}
+	if g := m.gate; g != nil && !g.wait(10*time.Second) {
+		return nil, errors.New("memory inbox: the lease rendezvous never completed")
 	}
 	return out, nil
 }
@@ -858,6 +869,7 @@ func (m *MemSubs) Put(s domain.Sub) {
 type MemCustomers struct {
 	// DropUpserts makes Upsert report success and keep nothing: a mapping that is lost before the payment arrives.
 	DropUpserts bool
+	gate        *leaseGate
 
 	log  *CallLog
 	mu   sync.Mutex
@@ -867,17 +879,30 @@ type MemCustomers struct {
 // NewMemCustomers is an empty store.
 func NewMemCustomers(log *CallLog) *MemCustomers { return &MemCustomers{log: log} }
 
+// SyncGets makes the first n calls to Get rendezvous after they have read, so n first checkouts all find no customer
+// before any of them creates one. A caller that is alone because the code serializes its callers is released after
+// half a second rather than wedged. Set it before the callers run.
+func (m *MemCustomers) SyncGets(n int) { m.gate = newGate(n) }
+
 // Get implements ports.Customers.
 func (m *MemCustomers) Get(_ context.Context, s domain.Scope, account string) (domain.Customer, bool, error) {
 	m.log.Add("customers.Get")
+	c, ok := m.get(s, account)
+	if g := m.gate; g != nil {
+		g.wait(500 * time.Millisecond)
+	}
+	return c, ok, nil
+}
+
+func (m *MemCustomers) get(s domain.Scope, account string) (domain.Customer, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, c := range m.rows {
 		if c.Scope.Normalized() == s.Normalized() && c.Account == account {
-			return c, true, nil
+			return c, true
 		}
 	}
-	return domain.Customer{}, false, nil
+	return domain.Customer{}, false
 }
 
 // Upsert implements ports.Customers.
