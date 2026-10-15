@@ -54,9 +54,14 @@ func claim(t testing.TB, s ports.AutoRecharges, sc md.Scope, at time.Time) (port
 	return c, refusal
 }
 
+// settle reports the outcome of the slot in flight, which is what a handler does with the slot it has just claimed.
 func settle(t testing.TB, s ports.AutoRecharges, sc md.Scope, ok bool, reason string, at time.Time) bool {
 	t.Helper()
-	disabled, err := s.Settle(Ctx(), sc, ok, reason, at)
+	cur, found, err := s.Get(Ctx(), sc)
+	if err != nil || !found {
+		t.Fatalf("Get(%s) = %v, %v", sc.Tag(), found, err)
+	}
+	disabled, err := s.Settle(Ctx(), sc, ports.RechargeClaim{Day: cur.Day, N: cur.InflightN}, ok, reason, at)
 	if err != nil {
 		t.Fatalf("Settle(%s): %v", sc.Tag(), err)
 	}
@@ -236,7 +241,7 @@ func AutoRechargeCases() []StoreCase[AutoRechargesFactory] {
 							mu.Lock()
 							slots[c.N]++
 							mu.Unlock()
-							if _, err := s.Settle(Ctx(), sc, true, "", rechargeDay); err != nil {
+							if _, err := s.Settle(Ctx(), sc, c, true, "", rechargeDay); err != nil {
 								t.Errorf("settle: %v", err)
 							}
 						}
@@ -295,6 +300,35 @@ func AutoRechargeCases() []StoreCase[AutoRechargesFactory] {
 			}
 			if got = getRecharge(t, s, rechargeScope(2)); !got.Enabled || got.ConsecutiveFailed != 2 {
 				t.Fatalf("two failures, a success and two failures: %+v", got)
+			}
+		}},
+		{"a report names its slot: a late one counts but does not release the slot in flight", func(t testing.TB, mk AutoRechargesFactory) {
+			s := mk(t)
+			sc := rechargeScope(1)
+			a := rechargeFor(1)
+			a.MaxPerDay = 5
+			put(t, s, a)
+			one, _ := claim(t, s, sc, rechargeDay)
+			settle(t, s, sc, true, "", rechargeDay)
+			two, _ := claim(t, s, sc, rechargeDay.Add(time.Minute))
+			// Slot one's webhook arrives again, late, and the payment is reported failed.
+			if disabled, err := s.Settle(Ctx(), sc, one, false, "card_declined", rechargeDay); err != nil || disabled {
+				t.Fatalf("a late failure: disabled = %v, %v", disabled, err)
+			}
+			got := getRecharge(t, s, sc)
+			if got.InflightN != two.N || got.InflightSince == nil || got.ConsecutiveFailed != 1 {
+				t.Fatalf("instruction = %+v: a report of slot %d must count, and must leave slot %d in flight", got, one.N, two.N)
+			}
+			// A duplicate trigger still resumes slot two: it would otherwise charge a third time for one low balance.
+			if c, refusal := claim(t, s, sc, rechargeDay.Add(2*time.Minute)); refusal != ports.RechargeOK || c != (ports.RechargeClaim{Day: two.Day, N: two.N, Resumed: true}) {
+				t.Fatalf("a duplicate after a late report = %+v %q, want slot %d resumed (invariant 18)", c, refusal, two.N)
+			}
+			// Slot two's own report releases it.
+			if _, err := s.Settle(Ctx(), sc, two, true, "", rechargeDay); err != nil {
+				t.Fatal(err)
+			}
+			if got = getRecharge(t, s, sc); got.InflightN != 0 || got.ConsecutiveFailed != 0 {
+				t.Fatalf("after slot two's own report: %+v", got)
 			}
 		}},
 		{"a new UTC day starts again from slot one", func(t testing.TB, mk AutoRechargesFactory) {
@@ -379,7 +413,7 @@ func AutoRechargeCases() []StoreCase[AutoRechargesFactory] {
 		}},
 		{"settling a scope with no instruction is not found", func(t testing.TB, mk AutoRechargesFactory) {
 			s := mk(t)
-			if _, err := s.Settle(Ctx(), rechargeScope(9), true, "", rechargeDay); !errors.Is(err, md.ErrNotFound) {
+			if _, err := s.Settle(Ctx(), rechargeScope(9), ports.RechargeClaim{Day: "2026-03-01", N: 1}, true, "", rechargeDay); !errors.Is(err, md.ErrNotFound) {
 				t.Fatalf("err = %v", err)
 			}
 		}},
@@ -406,6 +440,8 @@ type MemAutoRecharges struct {
 	NeverDisables bool
 	// ForgetLedger makes Claim answer with a slot but not remember it: every trigger is the first.
 	ForgetLedger bool
+	// ReleasesAnySlot makes Settle release the slot in flight whichever slot the report names.
+	ReleasesAnySlot bool
 	// NeverStale makes Claim ignore how long a slot has been in flight: an abandoned one is resumed for ever.
 	NeverStale bool
 
@@ -493,7 +529,7 @@ func (m *MemAutoRecharges) claimRacy(s domain.Scope, now time.Time, staleAfter t
 }
 
 // Settle implements ports.AutoRecharges.
-func (m *MemAutoRecharges) Settle(_ context.Context, s domain.Scope, ok bool, reason string, _ time.Time) (bool, error) {
+func (m *MemAutoRecharges) Settle(_ context.Context, s domain.Scope, slot ports.RechargeClaim, ok bool, reason string, _ time.Time) (bool, error) {
 	m.log.Add("autorecharge.Settle")
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -501,7 +537,10 @@ func (m *MemAutoRecharges) Settle(_ context.Context, s domain.Scope, ok bool, re
 	if !found {
 		return false, fmt.Errorf("%w: no auto top-up for %s", md.ErrNotFound, s.Tag())
 	}
-	next, disabled := cur.Settle(ok, reason)
+	if m.ReleasesAnySlot {
+		slot = ports.RechargeClaim{Day: cur.Day, N: cur.InflightN}
+	}
+	next, disabled := cur.Settle(slot, ok, reason)
 	if m.NeverDisables && disabled {
 		next.Enabled, next.DisabledReason, disabled = true, "", false
 	}
