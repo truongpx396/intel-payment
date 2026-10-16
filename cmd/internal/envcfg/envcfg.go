@@ -270,3 +270,74 @@ func Private(addr string) bool {
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
 }
+
+// Payments is what the payment layer is told: the binaries share one reader, one set of names and one set of refusals.
+type Payments struct {
+	WebhookTolerance time.Duration // PAYMENT_WEBHOOK_TOLERANCE: how far a signature's timestamp may be from when the delivery arrived
+	DunningGrace     time.Duration // PAYMENT_DUNNING_GRACE_DAYS: how long entitlements hold after a failed payment
+	WebhookTick      time.Duration // PAYMENT_WEBHOOK_TICK_INTERVAL: how often the webhook inbox is worked
+	EventRetention   time.Duration // PAYMENT_PAYMENT_EVENT_RETENTION: how long a processed webhook event is kept
+}
+
+// The bounds of Payments, each with the reason it is there.
+const (
+	maxWebhookTolerance = time.Hour          // a wider window makes a captured delivery replayable for that long
+	maxWebhookTick      = time.Minute        // a customer who paid waits up to this long for credits
+	minEventRetention   = 7 * 24 * time.Hour // a provider redelivers for days; the inbox is what makes a redelivery a no-op
+	maxGraceDays        = 365
+)
+
+// Payments reads the payment layer's settings. An unusable value is reported, never replaced by a default nobody chose.
+func (r *Reader) Payments() Payments {
+	p := Payments{WebhookTolerance: 5 * time.Minute, DunningGrace: 7 * 24 * time.Hour, WebhookTick: 5 * time.Second, EventRetention: 90 * 24 * time.Hour}
+
+	before := len(r.errs)
+	r.PositiveDuration("PAYMENT_WEBHOOK_TOLERANCE", &p.WebhookTolerance, "a tolerance of nothing rejects every delivery")
+	if len(r.errs) == before && p.WebhookTolerance > maxWebhookTolerance {
+		r.Fail("PAYMENT_WEBHOOK_TOLERANCE", "must be at most 1h: a wider window makes a captured delivery replayable for that long")
+	}
+
+	if v := r.Str("PAYMENT_DUNNING_GRACE_DAYS"); v != "" {
+		var days int
+		before = len(r.errs)
+		r.Int("PAYMENT_DUNNING_GRACE_DAYS", &days)
+		switch {
+		case len(r.errs) > before:
+		case days < 1 || days > maxGraceDays:
+			r.Fail("PAYMENT_DUNNING_GRACE_DAYS", fmt.Sprintf("must be a whole number of days from 1 to %d, got %q", maxGraceDays, v))
+		default:
+			p.DunningGrace = time.Duration(days) * 24 * time.Hour
+		}
+	}
+
+	before = len(r.errs)
+	r.PositiveDuration("PAYMENT_WEBHOOK_TICK_INTERVAL", &p.WebhookTick, "an interval of nothing spins on an idle inbox")
+	if len(r.errs) == before && p.WebhookTick > maxWebhookTick {
+		r.Fail("PAYMENT_WEBHOOK_TICK_INTERVAL", "must be at most 1m: a customer who paid would wait that long for credits")
+	}
+
+	if v := r.Str("PAYMENT_PAYMENT_EVENT_RETENTION"); v != "" {
+		d, err := parseRetention(v)
+		switch {
+		case err != nil:
+			r.Fail("PAYMENT_PAYMENT_EVENT_RETENTION", fmt.Sprintf("must be a number of days like 90d or a duration like 2160h, got %q", v))
+		case d < minEventRetention:
+			r.Fail("PAYMENT_PAYMENT_EVENT_RETENTION", "must be at least 7d: it MUST exceed the longest provider replay window, and a provider redelivers for days")
+		default:
+			p.EventRetention = d
+		}
+	}
+	return p
+}
+
+// parseRetention reads "90d" (whole days) or any Go duration.
+func parseRetention(v string) (time.Duration, error) {
+	if days, ok := strings.CutSuffix(v, "d"); ok {
+		n, err := strconv.ParseUint(days, 10, 16)
+		if err != nil {
+			return 0, err
+		}
+		return time.Duration(n) * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(v)
+}
