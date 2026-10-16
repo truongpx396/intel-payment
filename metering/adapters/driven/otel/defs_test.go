@@ -82,7 +82,7 @@ func TestAHostsMetricsKeepTheirUnitAndKindWhenTheyAreRecorded(t *testing.T) {
 func TestAHostCannotRedefineOrRepeatAMetric(t *testing.T) {
 	t.Parallel()
 	for name, defs := range map[string][]ports.MetricDef{
-		"one of metering's":     {{Name: ports.Catalog[0].Name, Kind: ports.KindCounter, Unit: "1", Help: "mine now"}},
+		"one of metering's":     {ports.Catalog[0]}, // well formed in every other way: only the name is wrong
 		"the same name twice":   {hostDefs[0], hostDefs[0]},
 		"an unknown kind":       {{Name: "billing_x_total", Kind: "summary", Unit: "1", Help: "h"}},
 		"a name with no help":   {{Name: "billing_y_total", Kind: ports.KindCounter, Unit: "1"}},
@@ -98,5 +98,25 @@ func TestAHostCannotRedefineOrRepeatAMetric(t *testing.T) {
 				t.Fatalf("%s was accepted: the catalogue is what an operator writes alerts against, and it must not be ambiguous", name)
 			}
 		})
+	}
+}
+
+func TestEveryProblemWithTheDefinitionsIsReportedAtOnce(t *testing.T) {
+	t.Parallel()
+	_, _, err := otelmetrics.NewPrometheus(otelmetrics.WithDefs(
+		ports.MetricDef{Name: "billing_first_one", Kind: ports.KindCounter, Unit: "1", Help: "h"},
+		hostDefs[0],
+		ports.MetricDef{Name: "billing_second_one", Kind: ports.KindCounter, Unit: "1", Help: "h"},
+	))
+	if err == nil {
+		t.Fatal("two metrics that break the rules were accepted")
+	}
+	for _, name := range []string{"billing_first_one", "billing_second_one"} {
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("the error does not name %s, so the operator fixes one and finds the next at the next start: %v", name, err)
+		}
+	}
+	if strings.Contains(err.Error(), hostDefs[0].Name) {
+		t.Errorf("the error blames %s, which is well formed: %v", hostDefs[0].Name, err)
 	}
 }
