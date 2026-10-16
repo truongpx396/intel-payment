@@ -33,7 +33,11 @@ type Postgres struct {
 // Run starts the server and prepares a template database with every shipped migration applied.
 // Use it from a package's TestMain; Terminate when done.
 func Run(ctx context.Context) (*Postgres, error) {
+	// max_connections is raised from the default 100: the stack tests run a paymentd and a payment-worker per test, in
+	// parallel, and a worker alone holds a connection per shard it owns plus its batches'. The suite is sized by its tests, and
+	// "sorry, too many clients already" is the server running out, not anything under test.
 	ctr, err := postgres.Run(ctx, Image,
+		testcontainers.WithCmd("postgres", "-c", "max_connections=400"),
 		postgres.WithDatabase("postgres"), postgres.WithUsername("payment"), postgres.WithPassword("payment"),
 		postgres.BasicWaitStrategies())
 	if err != nil {
