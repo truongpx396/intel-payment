@@ -235,6 +235,11 @@ package ports // billing/ports
 type PaymentProvider interface {
 	Name() domain.Provider
 
+	// EnsureCustomer creates the provider's customer for a scope — once, idempotent on in.IdemKey — and returns its
+	// id. It runs BEFORE a checkout, so the mapping from provider customer to scope exists before any payment can
+	// arrive: a webhook learns whom it is about only from our own customer records, never from metadata.
+	EnsureCustomer(ctx context.Context, acct domain.ProviderAccount, in CustomerInput) (providerCustomerID string, err error)
+
 	// CreateCheckout starts a hosted checkout and returns a URL to hand off to. Mode "payment"
 	// and "subscription" sell a plan; mode "setup" only saves a payment method (for auto top-up).
 	// It MUST NOT grant anything: fulfilment arrives later on a verified webhook (principle 3).
@@ -285,6 +290,12 @@ type CheckoutInput struct {
 	Metadata        map[string]string // echoed back; correlation ONLY, never authority (invariant 4)
 }
 
+type CustomerInput struct {
+	Scope        domain.Scope
+	BillingEmail string
+	IdemKey      string // customer:<account>:<scope tag> — two first checkouts at once create one customer
+}
+
 type OffSessionInput struct {
 	CustomerID       string
 	PaymentMethodRef string
@@ -325,6 +336,13 @@ type TaxStrategy interface {
 
 There is no `compute_it_here` mode. Rate tables and filing obligations are a specialist product.
 
+`provider_managed` and `none` add nothing to the checkout and never call the host. `external_hook` calls the
+host's service once, before the checkout is created, with what is being sold; the service may annotate the
+checkout (a tax code, a calculation reference) but may not change what is sold — the scope, mode, plan,
+price, currency, customer, buyer, idempotency key and both redirects were resolved from the catalogue and the
+customer records, and a changed one is refused as invalid. A hook that fails fails the checkout closed: an
+unpriced tax is not a checkout. A deployment that names `external_hook` and supplies no service does not start.
+
 ---
 
 ## Stores
@@ -343,6 +361,7 @@ type Customers interface {
 // logged or cached beyond a call (invariant 10). Providers resolves an adapter by name.
 type Accounts interface {
 	Account(ctx context.Context, id string) (domain.ProviderAccount, bool, error)
+	ForRealm(ctx context.Context, realm domain.Realm) ([]domain.ProviderAccount, error) // active accounts that serve it, by id
 }
 type SecretResolver interface {
 	Resolve(ctx context.Context, ref string) (string, error)
@@ -399,7 +418,10 @@ type Payments interface {
 type Subs interface {
 	Get(ctx context.Context, s domain.Scope) (domain.Sub, bool, error)
 	// ApplyIfNewer writes the state only when it is newer than the stored one, by the total order of
-	// domain.Sub.Apply (invariant 15) — in one conditional statement, so concurrent appliers converge.
+	// domain.Sub.Apply (invariant 15). The store holds an exclusive lock on the subscription for the read, the
+	// decision and the write, so concurrent appliers converge on the newest state; the order is the domain's,
+	// not a second implementation in SQL. A second live subscription for a scope is ErrAlreadyExists (the event
+	// is retried until the first one ends); a plan the realm does not sell is ErrUnknownPrice.
 	ApplyIfNewer(ctx context.Context, sub domain.Sub, at time.Time) (applied bool, err error)
 	// DueForGraceExpiry lists past_due subscriptions whose grace window has ended and whose end has
 	// not been announced; MarkGraceLapsed records the announcement, only while it is still the grace
@@ -408,7 +430,35 @@ type Subs interface {
 	MarkGraceLapsed(ctx context.Context, sub domain.Sub, at time.Time) (bool, error)
 }
 
-// The two driving ports. Handle answers one provider delivery with a status; Tick leases the events
+// AutoRecharges holds each scope's standing instruction to top up and bounds it. Claim reserves the next
+// charge slot atomically: at most MaxPerDay distinct slots per UTC day however many times a trigger fires,
+// and while one is in flight another claim RESUMES it, so a duplicated trigger names the same idempotency
+// key and the provider charges once. Settle ends the slot: a good charge clears the failure count, a failed
+// one adds one, and the third in a row disables the instruction with the reason recorded.
+type AutoRecharges interface {
+	Get(ctx context.Context, s domain.Scope) (domain.AutoRecharge, bool, error)
+	Put(ctx context.Context, a domain.AutoRecharge) error
+	Claim(ctx context.Context, s domain.Scope, now time.Time, staleAfter time.Duration) (RechargeClaim, RechargeRefusal, error)
+	Settle(ctx context.Context, s domain.Scope, ok bool, reason string, now time.Time) (disabled bool, err error)
+}
+
+// The driving ports behind the host-facing routes. Checkout has no Meter: it cannot grant. Subscriptions never
+// writes status: it calls the provider and waits for the webhook (invariant 12). PlanChangeGuard is the
+// entitlement layer's answer to "would this take a quota below what the scope uses now" (FR-029).
+type Checkout interface {
+	Start(ctx context.Context, req CheckoutRequest) (redirectURL string, err error)
+	Portal(ctx context.Context, scope domain.Scope, account, returnURL string) (portalURL string, err error)
+	Fulfilment(ctx context.Context, scope domain.Scope) (Fulfilment, error) // none | processing | granted | failed
+}
+type Subscriptions interface {
+	Change(ctx context.Context, scope domain.Scope, planCode string) error
+	CancelAtPeriodEnd(ctx context.Context, scope domain.Scope) error
+}
+type PlanChangeGuard interface {
+	CheckChange(ctx context.Context, scope domain.Scope, from, to domain.Plan) error // domain.ErrBelowUsage when it cannot be made now
+}
+
+// The two driving ports of the webhook flow. Handle answers one provider delivery with a status; Tick leases the events
 // that are due, processes them, and retries parked deliveries — safe to run from many processors at once.
 type WebhookIngress interface {
 	Handle(ctx context.Context, provider, account string, body []byte, header http.Header) IngressResult
@@ -419,6 +469,54 @@ type WebhookProcessor interface {
 ```
 
 ---
+
+## Checkout
+
+`Checkout.Start` sells what the catalogue has, at the catalogue's price, and nothing else: the request names a
+plan code and a currency, never an amount. It resolves the provider price for one account and currency (and
+verifies that what came back is the plan asked for, live, in the realm), maps the customer to its scope
+**before** the buyer reaches the provider — `PaymentProvider.EnsureCustomer` creates the provider's customer
+once, idempotent on `customer:<account>:<scope tag>`, `Customers.Upsert` keeps the first writer's id, and the
+checkout reads the winner back — runs the `TaxStrategy` (whose failure fails the checkout closed), and only then
+asks the provider for a hosted page. The webhook for the payment that follows can therefore name a customer we
+know. Return URLs must be `https` pages on a configured host (host as the URL spells it, so a port is part
+of it); credentials in a URL and look-alike hosts are refused. The mode follows the plan (`payment` for a
+pack, `subscription` for a recurring plan, `setup` for saving a method and selling nothing). `Checkout` is
+given no `Meter`: it cannot grant.
+
+`Checkout.Fulfilment` is the server's report on the scope's latest payment — **none** (no recent payment),
+**processing** (pending), **failed** (with the provider's reason), **granted** (what the books were given) —
+read from the record the processor writes, within a window (30 minutes) of the payment beginning. It is the only
+sanctioned way for a UI to learn that credits arrived.
+
+### Plan changes and cancellation
+
+`Subscriptions.Change` moves a scope's live subscription to another recurring plan under the deployment's
+`PlanChangePolicy` (D11): `at_period_end` (default) asks the provider for the change when the paid period
+ends; `immediate_prorate` and `immediate_no_prorate` ask for it now, with that policy — proration is the
+provider's math, since it owns the invoice. A change that takes effect **now** is first put to the entitlement
+layer's `PlanChangeGuard`: one that would take a quota below what the scope uses is refused with
+`ErrBelowUsage`, and so is one the guard cannot answer (an outage denies; it never permits). One deferred to
+the period's end is allowed whatever the usage, because metering's ceilings answer for the new plan when it
+begins. The currency is the one of the subscription's latest invoice. A change to the plan the scope is on, to a
+one-time pack, to a plan nobody sells, or for a scope with no live subscription is refused before the provider is
+asked. Neither `Change` nor `CancelAtPeriodEnd` writes subscription state: the local status moves when the
+resulting webhook is processed (invariant 12).
+
+### Persistence
+
+The stores are PostgreSQL (`billing/adapters/driven/postgres`), and each is held to a conformance suite run against
+an in-memory twin as well, so the fakes the processor suites stand on cannot be kinder than the database.
+The guarantees are the database's: the `UNIQUE (provider_account, provider_event_id)` on `payment_events` is the
+replay guard; `CHECK`s keep a payment from refunding more than it cost, revoking or clawing back more than it
+granted; a unique partial index allows one live subscription per scope; and a transaction-scoped advisory lock on
+a payment's or a subscription's name is what makes `Payments.Update` and `Subs.ApplyIfNewer` exclusive — including
+the call that creates the row. `Inbox.Lease` takes one short transaction under a lock shared by every processor, so
+"this customer is free" and "this event is due" are decided one at a time. A provider customer maps to one scope
+and never moves (`Customers.Upsert` keeps the first writer's id and moves only the email). The catalogue is read
+on every call, with no cache: a price written a moment ago is sold now; a plan since retired is no longer sold,
+but `PlanForPrice` still recognizes it, so a customer who paid a minute before it was withdrawn gets what they
+bought. `rejected` is the status of a parked delivery that failed verification or turned out to be a duplicate.
 
 ## Webhook processing
 

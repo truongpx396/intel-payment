@@ -75,16 +75,22 @@ type FakeProvider struct {
 	defect  FakeDefect
 	secrets map[string]string // account id → webhook secret
 
-	down        atomic.Bool
-	wrongAcct   atomic.Bool
-	mu          sync.Mutex
-	subs        map[string]fetchedSub
-	checkouts   []ports.CheckoutInput
-	charges     map[string]string // idem key → provider payment id
-	chargeCalls []ports.OffSessionInput
-	changes     []string
-	cancels     []string
-	verifyCalls int
+	down         atomic.Bool
+	wrongAcct    atomic.Bool
+	mu           sync.Mutex
+	subs         map[string]fetchedSub
+	checkouts    []ports.CheckoutInput
+	customers    map[string]string // idem key → provider customer id
+	ensureCalls  int
+	failCheckout error
+	// NonIdempotentCustomers makes EnsureCustomer create a new customer on every call: a provider that ignores the
+	// key, so two first checkouts at once leave two customers and one of them unmapped.
+	NonIdempotentCustomers bool
+	charges                map[string]string // idem key → provider payment id
+	chargeCalls            []ports.OffSessionInput
+	changes                []string
+	cancels                []string
+	verifyCalls            int
 }
 
 type fetchedSub struct {
@@ -95,7 +101,7 @@ type fetchedSub struct {
 // NewFakeProvider serves the accounts given, each with a secret of its own.
 func NewFakeProvider(name domain.Provider, clock mports.Clock, log *CallLog, accts ...domain.ProviderAccount) *FakeProvider {
 	p := &FakeProvider{Tolerance: 5 * time.Minute, name: name, clock: clock, log: log, secrets: map[string]string{},
-		subs: map[string]fetchedSub{}, charges: map[string]string{}}
+		subs: map[string]fetchedSub{}, charges: map[string]string{}, customers: map[string]string{}}
 	for _, a := range accts {
 		p.secrets[a.ID] = "whsec-" + a.ID
 	}
@@ -269,12 +275,60 @@ func (p *FakeProvider) normalize(acct domain.ProviderAccount, fe FakeEvent) doma
 	return e
 }
 
+// EnsureCustomer implements ports.PaymentProvider: idempotent on the key, as a provider's is.
+func (p *FakeProvider) EnsureCustomer(_ context.Context, _ domain.ProviderAccount, in ports.CustomerInput) (string, error) {
+	p.log.Add("provider.EnsureCustomer")
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.ensureCalls++
+	if id, ok := p.customers[in.IdemKey]; ok && !p.NonIdempotentCustomers {
+		return id, nil
+	}
+	id := "cus_new_" + strconv.Itoa(p.ensureCalls)
+	p.customers[in.IdemKey+"#"+id] = id
+	if !p.NonIdempotentCustomers {
+		p.customers[in.IdemKey] = id
+	}
+	return id, nil
+}
+
+// EnsureCalls is how many times EnsureCustomer was called, retries included.
+func (p *FakeProvider) EnsureCalls() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.ensureCalls
+}
+
+// CustomersCreated is how many distinct customers the provider holds.
+func (p *FakeProvider) CustomersCreated() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	seen := map[string]bool{}
+	for _, id := range p.customers {
+		seen[id] = true
+	}
+	return len(seen)
+}
+
+// FailCheckout makes CreateCheckout fail with err; nil clears it.
+func (p *FakeProvider) FailCheckout(err error) {
+	p.mu.Lock()
+	p.failCheckout = err
+	p.mu.Unlock()
+}
+
 // CreateCheckout implements ports.PaymentProvider. It returns a URL and nothing else: fulfilment is the webhook's.
 func (p *FakeProvider) CreateCheckout(_ context.Context, acct domain.ProviderAccount, in ports.CheckoutInput) (string, error) {
 	p.log.Add("provider.CreateCheckout")
 	p.mu.Lock()
-	p.checkouts = append(p.checkouts, in)
+	err := p.failCheckout
+	if err == nil {
+		p.checkouts = append(p.checkouts, in)
+	}
 	p.mu.Unlock()
+	if err != nil {
+		return "", err
+	}
 	return "https://pay.fake.test/" + acct.ID + "/checkout/" + in.IdemKey, nil
 }
 

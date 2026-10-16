@@ -180,6 +180,21 @@ func (m *MemAccounts) Account(_ context.Context, id string) (domain.ProviderAcco
 	return a, ok, nil
 }
 
+// ForRealm implements ports.Accounts.
+func (m *MemAccounts) ForRealm(_ context.Context, realm domain.Realm) ([]domain.ProviderAccount, error) {
+	m.log.Add("accounts.ForRealm")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.ProviderAccount
+	for _, a := range m.accs {
+		if a.Serves(realm) {
+			out = append(out, a)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
 // ------------------------------------------------------------------- inbox --
 
 // Statuses of an inbox row, as payment_events has them, plus the one a rejected parked delivery ends in.
@@ -247,17 +262,35 @@ func NewMemInbox(clock mports.Clock, log *CallLog) *MemInbox {
 
 func inboxKey(account, eventID string) string { return account + "|" + eventID }
 
-// leaseGate holds the first n callers of Lease until all n have arrived, once.
+// leaseGate holds the first n callers until all n have arrived, once.
 type leaseGate struct {
 	n       int32
 	arrived atomic.Int32
 	open    chan struct{}
 }
 
+func newGate(n int) *leaseGate {
+	return &leaseGate{n: int32(n), open: make(chan struct{})} //nolint:gosec // n is a handful of goroutines in a test
+}
+
+// wait blocks until n callers have arrived or the timeout passes, and reports whether they all did. A caller that
+// is alone because the code under test serializes its callers is released by the timeout, not wedged.
+func (g *leaseGate) wait(timeout time.Duration) bool {
+	if g.arrived.Add(1) == g.n {
+		close(g.open)
+	}
+	select {
+	case <-g.open:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
 // SyncLeases makes the next n calls to Lease rendezvous before any of them proceeds, so a test of concurrent
 // processors does not depend on one finishing before another starts. Set it before the callers run.
 func (m *MemInbox) SyncLeases(n int) {
-	m.gate = &leaseGate{n: int32(n), open: make(chan struct{})} //nolint:gosec // n is a handful of goroutines in a test
+	m.gate = newGate(n)
 }
 
 // FailPersist makes the next Persists fail with err; nil clears it.
@@ -335,15 +368,8 @@ func (m *MemInbox) Lease(_ context.Context, n int, ttl time.Duration) ([]ports.L
 	out := m.leaseLocked(n, ttl)
 	// With SyncLeases, nobody goes on until every caller has taken its lease: the lease alone decides who has
 	// the event, not who got there first.
-	if g := m.gate; g != nil {
-		if g.arrived.Add(1) == g.n {
-			close(g.open)
-		}
-		select {
-		case <-g.open:
-		case <-time.After(10 * time.Second):
-			return nil, errors.New("memory inbox: the lease rendezvous never completed")
-		}
+	if g := m.gate; g != nil && !g.wait(10*time.Second) {
+		return nil, errors.New("memory inbox: the lease rendezvous never completed")
 	}
 	return out, nil
 }
@@ -636,9 +662,28 @@ func (m *MemPayments) Get(_ context.Context, account, id string) (domain.Payment
 	return p, ok, nil
 }
 
+// checkPayment is the database's CHECK constraints: a payment cannot refund more than it cost, revoke or claw back
+// more than it granted, or be negative.
+func checkPayment(p domain.Payment) error {
+	switch {
+	case p.Amount.MinorUnits < 0:
+		return fmt.Errorf("%w: payment %s has a negative amount", md.ErrInvalid, p.ProviderPaymentID)
+	case p.RefundedMinor < 0 || p.RefundedMinor > p.Amount.MinorUnits:
+		return fmt.Errorf("%w: payment %s refunded %d of %d", md.ErrInvalid, p.ProviderPaymentID, p.RefundedMinor, p.Amount.MinorUnits)
+	case p.CreditsGranted < 0 || p.CreditsRevoked < 0 || p.CreditsRevoked > p.CreditsGranted:
+		return fmt.Errorf("%w: payment %s revoked %d of %d credits", md.ErrInvalid, p.ProviderPaymentID, p.CreditsRevoked, p.CreditsGranted)
+	case p.DisputeClawed < 0 || p.DisputeClawed > p.CreditsGranted:
+		return fmt.Errorf("%w: payment %s had %d credits clawed back by a dispute of %d granted", md.ErrInvalid, p.ProviderPaymentID, p.DisputeClawed, p.CreditsGranted)
+	}
+	return nil
+}
+
 // Upsert implements ports.Payments.
 func (m *MemPayments) Upsert(_ context.Context, p domain.Payment) error {
 	m.log.Add("payments.Upsert")
+	if err := checkPayment(p); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.rows[paymentKey(p.Account, p.ProviderPaymentID)] = p
@@ -667,6 +712,9 @@ func (m *MemPayments) Update(_ context.Context, account, id string, fn func(doma
 	if err != nil {
 		return cur, err
 	}
+	if err := checkPayment(next); err != nil {
+		return cur, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.failCommit > 0 {
@@ -680,6 +728,14 @@ func (m *MemPayments) Update(_ context.Context, account, id string, fn func(doma
 // List implements ports.Payments (newest first; the cursor is an index).
 func (m *MemPayments) List(_ context.Context, s domain.Scope, cursor string, limit int) ([]domain.Payment, string, error) {
 	m.log.Add("payments.List")
+	switch {
+	case limit < 0:
+		return nil, "", fmt.Errorf("%w: limit %d", md.ErrInvalid, limit)
+	case limit == 0:
+		limit = 50
+	case limit > 200:
+		limit = 200
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var all []domain.Payment
@@ -775,6 +831,13 @@ func (m *MemSubs) ApplyIfNewer(_ context.Context, sub domain.Sub, at time.Time) 
 	defer m.mu.Unlock()
 	k := subKey(sub.Account, sub.ProviderSubscriptionID)
 	next, applied := m.rows[k].Apply(sub, at)
+	if applied && next.Live() {
+		for other, have := range m.rows {
+			if other != k && have.Live() && have.Scope.Normalized() == next.Scope.Normalized() {
+				return false, fmt.Errorf("%w: %s already has a live subscription (%s)", md.ErrAlreadyExists, next.Scope.Tag(), have.ProviderSubscriptionID)
+			}
+		}
+	}
 	if m.NoOrder {
 		sub.LastEventAt = at
 		next, applied = sub, true
@@ -841,6 +904,10 @@ func (m *MemSubs) Put(s domain.Sub) {
 
 // MemCustomers maps provider customers to scopes.
 type MemCustomers struct {
+	// DropUpserts makes Upsert report success and keep nothing: a mapping that is lost before the payment arrives.
+	DropUpserts bool
+	gate        *leaseGate
+
 	log  *CallLog
 	mu   sync.Mutex
 	rows []domain.Customer
@@ -849,17 +916,30 @@ type MemCustomers struct {
 // NewMemCustomers is an empty store.
 func NewMemCustomers(log *CallLog) *MemCustomers { return &MemCustomers{log: log} }
 
+// SyncGets makes the first n calls to Get rendezvous after they have read, so n first checkouts all find no customer
+// before any of them creates one. A caller that is alone because the code serializes its callers is released after
+// half a second rather than wedged. Set it before the callers run.
+func (m *MemCustomers) SyncGets(n int) { m.gate = newGate(n) }
+
 // Get implements ports.Customers.
 func (m *MemCustomers) Get(_ context.Context, s domain.Scope, account string) (domain.Customer, bool, error) {
 	m.log.Add("customers.Get")
+	c, ok := m.get(s, account)
+	if g := m.gate; g != nil {
+		g.wait(500 * time.Millisecond)
+	}
+	return c, ok, nil
+}
+
+func (m *MemCustomers) get(s domain.Scope, account string) (domain.Customer, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, c := range m.rows {
 		if c.Scope.Normalized() == s.Normalized() && c.Account == account {
-			return c, true, nil
+			return c, true
 		}
 	}
-	return domain.Customer{}, false, nil
+	return domain.Customer{}, false
 }
 
 // Upsert implements ports.Customers.
@@ -867,9 +947,19 @@ func (m *MemCustomers) Upsert(_ context.Context, c domain.Customer) error {
 	m.log.Add("customers.Upsert")
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.DropUpserts {
+		return nil
+	}
+	for _, have := range m.rows {
+		if have.Account == c.Account && have.ProviderCustomerID == c.ProviderCustomerID && have.Scope.Normalized() != c.Scope.Normalized() {
+			return fmt.Errorf("%w: provider customer %s is already mapped to another scope", md.ErrAlreadyExists, c.ProviderCustomerID)
+		}
+	}
 	for i, have := range m.rows {
 		if have.Scope.Normalized() == c.Scope.Normalized() && have.Account == c.Account {
-			m.rows[i] = c
+			// The provider's customer is immutable once mapped: replacing it would orphan the webhooks of the old
+			// one. Only the billing email moves.
+			m.rows[i].BillingEmail = c.BillingEmail
 			return nil
 		}
 	}
@@ -936,7 +1026,12 @@ func (m *MemCatalog) List(_ context.Context, realm domain.Realm, currency string
 			out = append(out, p)
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].SortOrder < out[j].SortOrder })
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].SortOrder != out[j].SortOrder {
+			return out[i].SortOrder < out[j].SortOrder
+		}
+		return out[i].Code < out[j].Code
+	})
 	return out, nil
 }
 
@@ -945,6 +1040,9 @@ func (m *MemCatalog) Resolve(_ context.Context, realm domain.Realm, code, curren
 	m.log.Add("catalog.Resolve")
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.FallbackPlan != nil {
+		return *m.FallbackPlan, "price_fallback", nil
+	}
 	for _, p := range m.plans {
 		if p.Realm.Or() == realm.Or() && p.Code == code && p.Active {
 			if id, ok := m.prices[account+"|"+string(p.Realm.Or())+"|"+code+"|"+currency]; ok {
