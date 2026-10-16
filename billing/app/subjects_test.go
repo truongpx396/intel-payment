@@ -157,3 +157,22 @@ func TestAutoTopUpTellsTheCustomerWhyItSwitchedOffUnderTheConfiguredPrefix(t *te
 	}
 	onlyUnder(t, w.Harness, prefix)
 }
+
+func TestWithNoPrefixTheReceivedHintIsOnBillingToo(t *testing.T) {
+	t.Parallel()
+	h := contracts.NewHarness()
+	g, err := app.NewIngress(app.IngressDeps{
+		Providers: h.Providers(), Accounts: h.Accounts, Inbox: h.Inbox, Metrics: h.Metrics, Clock: h.Clock, Bus: h.Bus,
+		MaxBody: contracts.MaxWebhookBody, Log: quiet(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, hdr := h.Deliver(h.PaymentSucceeded("evt_1", "pay_1"))
+	if res := g.Handle(contracts.Ctx(), string(contracts.ProviderName), contracts.AccountID, body, hdr); res.Status != 200 {
+		t.Fatalf("the delivery was answered %+v", res)
+	}
+	if got := h.Bus.On("billing.webhook.received"); len(got) != 1 {
+		t.Fatalf("the hint was published %d times on billing.webhook.received; published: %v", len(got), h.Bus.Messages())
+	}
+}
