@@ -71,7 +71,7 @@ Published by an **external scheduler** onto `billing:ticks`; the `worker` group 
 | `billing.audit.tick` | deep audit per shard; advances `ledger_checkpoints` | daily, off-peak |
 | `billing.transfer.tick` | re-drives transfers `in_transit` longer than `TransferRedrive` | 1 min |
 | `billing.journal.tick` | replays pending `spend_journal` rows through the hot function | 10 s |
-| `billing.webhook.tick` | processes `received`/`failed` inbox rows due for (re)processing; retries `unverifiable` verification | 10 s |
+| `billing.webhook.tick` | processes `received`/`failed` inbox rows due for (re)processing; retries `unverifiable` verification | 10 s — **not published today**: `payment-worker` runs the same work from a timer of its own, `PAYMENT_WEBHOOK_TICK_INTERVAL` (default 5 s), and nothing subscribes to this subject |
 | `billing.outbound.tick` | delivers pending outbound webhooks with backoff | 5 s |
 | `billing.expiry.tick` | expires credit lots, pre-applying the upper bound ([§3](./hot-path-consistency.md#3-the-durable-writer-ordered-batched-idempotent)) | hourly, under `lots_fefo` |
 | `billing.dunning.tick` | suspends subscriptions past `GraceUntil` | hourly |

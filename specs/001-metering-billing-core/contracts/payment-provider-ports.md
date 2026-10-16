@@ -399,7 +399,7 @@ type Inbox interface {
 	// is dead, and the caller pages. It reports whether the event is now dead.
 	MarkFailed(ctx context.Context, id string, cause error, retryAt time.Time) (dead bool, err error)
 
-	// The parked half. A parked delivery is retried by billing.webhook.tick: Promote when it now
+	// The parked half. A parked delivery is retried by payment-worker's webhook loop: Promote when it now
 	// verifies (the body is deleted that moment), RetryParked while verification is still
 	// unavailable, Reject when it FAILS to verify — a security event; never trusted, body dropped.
 	// A ParkedDelivery carries ReceivedAt, when it FIRST arrived (a redelivery of the same bytes does not move it).
@@ -550,7 +550,7 @@ provider → POST /webhooks/{provider}/{account}
   3. PaymentProvider.VerifyWebhook(account, raw, headers)
         invalid → 400 invalid_signature, billing_webhook_verify_failed_total{provider}, SECURITY
                   event, STOP. Never 2xx, never partial processing.
-        unavailable (PayPal's API down) → Inbox.Park(raw) → 202. Retried by billing.webhook.tick.
+        unavailable (PayPal's API down) → Inbox.Park(raw) → 202. Retried by payment-worker's webhook loop.
   4. Inbox.Persist(normalized event) — an existing (account, event id) is a no-op.
   5. 200. Publish billing.webhook.received as a latency hint.
 ```
@@ -559,7 +559,7 @@ A body over the limit (1 MiB) is `413` before anything else. A route that names 
 or an account that does not exist, is inactive or belongs to another provider, is `404 unknown_account`
 and verifies nothing. A delivery is parked under a name made of the SHA-256 of its bytes
 (`parked:<hash>`) — nothing in it may be parsed yet — so the provider's redelivery of the same bytes is
-one row. `billing.webhook.tick` calls `Ingress.Retry`: a parked delivery that now verifies becomes an
+one row. `payment-worker`'s webhook loop (every `PAYMENT_WEBHOOK_TICK_INTERVAL`, one run at a time, at once on start) calls `Ingress.Retry` and `Processor.Tick`: a parked delivery that now verifies becomes an
 ordinary event and loses its raw body; one that fails is rejected (a security event, body dropped, never
 processed); one that still cannot be verified backs off (30 s doubling, one hour at most). A parked delivery is
 verified again as of when it ARRIVED (`ports.WithReceivedAt`), so waiting out an outage longer than the signature
@@ -571,6 +571,31 @@ label is ever keyed on what an unauthenticated caller typed.
 Nothing in stage 1 touches money, so it can run on a single transaction's latency and answer every
 duplicate `200` without a retry storm. **The only way a verified delivery is lost is a failure
 before step 4 commits — and then the provider has not received `200` and retries it.**
+
+### The door and the processes that run it
+
+**The door** (`billing/adapters/driving/webhookhttp`) is mounted by the REST handler as a *webhook* route
+(`resthandler.Config.Extra`), which is why it carries no authentication and no CORS and why the registry refuses to start with
+either on it. It reads at most `MaxBody`+1 bytes of the raw body — over the limit is `413 payload_too_large`, a body that stopped
+short is `400 invalid_request` and is never forwarded — and hands the ingress the body, every header value and the two names the
+route carries. Its answer is the ingress's status: a success carries `{}`; anything else is the REST error envelope
+`{"error":{"code","message"}}` with the ingress's code; an answer that is not an HTTP status is a `500`, so a defect can never
+be read as an acknowledgement. Nothing of a delivery is logged, and a `5xx` names only the provider and the account.
+
+**Secrets.** An account holds *references*: `env:NAME` (read from the environment of the process that needs it — `paymentd`
+verifies, `payment-worker` calls the provider and retries parked deliveries) and `file:/absolute/path` (a regular file under
+64 KiB; one trailing line ending is dropped). Both are resolved at the moment of use and never cached. Any other scheme, an unset
+or empty value, a relative or unclean path and a non-regular file are refused with an error that carries no secret material.
+
+**The worker's loops.** `payment-worker` runs `Processor.Tick`, `Ingress.Retry` and the inbox's retention purge, each at once on
+start and then every `PAYMENT_WEBHOOK_TICK_INTERVAL` (retention: hourly) after the last run ended, so a stage never overlaps
+itself; a failed run is logged with its stage and tried again and stops no other stage. It also joins `<prefix>.balance.low.>` as
+the group `payment-autorecharge` and hands each message to the auto top-up handler; a handler error is not acknowledged, so the
+bus delivers it again. The group's name is part of the deployment. A worker that cannot join exits `1` naming the subject. On a
+stop the context is cancelled and `Run` returns only when the stage in hand has finished.
+
+**Subjects** follow `PAYMENT_SUBJECT_PREFIX` (default `billing`) throughout: `<prefix>.payment.<tag>`, `<prefix>.entitlement.<tag>`,
+`<prefix>.webhook.received` and the `<prefix>.balance.low.<tag>` that auto top-up accepts.
 
 ### Stage 2 — processor (`payment-worker`, from the inbox)
 
