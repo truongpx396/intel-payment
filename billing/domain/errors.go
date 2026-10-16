@@ -18,6 +18,10 @@ var (
 	ErrUnknownPrice = errors.New("unknown price")
 	// ErrBelowUsage is a plan change that would take an entitlement below what the scope is using now (FR-029).
 	ErrBelowUsage = errors.New("plan change would take an entitlement below current usage")
+	// ErrUnsupported is an operation the provider cannot do at all — saving a payment method for later, charging one
+	// off-session. It is not an outage and retrying will not help: the adapter says so without calling the provider, and
+	// the caller reports it rather than falling back on something it was not asked for.
+	ErrUnsupported = errors.New("the provider does not support this")
 	// ErrNotImplemented is what a stub answers; production code never returns it.
 	ErrNotImplemented = errors.New("not implemented")
 )

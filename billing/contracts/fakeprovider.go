@@ -34,6 +34,7 @@ const (
 	DefectPerEventRefund   FakeDefect = "per-event-refund"  // reports this refund, not the cumulative total
 	DefectNoIgnore         FakeDefect = "no-ignore"         // an unsubscribed type becomes a payment
 	DefectPartialOnError   FakeDefect = "partial-on-error"  // returns a half-filled Event beside the error
+	DefectIgnoreArrival    FakeDefect = "ignore-arrival"    // judges a signature's age by when it is verified, not when the delivery arrived
 )
 
 // FakeEvent is the body the fake provider's webhooks carry.
@@ -83,6 +84,7 @@ type FakeProvider struct {
 	customers    map[string]string // idem key → provider customer id
 	ensureCalls  int
 	failCheckout error
+	declined     map[string]error // checkout mode → the error it is declined with
 	// NonIdempotentCustomers makes EnsureCustomer create a new customer on every call: a provider that ignores the
 	// key, so two first checkouts at once leave two customers and one of them unmapped.
 	NonIdempotentCustomers bool
@@ -152,7 +154,7 @@ func (p *FakeProvider) Sign(accountID string, body []byte, at time.Time) http.He
 	return h
 }
 
-func (p *FakeProvider) authentic(acct domain.ProviderAccount, body []byte, headers http.Header) error {
+func (p *FakeProvider) authentic(ctx context.Context, acct domain.ProviderAccount, body []byte, headers http.Header) error {
 	sig := headers.Get(SignatureHeader)
 	if sig == "" {
 		return fmt.Errorf("%w: no signature", domain.ErrInvalidSignature)
@@ -172,7 +174,11 @@ func (p *FakeProvider) authentic(acct domain.ProviderAccount, body []byte, heade
 		return fmt.Errorf("%w: malformed signature", domain.ErrInvalidSignature)
 	}
 	if p.defect != DefectIgnoreTimestamp {
-		age := p.clock.Now().Sub(time.Unix(ts, 0))
+		now := p.clock.Now()
+		if p.defect != DefectIgnoreArrival {
+			now = ports.ReceivedAt(ctx, now)
+		}
+		age := now.Sub(time.Unix(ts, 0))
 		if age < 0 {
 			age = -age
 		}
@@ -203,7 +209,7 @@ func (p *FakeProvider) authentic(acct domain.ProviderAccount, body []byte, heade
 }
 
 // VerifyWebhook implements ports.PaymentProvider.
-func (p *FakeProvider) VerifyWebhook(_ context.Context, acct domain.ProviderAccount, body []byte, headers http.Header) (domain.Event, error) {
+func (p *FakeProvider) VerifyWebhook(ctx context.Context, acct domain.ProviderAccount, body []byte, headers http.Header) (domain.Event, error) {
 	p.log.Add("provider.VerifyWebhook")
 	p.mu.Lock()
 	p.verifyCalls++
@@ -212,7 +218,7 @@ func (p *FakeProvider) VerifyWebhook(_ context.Context, acct domain.ProviderAcco
 		return domain.Event{}, fmt.Errorf("%w: verification service down", domain.ErrVerificationUnavailable)
 	}
 	if p.defect != DefectSkipVerification {
-		if err := p.authentic(acct, body, headers); err != nil {
+		if err := p.authentic(ctx, acct, body, headers); err != nil {
 			if p.defect == DefectPartialOnError {
 				return domain.Event{Provider: p.name, Account: acct.ID}, err
 			}
@@ -317,11 +323,29 @@ func (p *FakeProvider) FailCheckout(err error) {
 	p.mu.Unlock()
 }
 
+// DeclineMode makes CreateCheckout answer err for one mode ("payment", "subscription" or "setup"), as a provider that
+// cannot do it does; nil clears it.
+func (p *FakeProvider) DeclineMode(mode string, err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.declined == nil {
+		p.declined = map[string]error{}
+	}
+	if err == nil {
+		delete(p.declined, mode)
+		return
+	}
+	p.declined[mode] = err
+}
+
 // CreateCheckout implements ports.PaymentProvider. It returns a URL and nothing else: fulfilment is the webhook's.
 func (p *FakeProvider) CreateCheckout(_ context.Context, acct domain.ProviderAccount, in ports.CheckoutInput) (string, error) {
 	p.log.Add("provider.CreateCheckout")
 	p.mu.Lock()
 	err := p.failCheckout
+	if err == nil {
+		err = p.declined[in.Mode]
+	}
 	if err == nil {
 		p.checkouts = append(p.checkouts, in)
 	}

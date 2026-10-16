@@ -44,6 +44,8 @@ type ParkedDelivery struct {
 	Body     []byte
 	Header   http.Header
 	Attempts int
+	// ReceivedAt is when the delivery FIRST arrived. Its signature is judged as of then, not as of the retry.
+	ReceivedAt time.Time
 }
 
 // Inbox is the durable webhook queue (payment_events): a verified delivery is persisted here, acknowledged, and

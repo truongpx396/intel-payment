@@ -242,6 +242,9 @@ type PaymentProvider interface {
 
 	// CreateCheckout starts a hosted checkout and returns a URL to hand off to. Mode "payment"
 	// and "subscription" sell a plan; mode "setup" only saves a payment method (for auto top-up).
+	// A provider that cannot save a method answers mode "setup" — and ChargeSaved — with
+	// domain.ErrUnsupported, without calling the provider: never a stub's ErrNotImplemented, never a page
+	// that sells something else. Selling a plan is not optional.
 	// It MUST NOT grant anything: fulfilment arrives later on a verified webhook (principle 3).
 	CreateCheckout(ctx context.Context, acct domain.ProviderAccount, in CheckoutInput) (redirectURL string, err error)
 
@@ -255,6 +258,10 @@ type PaymentProvider interface {
 	// TIME, enforce a timestamp tolerance, and return an error — never a partial Event — on any
 	// failure. It MAY perform I/O (PayPal verifies by API call), so callers give it a deadline, and
 	// it returns ErrVerificationUnavailable when verification itself cannot run.
+	// A signature's age is measured against ports.ReceivedAt(ctx, now): when the delivery ARRIVED. The
+	// ingress sets it when it verifies a parked delivery again, because the provider was answered 202 and will
+	// not resend it — judged by the time of the retry, an outage longer than the tolerance would make every
+	// genuine delivery in the parked half look like a replay, and a rejected parked delivery is dropped.
 	VerifyWebhook(ctx context.Context, acct domain.ProviderAccount, rawBody []byte, headers http.Header) (domain.Event, error)
 
 	// FetchSubscription returns the provider's CURRENT subscription object. The processor applies
@@ -282,6 +289,7 @@ type CheckoutInput struct {
 	PlanCode        string
 	Currency        string
 	ProviderPriceID string
+	Amount          Money  // the catalogue's price for the plan in the currency (zero for setup): providers that price a purchase themselves charge it
 	CustomerID      string // existing provider customer, or "" to create
 	BillingEmail    string
 	SuccessURL      string
@@ -391,6 +399,7 @@ type Inbox interface {
 	// The parked half. A parked delivery is retried by billing.webhook.tick: Promote when it now
 	// verifies (the body is deleted that moment), RetryParked while verification is still
 	// unavailable, Reject when it FAILS to verify — a security event; never trusted, body dropped.
+	// A ParkedDelivery carries ReceivedAt, when it FIRST arrived (a redelivery of the same bytes does not move it).
 	LeaseParked(ctx context.Context, n int, ttl time.Duration) ([]ParkedDelivery, error)
 	Promote(ctx context.Context, id string, e domain.Event) (inserted bool, err error)
 	RetryParked(ctx context.Context, id string, retryAt time.Time) error
@@ -541,7 +550,9 @@ and verifies nothing. A delivery is parked under a name made of the SHA-256 of i
 (`parked:<hash>`) — nothing in it may be parsed yet — so the provider's redelivery of the same bytes is
 one row. `billing.webhook.tick` calls `Ingress.Retry`: a parked delivery that now verifies becomes an
 ordinary event and loses its raw body; one that fails is rejected (a security event, body dropped, never
-processed); one that still cannot be verified backs off (30 s doubling, one hour at most). An event whose
+processed); one that still cannot be verified backs off (30 s doubling, one hour at most). A parked delivery is
+verified again as of when it ARRIVED (`ports.WithReceivedAt`), so waiting out an outage longer than the signature
+tolerance does not turn a genuine delivery — which the provider was told `202` for and will not resend — into a replay. An event whose
 provider or account differs from the route's is an adapter defect, answered `500`, never filed. Metrics
 are counted only after the route has resolved to a registered provider and a live account, so no
 label is ever keyed on what an unauthenticated caller typed.
@@ -689,13 +700,125 @@ with `failed`, so the host can ask the customer to update their card. The saved 
 through `CreateCheckout` in `setup` mode or the provider portal; this service stores only the
 provider's reference.
 
+### The Stripe adapter
+
+`billing/adapters/driven/stripe` speaks Stripe's HTTP API directly (a few form-encoded calls) at API version
+2024-06-20, to which a webhook endpoint must be pinned. **A payment is keyed on its payment intent**, the one
+id every event about it carries — the paid invoice (`invoice.paid`, `invoice.payment_succeeded`; the invoice's own
+id when there is no intent), the refunded charge (`charge.refunded`: `amount_refunded` is already cumulative, and
+the newest refund's id names the clawback), the four dispute events (which carry no customer: the processor takes
+the scope from the payment) and an off-session payment intent. A one-time checkout is created with
+`invoice_creation`, so it too is fulfilled by `invoice.paid`; a payment intent that belongs to an invoice is
+ignored because the invoice fulfils it once, and **`checkout.session.completed` is ignored, always**: a checkout return
+never fulfils. The provider's current subscription is dated by the `Date` of Stripe's own response, and a price the
+catalogue does not sell comes back with no plan code. A plan change now is a subscription update with Stripe's
+proration (or none); a change at the period's end is a schedule that keeps the running phase, adds the new price
+after it and releases itself. A secret is read from its reference at each call and is scrubbed from every error.
+The event bodies the tests use are built from the documentation, not captured: a sandbox rehearsal is still owed.
+
+### The Polar adapter
+
+`billing/adapters/driven/polar` speaks Polar's HTTP API directly (a few JSON calls); an account in `live` mode is
+served by `api.polar.sh` and one in `test` mode by `sandbox-api.polar.sh`, and any other mode is refused before a call
+is made. **The provider price id the engine stores is the Polar product id.** A webhook carries Standard Webhooks
+headers, `webhook-id`, `webhook-timestamp` and `webhook-signature` (`v1,<base64>` entries, space-separated), and the
+signature is HMAC-SHA256 over `id.timestamp.body` — so the message id and the time are authenticated along with the
+body, and a captured delivery can be replayed neither as a new event nor as a fresh one. A secret made before
+8 September 2026 is keyed with the UTF-8 bytes of the whole `whsec_…` string and a later one with the base64 after the
+prefix, decoded; the dashboard does not say which, so both are tried, and a key that is empty is never one. **The
+event id is the signed `webhook-id`** (the body has none), and the event is dated by its own `timestamp`, or by the
+signed header when it carries none.
+
+**A payment is keyed on the order.** `order.paid` is a payment; `order.created` is one only if the order is already
+paid, and an `order.paid` for an order that is not paid is an error, never a grant. They name one order, so they are one
+grant. The amount is `total_amount`, what the customer was charged with the sales tax in it, and `tax_amount` is that
+tax. **A refund is the order's cumulative total**: `refunded_amount` (the money, before tax) plus `refunded_tax_amount`
+(its tax), because the customer got back both and the total they paid includes both; it arrives as `order.refunded` or
+as an `order.updated` that carries a refund, and a refund event that refunded nothing is ignored. A subscription's
+events (`created`, `active`, `updated`, `canceled`, `uncanceled`, `past_due`, `paused`, `resumed`, `cycled`) are all
+updates and `subscription.revoked` is its end; the state applied is `FetchSubscription`'s, dated by the `Date` of
+Polar's response. Checkouts, refund objects, benefit grants and customers are ignored — a checkout never fulfils, and
+the order a refund belongs to carries the cumulative total. Polar is the merchant of record: it remits the tax and
+settles chargebacks itself, so it sends no dispute events, and a failing renewal is `subscription.past_due`, not a
+failed-payment event.
+
+**What Polar cannot do, it says with `domain.ErrUnsupported` and does not call Polar:** a checkout that only saves a
+payment method (mode `setup`), `ChargeSaved` (so auto top-up is unavailable on a Polar account), and a plan change
+"now" without proration — Polar's only such option restarts the billing cycle and invoices the full price of the new
+plan, which is not that policy. A plan change at the period's end is `proration_behavior: next_period` and a prorated
+one `prorate`. **Two Polar limits the host should know:** an email address is unique within a Polar organization, so a
+second scope that bills to an address already used on the account gets an error from `EnsureCustomer` (never the
+first scope's customer); and a checkout cannot be made idempotent, so a double-clicked buy button makes two checkout
+pages, which fulfil nothing until an order is paid. The checkout tells Polar the catalogue's price and currency as well
+as the product: Polar honours them for a product whose price is set by the caller and ignores them for a fixed one. An
+unresolvable secret is a misconfiguration (never an invalid signature), and an access token is scrubbed from every
+error. The event bodies the tests use are built from the documentation, not captured: a sandbox rehearsal is still owed.
+
+### The PayPal adapter
+
+`billing/adapters/driven/paypal` speaks PayPal's REST API directly (a few JSON calls); an account in `live` mode is
+served by `api-m.paypal.com` and one in `test` mode by `api-m.sandbox.paypal.com`, and any other mode is refused before a
+call is made. An account's `SecretRef` resolves to `client_id:client_secret` and its `WebhookSecretRef` to the **id of the
+webhook** as configured in PayPal's developer portal, which PayPal needs to verify a delivery. The access token is fetched
+when needed, kept until a minute before it expires, replaced once (never in a loop) if PayPal withdraws it, and never
+appears in an error, nor does the client secret.
+
+**Verification is PayPal's, by a call** (`POST /v1/notifications/verify-webhook-signature`): PayPal signs with a certificate
+the adapter never sees, so the five `PAYPAL-*` headers, the webhook id and the event are sent and PayPal answers
+`SUCCESS` or not. Nothing is read out of the body until it does. **The event reaches PayPal byte for byte** — PayPal checks
+the signature of exactly what it sent — spliced into the request rather than decoded and encoded again; and so it is sent
+**only if it is exactly one JSON value**, because anything else could carry fields of its own into the request (a
+`webhook_id` of the sender's choosing, so that PayPal vouches for an event it signed for the sender's own webhook). A
+delivery with a header missing, or a transmission time that is not a time or is outside the tolerance **measured from when
+the delivery arrived** (`ports.ReceivedAt`: a delivery parked through an outage is verified as of its arrival), is refused
+without a call, not even for a token. A verdict other than `SUCCESS`, and a request PayPal rejects (400, 422), are
+`ErrInvalidSignature`. **Everything else — PayPal down, slow or rate-limiting, a token it refuses, a cancelled context — is
+`ErrVerificationUnavailable`**: the delivery is neither rejected (the provider was told `202` and will not resend it) nor
+trusted, and the ingress parks it with its raw body. A reference that does not resolve, or credentials that are not
+`client_id:client_secret`, are our misconfiguration and neither.
+
+**A capture carries neither the customer nor the product**, so the order or subscription is made with a `custom_id` of
+`<customer>~<product>` (the customer being what `EnsureCustomer` made: PayPal has no customer object, so it is an opaque id
+made from the key, the same for the same key and carrying nothing of the scope) and a payment whose `custom_id` is not of
+that form — a sale of the PayPal account's that this service did not make — is **ignored and grants nothing**. A payment is
+keyed on the **capture** (`PAYMENT.CAPTURE.COMPLETED`; `DENIED` and `DECLINED` are failures); a subscription's cycle is a
+`PAYMENT.SALE.COMPLETED`, which names only its subscription, so the subscription is read from PayPal for its customer and its
+plan — and if PayPal cannot be asked, the delivery is parked, not guessed at. **A refund is the total refunded from the
+capture to date** (`seller_payable_breakdown.total_refunded_amount`), against the capture its `up` link names. **Every phase of
+a dispute shares one id per transaction** (`dp:<transaction>`), because PayPal's own dispute id is on only some of the events
+of one dispute: `CUSTOMER.DISPUTE.CREATED` opens it, `PAYMENT.CAPTURE.REVERSED` is the funds withdrawn, and
+`CUSTOMER.DISPUTE.RESOLVED` closes it won or lost by PayPal's `outcome_code` — an outcome the adapter has not been told how to
+settle is an error, never a guess. Subscription events update or end it (`CANCELLED`, `EXPIRED`); `PAYMENT.FAILED` is a
+failed payment of the subscription. An approved order is ignored: a checkout return never fulfils. Amounts are decimal
+strings, parsed without floats in the currency's own exponent (`HUF`, `JPY` and `TWD` have none) and held by two fuzz targets
+to arbitrary-precision arithmetic.
+
+**A payment checkout is an order with `intent: CAPTURE` and `processing_instruction: ORDER_COMPLETE_ON_PAYMENT_APPROVAL`**,
+so PayPal captures when the buyer approves and no call of ours sits between approval and payment; without it a buyer could
+approve and never be charged. A subscription checkout is a billing plan the buyer approves. Both are idempotent on
+`PayPal-Request-Id`. **What PayPal cannot do for a server, it says with `domain.ErrUnsupported` and does not call PayPal:** a
+checkout that only saves a payment method (mode `setup`) and `ChargeSaved` (so auto top-up is unavailable on a PayPal
+account), a customer portal (PayPal has none), cancelling at the period's end (PayPal cancels at once), and changing a plan
+(PayPal's revision needs the buyer's approval at a link the port has no way to hand back). A PayPal subscription is
+cancelled by the buyer at PayPal, which arrives as `BILLING.SUBSCRIPTION.CANCELLED`.
+
+**Known limits.** A refund of a subscription's payment arrives as `PAYMENT.SALE.REFUNDED`, which carries no cumulative
+total; it is ignored, not guessed, and an operator reverses those credits. A dispute names a transaction and not a
+customer, so a dispute over a sale this service did not make is retried until it is dead. **What the tests cannot show:** the
+fake PayPal signs with a private scheme, so they show that the adapter forwards a delivery faithfully and obeys the verdict,
+not that PayPal's cryptography holds; and the event bodies are built from the documentation, not captured — the shape of
+`PAYMENT.CAPTURE.REVERSED`, the presence of `total_refunded_amount` on every refund, and whether a wallet order is captured
+on approval are exactly what a sandbox rehearsal before the first real order must confirm. If a wallet order is not
+captured on approval, nothing is charged and nothing is granted: the failure is safe, and visible as orders approved and never
+paid.
+
 ### Per-provider notes
 
 | Provider | Verification | Notable events | Gotcha |
 |---|---|---|---|
 | **Stripe** | `Stripe-Signature`: HMAC-SHA256 over `timestamp.payload`, constant-time, with a tolerance window | `invoice.paid`, `checkout.session.completed`, `invoice.payment_failed`, `customer.subscription.updated\|deleted`, `charge.refunded` (`amount_refunded` is cumulative), `charge.dispute.created\|funds_withdrawn\|funds_reinstated\|closed` | `invoice.paid` **and** `checkout.session.completed` can both arrive for one purchase: key the grant on the **payment/invoice id**, never the session. Deliveries are unordered — hence `FetchSubscription` |
-| **Polar** | webhook secret HMAC | `order.created`, `subscription.active\|updated\|canceled`, `refund.created`, `benefit_grant.*` | `benefit_grant` can double with `order.created` — same keying discipline |
-| **PayPal** | **not a local HMAC** — a call to `verify-webhook-signature` with the transmission headers and `webhook_id` | `PAYMENT.CAPTURE.COMPLETED\|REFUNDED\|REVERSED`, `BILLING.SUBSCRIPTION.*`, `CUSTOMER.DISPUTE.*` | verification does I/O: a PayPal outage means deliveries can be neither verified nor rejected, so they are **parked** with their raw body and retried — never processed optimistically, never dropped |
+| **Polar** | Standard Webhooks: HMAC-SHA256 over `webhook-id.webhook-timestamp.body` (either of the secret's two keys), constant-time, with a tolerance window | `order.paid`, `order.created`, `order.refunded`, `order.updated`, `subscription.*` | the same order is named by `order.created`, `order.paid` and `order.updated` — key the grant on the **order id**; `refund.created` and `benefit_grant.*` are ignored, and `refunded_amount` is before tax |
+| **PayPal** | **not a local HMAC** — a call to `verify-webhook-signature` with the transmission headers and `webhook_id`; the event is sent byte for byte and only if it is one JSON value | `PAYMENT.CAPTURE.COMPLETED\|REFUNDED\|REVERSED`, `PAYMENT.SALE.COMPLETED`, `BILLING.SUBSCRIPTION.*`, `CUSTOMER.DISPUTE.*` | verification does I/O: a PayPal outage means deliveries can be neither verified nor rejected, so they are **parked** with their raw body and retried — never processed optimistically, never dropped |
 
 ---
 

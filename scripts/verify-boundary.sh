@@ -109,4 +109,39 @@ expect_reject "arch: a billing adapter reaches metering through its ports (postg
   "package postgres
 import _ \"$mod/metering/adapters/driven/redis\""
 
+expect_reject "depguard 9: a provider adapter imports no other (stripe -> postgres)" lint \
+  billing/adapters/driven/stripe/zz_violation.go billing/adapters/driven/stripe \
+  "package stripe
+import \"$mod/billing/adapters/driven/postgres\"
+var _ = postgres.NewInbox"
+expect_reject "depguard 9: a provider adapter imports no other (polar -> paypal)" lint \
+  billing/adapters/driven/polar/zz_violation.go billing/adapters/driven/polar \
+  "package polar
+import \"$mod/billing/adapters/driven/paypal\"
+var _ = paypal.New"
+expect_reject "depguard 9: a provider adapter imports no other (paypal -> polar)" lint \
+  billing/adapters/driven/paypal/zz_violation.go billing/adapters/driven/paypal \
+  "package paypal
+import \"$mod/billing/adapters/driven/polar\"
+var _ = polar.New"
+expect_reject "depguard 9: an adapter implements ports, it does not call the use cases (polar -> billing/app)" lint \
+  billing/adapters/driven/polar/zz_violation.go billing/adapters/driven/polar \
+  "package polar
+import \"$mod/billing/app\"
+var _ = app.NewIngress"
+expect_reject "depguard 9: an adapter implements ports, it does not call the use cases (paypal -> billing/app)" lint \
+  billing/adapters/driven/paypal/zz_violation.go billing/adapters/driven/paypal \
+  "package paypal
+import \"$mod/billing/app\"
+var _ = app.NewIngress"
+expect_reject "arch: a billing adapter does not reach the app (paypal -> billing/app)" arch \
+  billing/adapters/driven/paypal/zz_violation.go billing/adapters/driven/paypal \
+  "package paypal
+import _ \"$mod/billing/app\""
+expect_reject "depguard 9: the books know no provider (postgres -> stripe)" lint \
+  billing/adapters/driven/postgres/zz_violation.go billing/adapters/driven/postgres \
+  "package postgres
+import \"$mod/billing/adapters/driven/stripe\"
+var _ = stripe.New"
+
 [ "$fail" -eq 0 ] && echo "boundary verified" || { echo "boundary NOT verified"; exit 1; }

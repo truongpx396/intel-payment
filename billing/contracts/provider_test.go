@@ -1,11 +1,13 @@
 package contracts_test
 
 import (
+	"errors"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/truongpx396/intel-payment/billing/contracts"
+	"github.com/truongpx396/intel-payment/billing/domain"
 )
 
 // The suite is itself held to the rule it enforces: it passes an honest provider, and it rejects each deliberately
@@ -27,6 +29,7 @@ func TestProviderContractRejectsEveryBrokenProviderByName(t *testing.T) {
 		normal    = "verifies and normalizes with the provider's timestamp and a body hash"
 		refund    = "refund amounts are normalized as cumulative"
 		ignored   = "unsubscribed types are Ignored, not errors"
+		judged    = "a signature is judged as of when the delivery arrived, not when it is verified"
 	)
 	broken := []struct {
 		defect   contracts.FakeDefect
@@ -39,6 +42,7 @@ func TestProviderContractRejectsEveryBrokenProviderByName(t *testing.T) {
 		{contracts.DefectPerEventRefund, []string{refund}},
 		{contracts.DefectNoIgnore, []string{ignored}},
 		{contracts.DefectPartialOnError, []string{tampered, missing}},
+		{contracts.DefectIgnoreArrival, []string{judged}},
 	}
 	for _, b := range broken {
 		t.Run(string(b.defect), func(t *testing.T) {
@@ -91,5 +95,44 @@ func TestProbeReportsWhatAFailingCaseSaid(t *testing.T) {
 	}
 	if failed, _ := contracts.Probe(time.Second, func(t testing.TB) { t.Helper(); t.Cleanup(func() {}) }); failed {
 		t.Fatal("a quiet case passes")
+	}
+}
+
+// A provider that cannot save a payment method for later (Polar sells no setup-only checkout) says so with a typed
+// error. The suite lets it say that about setup and about nothing else, and does not take a stub's "not implemented"
+// or any other failure for it: a provider that cannot even sell a plan must not pass by declining.
+func TestTheCheckoutCaseLetsAProviderDeclineSetupWithTheTypedErrorAndNothingElse(t *testing.T) {
+	t.Parallel()
+	const name = "checkout returns a hosted page and carries no secret"
+	var c contracts.ProviderCase
+	for _, pc := range contracts.ProviderCases() {
+		if pc.Name == name {
+			c = pc
+		}
+	}
+	if c.Run == nil {
+		t.Fatalf("no case is called %q", name)
+	}
+	for label, tc := range map[string]struct {
+		mode     string
+		err      error
+		rejected bool
+	}{
+		"setup declined as unsupported":          {"setup", domain.ErrUnsupported, false},
+		"setup declined as unsupported, wrapped": {"setup", errors.Join(errors.New("polar: no setup checkout"), domain.ErrUnsupported), false},
+		"setup answered with a stub's error":     {"setup", domain.ErrNotImplemented, true},
+		"setup failing for any other reason":     {"setup", errors.New("boom"), true},
+		"a plan sale declined as unsupported":    {"payment", domain.ErrUnsupported, true},
+		"a subscription declined as unsupported": {"subscription", domain.ErrUnsupported, true},
+	} {
+		t.Run(label, func(t *testing.T) {
+			t.Parallel()
+			h := contracts.NewHarness()
+			h.Provider.DeclineMode(tc.mode, tc.err)
+			failed, said := contracts.Probe(10*time.Second, func(t testing.TB) { c.Run(t, h.Provider, h.Fixtures()) })
+			if failed != tc.rejected {
+				t.Fatalf("rejected = %v (%v), want %v", failed, said, tc.rejected)
+			}
+		})
 	}
 }

@@ -108,3 +108,30 @@ func (g grantsOnStart) Start(ctx context.Context, r ports.CheckoutRequest) (stri
 	}
 	return url, err
 }
+
+// A provider that prices a purchase itself (PayPal's orders) must be told the price, and the price is the
+// catalogue's for the plan in the currency — never anything the request said (invariant 4).
+func TestTheProviderIsToldTheCataloguesPriceForThePlanInTheCurrency(t *testing.T) {
+	t.Parallel()
+	h := contracts.NewHarness()
+	c := checkoutUnderTest(t, h, nil)
+	for plan, want := range map[string]domain.Money{contracts.PackCode: {MinorUnits: 1000, Currency: "USD"}, contracts.ProCode: {MinorUnits: 2000, Currency: "USD"}} {
+		if _, err := c.Start(contracts.Ctx(), h.CheckoutRequest(plan)); err != nil {
+			t.Fatal(err)
+		}
+		all := h.Provider.Checkouts()
+		if got := all[len(all)-1].Amount; got != want {
+			t.Errorf("%s: the provider was told %+v, want the catalogue's %+v", plan, got, want)
+		}
+	}
+	// A setup checkout sells nothing: no amount.
+	req := h.CheckoutRequest("")
+	req.Mode = "setup"
+	if _, err := c.Start(contracts.Ctx(), req); err != nil {
+		t.Fatal(err)
+	}
+	all := h.Provider.Checkouts()
+	if got := all[len(all)-1].Amount; got != (domain.Money{}) {
+		t.Errorf("setup: the provider was told an amount: %+v", got)
+	}
+}
