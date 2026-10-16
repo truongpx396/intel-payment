@@ -19,7 +19,10 @@ components:
   metering-config:  { in: metering }
   # Conformance suites: importable by an adapter's own tests, given constructors — they import no adapter.
   metering-contracts: { in: metering/contracts }
-  billing:          { in: billing/** }
+  # The fiat layer is laid out as the engine is: domain -> ports -> app -> adapters, one direction.
+  billing:           { in: billing }                      # the root package: documentation only
+  billing-domain:    { in: billing/domain }
+  billing-ports:     { in: billing/ports }
   entitlement:      { in: entitlement/** }
   events:           { in: events/** }
   api:              { in: api/** }
@@ -49,12 +52,15 @@ deps:
   # this graph; that api IMPORTS nothing of this module is a depguard rule (api-is-a-leaf, .golangci.yml),
   # because the graph alone would now allow `import driving` from api.
   api:              { mayDependOn: [ metering-driving ] }
-  billing:          { mayDependOn: [ metering-domain, metering-ports, api ] }
+  billing:           { mayDependOn: [ metering-domain, metering-ports ] }
+  billing-domain:    { mayDependOn: [ metering-domain ] }
+  billing-ports:     { mayDependOn: [ billing-domain, metering-domain, metering-ports ] }
   entitlement:      { mayDependOn: [ metering-domain, metering-ports, api ] }   # also implements metering's QuotaSource
   events:           { mayDependOn: [ metering-domain, api ] }                  # outbound delivery to hosts
   # cmd/** includes cmd/internal, the helpers the binaries share (the environment reader, the store wiring), so a
   # binary depends on its own component.
   cmd:              { mayDependOn: [ cmd, metering-domain, metering-ports, metering-config,
                                      metering-app, metering-driven, metering-driving,
-                                     billing, entitlement, events, api,
+                                     billing-domain, billing-ports,
+                                     entitlement, events, api,
                                      migrate, migrations ] }

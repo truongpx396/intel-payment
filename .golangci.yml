@@ -36,6 +36,34 @@ linters:
               desc: mint credits via the Meter/Ledger port, not app internals
             - pkg: github.com/truongpx396/intel-payment/metering/adapters/driven
               desc: do not reach into metering's infra adapters
+        # The fiat core is as portable as the engine: no database, cache, broker, transport or provider SDK in the
+        # layers that decide. Adapters implement the ports; the core never learns what is behind them.
+        billing-core-pure:
+          list-mode: lax
+          files:
+            - '**/billing/domain/**'
+            - '**/billing/ports/**'
+            - '**/billing/app/**'
+          deny:
+            - pkg: github.com/redis/go-redis
+              desc: no infra in the fiat core; use a port
+            - pkg: github.com/jackc/pgx
+              desc: no infra in the fiat core; use a store port
+            - pkg: github.com/nats-io
+              desc: no broker in the fiat core; use the Bus port
+            - pkg: google.golang.org/grpc
+              desc: no transport in the fiat core
+            - pkg: github.com/stripe/stripe-go
+              desc: no provider SDK near the core; see billing/adapters/driven/stripe
+        # The domain is vocabulary and arithmetic: the standard library and metering's domain, nothing else.
+        billing-domain-is-pure:
+          list-mode: strict
+          files:
+            - '**/billing/domain/**'
+            - '!$test'
+          allow:
+            - $gostd
+            - github.com/truongpx396/intel-payment/metering/domain
         metering-core-pure:
           list-mode: lax
           files:
