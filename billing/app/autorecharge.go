@@ -47,6 +47,10 @@ type AutoRechargeDeps struct {
 	Bus mports.Bus
 	Log *slog.Logger
 
+	// SubjectPrefix is the namespace of the low-balance messages it listens to and the announcements it makes (default
+	// DefaultSubjectPrefix; PAYMENT_SUBJECT_PREFIX): the writer publishes <prefix>.balance.low.<tag>.
+	SubjectPrefix string
+
 	// StaleAfter is how long a claimed slot is held before another trigger replaces it (default DefaultRechargeStale).
 	StaleAfter time.Duration
 }
@@ -89,6 +93,9 @@ func NewAutoRecharge(d AutoRechargeDeps) (*AutoRecharge, error) {
 	if d.StaleAfter == 0 {
 		d.StaleAfter = DefaultRechargeStale
 	}
+	if d.SubjectPrefix == "" {
+		d.SubjectPrefix = DefaultSubjectPrefix
+	}
 	return &AutoRecharge{d: d}, nil
 }
 
@@ -104,7 +111,7 @@ type trigger struct {
 
 // parseTrigger reads the message the writer publishes: {"realm", "scope" (the tag), "watch" ("<pool>:<threshold>"), "seq"}.
 // It trusts nothing it cannot cross-check: the subject, the realm and the tag must agree.
-func parseTrigger(subject string, payload []byte) (trigger, error) {
+func parseTrigger(prefix, subject string, payload []byte) (trigger, error) {
 	var m struct {
 		Realm string `json:"realm"`
 		Scope string `json:"scope"`
@@ -120,7 +127,7 @@ func parseTrigger(subject string, payload []byte) (trigger, error) {
 	if m.Realm != string(scope.Realm) {
 		return trigger{}, fmt.Errorf("%w: a low-balance message names realm %q for a scope of realm %q", md.ErrInvalid, m.Realm, scope.Realm)
 	}
-	if want := "billing.balance.low." + scope.SubjectToken(); subject != want {
+	if want := prefix + ".balance.low." + scope.SubjectToken(); subject != want {
 		return trigger{}, fmt.Errorf("%w: a low-balance message on %q about %s, which is published on %q", md.ErrInvalid, subject, scope.Tag(), want)
 	}
 	pool, threshold, ok := cutLast(m.Watch, ":")
@@ -140,7 +147,7 @@ func cutLast(s, sep string) (before, after string, ok bool) {
 
 // Handle implements the bus handler: nil acknowledges the message, an error has it delivered again.
 func (a *AutoRecharge) Handle(ctx context.Context, subject string, payload []byte) error {
-	t, err := parseTrigger(subject, payload)
+	t, err := parseTrigger(a.d.SubjectPrefix, subject, payload)
 	if err != nil {
 		return err
 	}
@@ -316,7 +323,7 @@ func (a *AutoRecharge) announceIfSwitchedOff(ctx context.Context, row domain.Aut
 	body, err := json.Marshal(paymentNote{Realm: string(row.Scope.Realm.Or()), Scope: scopeRef{row.Scope.Kind, row.Scope.ID}, Event: "failed",
 		Amount: price.MinorUnits, Currency: price.Currency, Reason: reason})
 	if err == nil {
-		err = a.d.Bus.Publish(ctx, "billing.payment."+row.Scope.SubjectToken(), body)
+		err = a.d.Bus.Publish(ctx, a.d.SubjectPrefix+".payment."+row.Scope.SubjectToken(), body)
 	}
 	if err != nil {
 		a.d.Log.Warn("auto top-up: the switching-off was not announced", "scope", row.Scope.Tag(), "error", err.Error())
