@@ -188,7 +188,7 @@ negative grant: the books empty that payment's lot first, so what the customer k
 bought with. Before choosing how much to claw back, ask `LotReader.LotsOf(scope, pool, key)`: `Remaining` is
 what is still there and `Expired` is what the customer has already lost to expiry — do not claw that back
 a second time. The amount is yours to choose; a refund past what was spent falls to
-`NegativeBalancePolicy`. The payment processor (`billing/`, not built yet) is specified to do all of this
+`NegativeBalancePolicy`. The payment processor (`billing/app`, run by `payment-worker`) does all of this
 ([payment-provider-ports.md](../specs/001-metering-billing-core/contracts/payment-provider-ports.md), invariant 20).
 
 ---

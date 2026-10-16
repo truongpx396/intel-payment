@@ -190,14 +190,19 @@ FROM payment_events WHERE status IN ('failed','unverifiable','dead') ORDER BY re
   the provider redelivers.
 - **A trickle from unknown sources** → probing. Confirm the rejections are `400`, not `2xx`.
 - **`unverifiable`** → the provider's verification API is down (PayPal). Deliveries are parked with
-  their raw body and retried by `billing.webhook.tick`; nothing to do but watch the count fall.
+  their raw body and retried by `payment-worker` every `PAYMENT_WEBHOOK_TICK_INTERVAL`, backing off from 30 s to an hour; nothing to do but watch the count fall.
 
 ## Alert: webhook inbox age, or dead events
 
 **Means:** a verified payment has not been fulfilled. The inbox guarantees it is not lost; this alert
-is about *delay*. Check `billing.webhook.tick` is running, then the `error` on the oldest rows. A
-`dead` event exhausted its retries: fix the cause (commonly a plan with no `plan_provider_prices`
-mapping for the price bought) and re-drive it through the admin API.
+is about *delay*. Check `payment-worker` is running and that its log has no
+`payments: a stage failed and will run again` (the line names the stage: `webhook inbox`, `parked deliveries` or
+`inbox retention`), then the `error` on the oldest rows. A `dead` event exhausted its retries and is never leased again:
+fix the cause (commonly a plan with no `plan_provider_prices` mapping for the price bought). Re-driving a dead event is the
+admin API's, which does not exist yet.
+
+A `payment-worker` that cannot join the `<prefix>.balance.low.>` subscription exits `1` and says which; it does not run on
+without auto top-up.
 
 ## Alert: outbound deliveries failing
 

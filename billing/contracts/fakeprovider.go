@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -84,6 +83,8 @@ type FakeProvider struct {
 	customers    map[string]string // idem key → provider customer id
 	ensureCalls  int
 	failCheckout error
+	failCharge   error
+	noSavedPay   bool
 	declined     map[string]error // checkout mode → the error it is declined with
 	// NonIdempotentCustomers makes EnsureCustomer create a new customer on every call: a provider that ignores the
 	// key, so two first checkouts at once leave two customers and one of them unmapped.
@@ -420,7 +421,7 @@ func (p *FakeProvider) Cancels() []string {
 	return append([]string(nil), p.cancels...)
 }
 
-var errCardDeclined = errors.New("fake provider: the card was declined")
+var errCardDeclined = fmt.Errorf("%w: fake provider: the card was declined", domain.ErrChargeDeclined)
 
 // DeclineCharges makes ChargeSaved fail, as a declined card does.
 func (p *FakeProvider) DeclineCharges(v bool) {
@@ -433,12 +434,32 @@ func (p *FakeProvider) DeclineCharges(v bool) {
 	p.mu.Unlock()
 }
 
+// FailCharges makes ChargeSaved fail with err, as an outage does: the outcome of the charge is not known. nil clears it.
+func (p *FakeProvider) FailCharges(err error) {
+	p.mu.Lock()
+	p.failCharge = err
+	p.mu.Unlock()
+}
+
+// UnsupportedCharges makes ChargeSaved answer domain.ErrUnsupported, as a provider that cannot charge a saved method does.
+func (p *FakeProvider) UnsupportedCharges(v bool) {
+	p.mu.Lock()
+	p.noSavedPay = v
+	p.mu.Unlock()
+}
+
 // ChargeSaved implements ports.PaymentProvider: idempotent on the key, as a provider's is.
 func (p *FakeProvider) ChargeSaved(_ context.Context, _ domain.ProviderAccount, in ports.OffSessionInput) (string, error) {
 	p.log.Add("provider.ChargeSaved")
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.chargeCalls = append(p.chargeCalls, in)
+	if p.noSavedPay {
+		return "", fmt.Errorf("%w: the fake provider cannot charge a saved method", domain.ErrUnsupported)
+	}
+	if p.failCharge != nil {
+		return "", p.failCharge
+	}
 	if id, ok := p.charges[in.IdemKey]; ok {
 		return id, nil
 	}

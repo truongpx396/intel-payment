@@ -36,6 +36,8 @@ type ProcessorDeps struct {
 	Catalog   ports.Catalog
 	Payments  ports.Payments
 	Subs      ports.Subs
+	// Recharges is optional: with it, the outcome of an auto top-up's payment settles the charge slot it was made in.
+	Recharges ports.AutoRecharges
 	// Meter is the ONLY way credits are created (invariant 3); Lots says how much of a payment's credits expiry
 	// has already taken, so a refund never takes them twice (invariant 20).
 	Meter   mports.Meter
@@ -52,6 +54,8 @@ type ProcessorDeps struct {
 	Backoff func(attempts int) time.Duration
 	// Grace is how long entitlements hold after a failed payment (default DefaultGrace; PAYMENT_DUNNING_GRACE_DAYS).
 	Grace time.Duration
+	// SubjectPrefix is the namespace the announcements go out under (default DefaultSubjectPrefix; PAYMENT_SUBJECT_PREFIX).
+	SubjectPrefix string
 }
 
 // Processor is stage 2 of the webhook flow, run by payment-worker: it fulfils verified events from the inbox.
@@ -107,6 +111,9 @@ func NewProcessor(d ProcessorDeps) (*Processor, error) {
 	}
 	if d.Grace == 0 {
 		d.Grace = DefaultGrace
+	}
+	if d.SubjectPrefix == "" {
+		d.SubjectPrefix = DefaultSubjectPrefix
 	}
 	if d.Backoff == nil {
 		d.Backoff = defaultRetryBackoff
@@ -303,7 +310,10 @@ func (p *Processor) paymentSucceeded(ctx context.Context, acct domain.ProviderAc
 			if !found {
 				pay = domain.Payment{Scope: scope, Account: acct.ID, ProviderPaymentID: obj.ProviderPaymentID, IdemKey: obj.ProviderPaymentID, CreatedAt: e.CreatedAt}
 			}
-			pay.PlanCode, pay.Kind, pay.Pool, pay.CreditsGranted = plan.Code, paymentKind(plan), plan.Pool.Or(), 0
+			pay.PlanCode, pay.Pool, pay.CreditsGranted = plan.Code, plan.Pool.Or(), 0
+			if pay.Kind != kindAutoRecharge { // an auto top-up was made as one by the handler, which keyed it on its slot
+				pay.Kind = paymentKind(plan)
+			}
 			if plan.CreditAllotment != nil {
 				pay.CreditsGranted = *plan.CreditAllotment
 			}
@@ -333,8 +343,41 @@ func (p *Processor) paymentSucceeded(ctx context.Context, acct domain.ProviderAc
 		if err := p.announcePayment(ctx, announce.Scope, p.noteOf(*announce, event, announce.Amount.MinorUnits, nil)); err != nil {
 			return "", err
 		}
+		// A confirmed good charge clears the failures of the slot it was made in and releases it (invariant 18).
+		p.settleRecharge(ctx, *announce, true, "")
 	}
 	return outcomeProcessed, nil
+}
+
+// kindAutoRecharge is the kind of a payment made by an auto top-up's charge.
+const kindAutoRecharge = "auto_recharge"
+
+// settleRecharge reports the outcome of an auto top-up's payment to the slot it was made in. The payment's idempotency key IS
+// the slot's key, so it names the slot; the settlement releases that slot only. Only the first outcome of a payment reaches
+// here, so a replayed event cannot count one failure three times: that is deliberately at-most-once, because an undercount
+// only delays switching an instruction off while an overcount would switch a good card off. For the same reason a settlement
+// that cannot be made is logged and does not fail the event — the payment is already recorded, a retry would not settle again,
+// and the slot is replaced when it goes stale. A payment that is not an auto top-up, or a processor with no instructions,
+// settles nothing. It reports whether this settling switched the instruction off.
+func (p *Processor) settleRecharge(ctx context.Context, pay domain.Payment, ok bool, reason string) (disabled bool) {
+	if p.d.Recharges == nil || pay.Kind != kindAutoRecharge {
+		return false
+	}
+	tag, day, n, parsed := domain.ParseRechargeKey(pay.IdemKey)
+	if !parsed || tag != pay.Scope.Tag() {
+		p.d.Log.Warn("an auto top-up payment is not keyed on a charge slot; nothing was settled", "payment", pay.ProviderPaymentID, "key", pay.IdemKey)
+		return false
+	}
+	disabled, err := p.d.Recharges.Settle(ctx, pay.Scope, ports.RechargeClaim{Day: day, N: n}, ok, reason, p.d.Clock.Now())
+	switch {
+	case errors.Is(err, md.ErrNotFound):
+		return false // the instruction was deleted since: there is nothing left to settle
+	case err != nil:
+		p.d.Log.Warn("the charge slot of an auto top-up payment could not be settled; it is replaced when it goes stale",
+			"payment", pay.ProviderPaymentID, "scope", pay.Scope.Tag(), "error", err.Error())
+		return false
+	}
+	return disabled
 }
 
 func paymentKind(plan domain.Plan) string {
@@ -549,6 +592,8 @@ type paymentNote struct {
 	Currency   string     `json:"currency"`
 	GraceUntil *time.Time `json:"grace_until,omitempty"`
 	ReceiptURL string     `json:"receipt_url,omitempty"`
+	// Reason is why an auto top-up was switched off, when this announces that; empty otherwise.
+	Reason string `json:"reason,omitempty"`
 }
 
 // noteOf is the announcement of something that happened to a payment.
@@ -557,10 +602,10 @@ func (p *Processor) noteOf(pay domain.Payment, event string, amount int64, grace
 		Payment: pay.ProviderPaymentID, Amount: amount, Currency: pay.Amount.Currency, GraceUntil: graceUntil, ReceiptURL: pay.ReceiptURL}
 }
 
-// announcePayment publishes billing.payment.<tag>. It happens before the event is marked processed and a failure
+// announcePayment publishes <prefix>.payment.<tag>. It happens before the event is marked processed and a failure
 // retries the event — every step before it is idempotent — so a notification is never lost to a bus that blinked.
 func (p *Processor) announcePayment(ctx context.Context, scope domain.Scope, n paymentNote) error {
-	return p.publish(ctx, "billing.payment."+scope.SubjectToken(), n)
+	return p.publish(ctx, p.d.SubjectPrefix+".payment."+scope.SubjectToken(), n)
 }
 
 // entitlementNote is the body of billing.entitlement.<tag>: a scope's entitlements may have changed, so evict it
@@ -572,7 +617,7 @@ type entitlementNote struct {
 }
 
 func (p *Processor) announceEntitlement(ctx context.Context, scope domain.Scope, reason string) error {
-	return p.publish(ctx, "billing.entitlement."+scope.SubjectToken(),
+	return p.publish(ctx, p.d.SubjectPrefix+".entitlement."+scope.SubjectToken(),
 		entitlementNote{Realm: string(scope.Realm.Or()), Scope: scopeRef{scope.Kind, scope.ID}, Reason: reason})
 }
 
@@ -598,8 +643,10 @@ func (p *Processor) paymentFailed(ctx context.Context, acct domain.ProviderAccou
 	e := le.Event
 	obj := e.Object
 	var failed *domain.Payment
+	transitioned := false // this event is what made the payment failed: the first outcome, not a replay of it
 	if obj.ProviderPaymentID != "" && obj.Amount != nil {
 		_, err := p.d.Payments.Update(ctx, acct.ID, obj.ProviderPaymentID, func(cur domain.Payment, found bool) (domain.Payment, error) {
+			transitioned = false
 			pay := cur
 			if !found {
 				pay = domain.Payment{Scope: scope, Account: acct.ID, ProviderPaymentID: obj.ProviderPaymentID, Kind: "one_time", Pool: md.GeneralPool,
@@ -613,6 +660,7 @@ func (p *Processor) paymentFailed(ctx context.Context, acct domain.ProviderAccou
 				}
 			}
 			if !found || pay.Status == "" || pay.Status == domain.Pending || pay.Status == domain.Failed {
+				transitioned = pay.Status != domain.Failed
 				pay.Status, pay.FailureReason = domain.Failed, obj.FailureReason
 			}
 			failed = &pay
@@ -621,6 +669,14 @@ func (p *Processor) paymentFailed(ctx context.Context, acct domain.ProviderAccou
 		if err != nil {
 			return "", err
 		}
+	}
+	// A failed auto top-up counts against the instruction, once; the third in a row switches it off.
+	reason, switchedOff := obj.FailureReason, false
+	if reason == "" {
+		reason = "payment_failed"
+	}
+	if transitioned && failed != nil {
+		switchedOff = p.settleRecharge(ctx, *failed, false, reason)
 	}
 	var grace *time.Time
 	if obj.ProviderSubscriptionID != "" {
@@ -633,7 +689,11 @@ func (p *Processor) paymentFailed(ctx context.Context, acct domain.ProviderAccou
 		}
 	}
 	if failed != nil {
-		if err := p.announcePayment(ctx, scope, p.noteOf(*failed, "failed", failed.Amount.MinorUnits, grace)); err != nil {
+		note := p.noteOf(*failed, "failed", failed.Amount.MinorUnits, grace)
+		if switchedOff {
+			note.Reason = reason // so the host can tell the customer why their top-up stopped
+		}
+		if err := p.announcePayment(ctx, scope, note); err != nil {
 			return "", err
 		}
 	}

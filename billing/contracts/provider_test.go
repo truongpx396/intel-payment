@@ -8,6 +8,7 @@ import (
 
 	"github.com/truongpx396/intel-payment/billing/contracts"
 	"github.com/truongpx396/intel-payment/billing/domain"
+	"github.com/truongpx396/intel-payment/billing/ports"
 )
 
 // The suite is itself held to the rule it enforces: it passes an honest provider, and it rejects each deliberately
@@ -134,5 +135,18 @@ func TestTheCheckoutCaseLetsAProviderDeclineSetupWithTheTypedErrorAndNothingElse
 				t.Fatalf("rejected = %v (%v), want %v", failed, said, tc.rejected)
 			}
 		})
+	}
+}
+
+// The fake provider is what the auto top-up handler's contract runs against, so it must refuse a charge the way an adapter
+// does: with a typed error, not with whatever the fake happened to say.
+func TestTheFakeProviderRefusesAChargeWithErrChargeDeclined(t *testing.T) {
+	t.Parallel()
+	h := contracts.NewHarness()
+	h.Provider.DeclineCharges(true)
+	_, err := h.Provider.ChargeSaved(contracts.Ctx(), h.Account(), ports.OffSessionInput{CustomerID: "cus_1", PaymentMethodRef: "pm_1",
+		Amount: domain.Money{MinorUnits: 1000, Currency: "USD"}, IdemKey: "k"})
+	if !errors.Is(err, domain.ErrChargeDeclined) {
+		t.Fatalf("err = %v, want ErrChargeDeclined", err)
 	}
 }

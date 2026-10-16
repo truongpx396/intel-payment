@@ -47,15 +47,15 @@ Switching is a `cmd/` wiring change. No subject, payload, handler or invariant d
 
 ## Subjects
 
-`<tag>` is `Scope.SubjectToken()`: the scope's `Tag()` = `<realm>/<kind>:<id>` with the characters a subject reserves — `.`, `*`, `>`, whitespace and `%` itself — percent-encoded, so a scope id with a dot or a space in it can never split into two tokens or read as a wildcard. The realm is inside the token, so a subject can never be consumed as another product's. `SubjectPrefix` (default `billing`) is configurable.
+`<tag>` is `Scope.SubjectToken()`: the scope's `Tag()` = `<realm>/<kind>:<id>` with the characters a subject reserves — `.`, `*`, `>`, whitespace and `%` itself — percent-encoded, so a scope id with a dot or a space in it can never split into two tokens or read as a wildcard. The realm is inside the token, so a subject can never be consumed as another product's. `SubjectPrefix` (default `billing`; `PAYMENT_SUBJECT_PREFIX`) is configurable, and the whole of this table follows it: the payment layer announces `<prefix>.payment.<tag>`, `<prefix>.entitlement.<tag>` and `<prefix>.webhook.received`, and auto top-up acts only on `<prefix>.balance.low.<tag>` — a low-balance message under another prefix is not this deployment's and is refused, not charged for.
 
 | Subject | Publisher | Consumer | Payload (key fields) |
 |---|---|---|---|
 | *intents* on `billing:outbox:{s<n>}` | the hot functions only | `payment-worker`, the shard's owner | see [hot-path-consistency.md §2](./hot-path-consistency.md#2-the-hot-account-and-the-intent) |
-| `billing.balance.low.<tag>` | the writer, after booking an intent that crossed a balance watch | billing auto top-up; outbound events (`credits.low`) | `{realm, scope, pool, watch_key, threshold, balance, seq}` |
+| `billing.balance.low.<tag>` | the writer, after booking an intent that crossed a balance watch | billing auto top-up; outbound events (`credits.low`) | `{realm, scope, watch, seq}` — `scope` is the scope's tag (`<realm>/<kind>:<id>`) and `watch` is `<pool>:<threshold>`, the watch that was crossed. A **hint**: a consumer that acts on it re-reads what it needs, and treats a duplicate as normal (the intent that crossed is booked once, but the message is delivered at least once) |
 | `billing.warn.<tag>` | the `Admit` path crossing `WarnAt` | outbound events (`credits.warning`) | `{realm, scope, limit_name, subject?, used, cap, window, resets_at}` — **coalesced** per scope + limit + window |
 | `billing.blocked.<tag>` | the `Admit` path on a denial | outbound events (`credits.blocked`) | `{realm, scope, limit_name, deny_code, upgrade_path?}` — coalesced likewise |
-| `billing.payment.<tag>` | the webhook processor | outbound events (`payment.*`) | `{realm, scope, event: succeeded\|failed\|refunded\|disputed\|charged_back\|renewed\|canceled, amount, currency, grace_until?, receipt_url?}` |
+| `billing.payment.<tag>` | the webhook processor; the auto top-up handler when it switches an instruction off | outbound events (`payment.*`) | `{realm, scope, event: succeeded\|failed\|refunded\|disputed\|charged_back\|renewed\|canceled, amount, currency, grace_until?, receipt_url?, reason?}` — `reason` is present only on a `failed` that announces an auto top-up being switched off, and says why (`charge_declined`, or the provider's own reason), so the host can ask the customer to update their card |
 | `billing.entitlement.<tag>` | subscription change · override write · grace expiry | entitlement caches; outbound events (`entitlements.changed`) | `{realm, scope, reason}` — evicts cached grants, so a customer who just paid does not wait out a TTL |
 | `billing.config.<realm>` | the config relay (Postgres `LISTEN intelpay_config`) | every process caching cards, limits, pools, plans | `{table, realm}` — so configuration changes need no deploy and no TTL wait |
 | `billing.webhook.received` | webhook ingress, after persisting a verified delivery | the webhook processor | `{event_id}` — a latency hint only; the inbox sweep is the guarantee |
@@ -71,7 +71,7 @@ Published by an **external scheduler** onto `billing:ticks`; the `worker` group 
 | `billing.audit.tick` | deep audit per shard; advances `ledger_checkpoints` | daily, off-peak |
 | `billing.transfer.tick` | re-drives transfers `in_transit` longer than `TransferRedrive` | 1 min |
 | `billing.journal.tick` | replays pending `spend_journal` rows through the hot function | 10 s |
-| `billing.webhook.tick` | processes `received`/`failed` inbox rows due for (re)processing; retries `unverifiable` verification | 10 s |
+| `billing.webhook.tick` | processes `received`/`failed` inbox rows due for (re)processing; retries `unverifiable` verification | 10 s — **not published today**: `payment-worker` runs the same work from a timer of its own, `PAYMENT_WEBHOOK_TICK_INTERVAL` (default 5 s), and nothing subscribes to this subject |
 | `billing.outbound.tick` | delivers pending outbound webhooks with backoff | 5 s |
 | `billing.expiry.tick` | expires credit lots, pre-applying the upper bound ([§3](./hot-path-consistency.md#3-the-durable-writer-ordered-batched-idempotent)) | hourly, under `lots_fefo` |
 | `billing.dunning.tick` | suspends subscriptions past `GraceUntil` | hourly |

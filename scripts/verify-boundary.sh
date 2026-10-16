@@ -138,6 +138,18 @@ expect_reject "arch: a billing adapter does not reach the app (paypal -> billing
   billing/adapters/driven/paypal/zz_violation.go billing/adapters/driven/paypal \
   "package paypal
 import _ \"$mod/billing/app\""
+expect_reject "arch: the webhook door speaks for a port and calls no use case (billing/adapters/driving/webhookhttp -> billing/app)" arch \
+  billing/adapters/driving/webhookhttp/zz_violation.go billing/adapters/driving/webhookhttp \
+  "package webhookhttp
+import _ \"$mod/billing/app\""
+expect_reject "arch: the webhook door does not reach the books (billing/adapters/driving/webhookhttp -> billing/adapters/driven/postgres)" arch \
+  billing/adapters/driving/webhookhttp/zz_violation.go billing/adapters/driving/webhookhttp \
+  "package webhookhttp
+import _ \"$mod/billing/adapters/driven/postgres\""
+expect_reject "arch: the webhook door does not reach metering's transports (billing/adapters/driving/webhookhttp -> metering/adapters/driving/resthandler)" arch \
+  billing/adapters/driving/webhookhttp/zz_violation.go billing/adapters/driving/webhookhttp \
+  "package webhookhttp
+import _ \"$mod/metering/adapters/driving/resthandler\""
 expect_reject "depguard 9: the books know no provider (postgres -> stripe)" lint \
   billing/adapters/driven/postgres/zz_violation.go billing/adapters/driven/postgres \
   "package postgres

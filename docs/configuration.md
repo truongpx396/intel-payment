@@ -127,18 +127,27 @@ compose stack sets 400 for the default 256). Replicas divide the shards, so each
 | `PAYMENT_PLAN_CHANGE_POLICY` | `at_period_end` · `immediate_prorate` · `immediate_no_prorate` | `at_period_end` | Mid-period upgrade/downgrade. Proration is the provider's math |
 | `PAYMENT_TAX_STRATEGY` | `provider_managed` · `external_hook` · `none` | `provider_managed` | **Who computes tax.** There is no compute-it-here mode |
 
+### Payments
+
+Read by `paymentd` (the webhook door) and `payment-worker` (everything after it); both check the whole of it at start and name every variable that is wrong.
+
+| Variable | Default | Failure mode if wrong |
+|---|---|---|
+| `PAYMENT_WEBHOOK_TOLERANCE` | `5m` | How far a signature's timestamp may be from **when the delivery arrived**. Positive, at most `1h`: nothing rejects every delivery, and a wider window makes a captured delivery replayable for that long. A parked delivery is judged as of its arrival, so an outage longer than this does not turn it into a replay |
+| `PAYMENT_WEBHOOK_TICK_INTERVAL` | `5s` | `payment-worker`: how often the webhook inbox is worked and parked deliveries are verified again. A customer who has paid waits at most this long for their credits. Positive, at most `1m` |
+
 ### Dunning
 
 | Variable | Default | Notes |
 |---|---|---|
-| `PAYMENT_DUNNING_GRACE_DAYS` | `7` | Entitlements hold this long after a failed payment |
-| `PAYMENT_DUNNING_SUSPEND_AFTER_DAYS` | `14` | Suspension after grace |
+| `PAYMENT_DUNNING_GRACE_DAYS` | `7` | `payment-worker`: entitlements hold this long after a failed payment. A whole number of days, 1–365; `0` would silently become the default, so it is refused |
+| `PAYMENT_DUNNING_SUSPEND_AFTER_DAYS` | `14` | Suspension after grace. **Not read yet** — entitlements are Phase 4 |
 
 ### Retention
 
 | Variable | Default | Notes |
 |---|---|---|
-| `PAYMENT_PAYMENT_EVENT_RETENTION` | `90d` | Webhook inbox rows. **MUST exceed the longest provider replay window**; past it the permanent grant guard still prevents a double grant |
+| `PAYMENT_PAYMENT_EVENT_RETENTION` | `90d` | Processed webhook inbox rows, `payment-worker` deletes the older ones hourly. Days (`90d`) or a Go duration (`2160h`); **at least `7d`** — it MUST exceed the longest provider replay window, and past it the permanent grant guard still prevents a double grant. A row not yet processed, parked or dead is never deleted |
 | `PAYMENT_EVENT_RETENTION` | `30d` | Outbound events in the feed |
 | `PAYMENT_LEDGER_ONLINE_RETENTION` | `unlimited` | After this, a ledger partition fully covered by checkpoints is detached and archived — never dropped while needed to prove a balance |
 | `PAYMENT_USAGE_ARCHIVE_RETENTION` | `400d` | Per-event detail under `rollup` granularity |
@@ -167,7 +176,11 @@ or a `PAYMENT_SHARDS` that disagrees with the books. `paymentd healthcheck` exit
 ### Provider secrets
 
 Provider credentials are **realm configuration** (`provider_accounts`), and a row holds only
-*references* — `env:STRIPE_SECRET_KEY`, or a secret-manager path — never the secret. The referenced
+*references* — never the secret. Two schemes are resolved, at the moment of use and never cached, so a rotated secret takes
+effect on the next delivery: `env:NAME` (the variable of that name, in the process that needs it — `paymentd` verifies,
+`payment-worker` calls the provider) and `file:/absolute/path` (a mounted secret; it must be a regular file under 64 KiB, and
+one trailing line ending is dropped). A reference that cannot be resolved — an unset variable, an unreadable file, any other
+scheme — fails closed: the delivery is answered `500` and the provider retries. The referenced
 variables live wherever your platform keeps secrets:
 
 | Referenced variable (example) | Notes |

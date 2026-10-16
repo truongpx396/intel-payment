@@ -38,6 +38,9 @@ type ConfigStore struct {
 	pools  map[domain.Realm]entry[[]domain.PoolDef]
 	active map[domain.Realm]entry[domain.RateCard]
 	cards  map[cardKey]domain.RateCard // versions are immutable: cached forever
+	// watches is per SCOPE, and a deployment has as many scopes as it has customers: it holds at most maxWatch of them.
+	watches  map[watchKey]entry[[]ports.BalanceWatch]
+	maxWatch int
 
 	sf     singleflight.Group
 	cancel context.CancelFunc
@@ -56,6 +59,11 @@ type cardKey struct {
 	version string
 }
 
+type watchKey struct {
+	realm    domain.Realm
+	kind, id string
+}
+
 type counter struct {
 	mu sync.Mutex
 	n  int
@@ -72,6 +80,7 @@ var (
 	_ ports.LimitStore    = (*ConfigStore)(nil)
 	_ ports.PoolStore     = (*ConfigStore)(nil)
 	_ ports.RateCardStore = (*ConfigStore)(nil)
+	_ ports.WatchSource   = (*ConfigStore)(nil)
 )
 
 // ConfigOptions tune the cache.
@@ -80,6 +89,9 @@ type ConfigOptions struct {
 	TTL time.Duration
 	// Now is the clock; nil means the system clock. (Adapters own the real clock.)
 	Now func() time.Time
+	// MaxWatchScopes bounds how many scopes the cache holds balance watches for; 0 means 100 000. Past it the cache is
+	// forgotten whole and reloaded as asked, which costs a query and never a wrong answer.
+	MaxWatchScopes int
 }
 
 // NewConfigStore builds the store and starts its listener. Close stops it.
@@ -93,8 +105,11 @@ func NewConfigStore(ctx context.Context, pool *pgxpool.Pool, o ConfigOptions) (*
 	if o.Now == nil {
 		o.Now = time.Now
 	}
+	if o.MaxWatchScopes == 0 {
+		o.MaxWatchScopes = 100_000
+	}
 	s := &ConfigStore{
-		pool: pool, ttl: o.TTL, now: o.Now,
+		pool: pool, ttl: o.TTL, now: o.Now, maxWatch: o.MaxWatchScopes, watches: map[watchKey]entry[[]ports.BalanceWatch]{},
 		limits: map[domain.Realm]entry[[]domain.Limit]{}, pools: map[domain.Realm]entry[[]domain.PoolDef]{},
 		active: map[domain.Realm]entry[domain.RateCard]{}, cards: map[cardKey]domain.RateCard{},
 		done: make(chan struct{}),
@@ -206,10 +221,19 @@ func (s *ConfigStore) invalidate(n notice) {
 		clear(s.pools)
 		clear(s.active)
 		clear(s.cards)
+		clear(s.watches)
 	case n.Table == "limits":
 		delete(s.limits, realm)
 	case n.Table == "credit_pools":
 		delete(s.pools, realm)
+	case n.Table == "balance_watches":
+		// The notification names the realm and not the scope, so every scope of the realm is dropped; a watch changes when
+		// a customer edits their auto top-up, which is rare, and a reload is one indexed query.
+		for k := range s.watches {
+			if k.realm == realm {
+				delete(s.watches, k)
+			}
+		}
 	case n.Table == "rate_cards" || n.Table == "rate_card_entries":
 		delete(s.active, realm)
 		// Versions are immutable, so cached versions stay valid — but a card's params or entries
@@ -224,6 +248,65 @@ func (s *ConfigStore) invalidate(n notice) {
 		return
 	}
 	s.invalidations.inc()
+}
+
+// ----------------------------------------------------------- balance watches --
+
+// Watches returns the scope's balance watches, by pool then key. It is consulted on every debit — the hot function flags a
+// mutation that crosses one, and the writer publishes billing.balance.low, which is what drives auto top-up — so it is
+// served from the cache, and "none", which is nearly every scope's answer, is cached like any other.
+func (s *ConfigStore) Watches(ctx context.Context, sc domain.Scope) ([]ports.BalanceWatch, error) {
+	k := watchKey{realm: sc.Realm.Or(), kind: sc.Kind, id: sc.ID}
+	s.mu.RLock()
+	e, ok := s.watches[k]
+	s.mu.RUnlock()
+	if ok && s.fresh(e.at) {
+		return e.v, nil
+	}
+	v, err, _ := s.sf.Do("watches/"+string(k.realm)+"/"+k.kind+":"+k.id, func() (any, error) {
+		ws, err := s.loadWatches(ctx, k)
+		if err != nil {
+			return nil, err
+		}
+		s.mu.Lock()
+		if len(s.watches) >= s.maxWatch {
+			clear(s.watches)
+		}
+		s.watches[k] = entry[[]ports.BalanceWatch]{ws, s.now()}
+		s.mu.Unlock()
+		return ws, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.([]ports.BalanceWatch), nil
+}
+
+// WatchScopesCached reports how many scopes the cache holds balance watches for (for tests and metrics).
+func (s *ConfigStore) WatchScopesCached() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.watches)
+}
+
+func (s *ConfigStore) loadWatches(ctx context.Context, k watchKey) ([]ports.BalanceWatch, error) {
+	rows, err := s.pool.Query(ctx, `SELECT pool, key, threshold FROM balance_watches WHERE realm = $1 AND scope_kind = $2 AND scope_id = $3
+		ORDER BY pool, key`, string(k.realm), k.kind, k.id)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: balance watches of %s/%s:%s: %w", k.realm, k.kind, k.id, err)
+	}
+	defer rows.Close()
+	var out []ports.BalanceWatch
+	for rows.Next() {
+		var pool string
+		var w ports.BalanceWatch
+		if err := rows.Scan(&pool, &w.Key, &w.Threshold); err != nil {
+			return nil, fmt.Errorf("postgres: read a balance watch: %w", err)
+		}
+		w.Pool = domain.Pool(pool)
+		out = append(out, w)
+	}
+	return out, rows.Err()
 }
 
 // ------------------------------------------------------------------ limits --

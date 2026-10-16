@@ -22,6 +22,10 @@ var (
 	// off-session. It is not an outage and retrying will not help: the adapter says so without calling the provider, and
 	// the caller reports it rather than falling back on something it was not asked for.
 	ErrUnsupported = errors.New("the provider does not support this")
+	// ErrChargeDeclined is a charge the provider REFUSED: the card was declined, the saved method is not there, the customer
+	// must authenticate. The outcome is known and no retry will change it, so it counts toward switching an auto top-up
+	// off. Any other failure of ChargeSaved leaves the outcome unknown, and the same key is tried again.
+	ErrChargeDeclined = errors.New("the provider refused the charge")
 	// ErrNotImplemented is what a stub answers; production code never returns it.
 	ErrNotImplemented = errors.New("not implemented")
 )

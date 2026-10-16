@@ -286,6 +286,221 @@ func TestConfigStoreConcurrentReadersShareOneLoad(t *testing.T) {
 	wg.Wait()
 }
 
+// ----------------------------------------------------------- balance watches --
+
+func watchRows(t *testing.T, p *pgxpool.Pool) {
+	t.Helper()
+	exec(t, p, `INSERT INTO balance_watches (realm, scope_kind, scope_id, pool, key, threshold) VALUES
+		('t1','workspace','w1','general','auto_recharge',1000), ('t1','workspace','w1','gpu','low_credits',5000),
+		('t1','workspace','w2','general','auto_recharge',50), ('default','workspace','w1','general','auto_recharge',7),
+		('t1','user','w1','general','auto_recharge',33)`)
+}
+
+func ws(realm, id string) domain.Scope {
+	return domain.Scope{Realm: domain.Realm(realm), Kind: "workspace", ID: id}
+}
+
+// The hot path asks, on every debit, whether a scope has a watch; the writer publishes billing.balance.low when a debit
+// crosses one, and that is what drives auto top-up. So the answer must be right, and cheap.
+func TestConfigStoreServesAScopesBalanceWatches(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	p := db(t)
+	watchRows(t, p)
+	c := newConfig(t, p, pgadapter.ConfigOptions{TTL: time.Hour})
+
+	got, err := c.Watches(ctx, ws("t1", "w1"))
+	want := []ports.BalanceWatch{{Pool: "general", Threshold: 1000, Key: "auto_recharge"}, {Pool: "gpu", Threshold: 5000, Key: "low_credits"}}
+	if err != nil || len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("w1 = %+v, %v; want %+v (by pool, then key)", got, err, want)
+	}
+	if got, err := c.Watches(ctx, ws("t1", "w2")); err != nil || len(got) != 1 || got[0] != (ports.BalanceWatch{Pool: "general", Threshold: 50, Key: "auto_recharge"}) {
+		t.Fatalf("w2 = %+v, %v", got, err)
+	}
+	for name, sc := range map[string]domain.Scope{"a scope with none": ws("t1", "w3"), "another realm's scope of the same id": ws("other", "w1")} {
+		if got, err := c.Watches(ctx, sc); err != nil || len(got) != 0 {
+			t.Errorf("%s = %+v, %v", name, got, err)
+		}
+	}
+	// A scope is its realm, its kind AND its id: a user whose id is a workspace's id is another scope with watches of its own.
+	if got, err := c.Watches(ctx, domain.Scope{Realm: "t1", Kind: "user", ID: "w1"}); err != nil || len(got) != 1 || got[0].Threshold != 33 {
+		t.Fatalf("user w1 = %+v, %v", got, err)
+	}
+	// A scope with no realm is in the default realm, as everywhere.
+	if got, err := c.Watches(ctx, domain.Scope{Kind: "workspace", ID: "w1"}); err != nil || len(got) != 1 || got[0].Threshold != 7 {
+		t.Fatalf("a scope with no realm = %+v, %v", got, err)
+	}
+}
+
+// Most scopes have no watch, and the hot path asks about them on every debit: "none" is cached like any answer, or the
+// question would be a Postgres round trip per request.
+func TestConfigStoreCachesAScopesBalanceWatchesIncludingNone(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	p := db(t)
+	clock := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	now := func() time.Time { mu.Lock(); defer mu.Unlock(); return clock }
+	c := newConfig(t, p, pgadapter.ConfigOptions{TTL: time.Minute, Now: now})
+
+	if got, _ := c.Watches(ctx, ws("t1", "w1")); len(got) != 0 {
+		t.Fatalf("setup: %+v", got)
+	}
+	// A watch appears WITHOUT the audit trigger, so no notification is sent: the cache cannot know.
+	exec(t, p, `ALTER TABLE balance_watches DISABLE TRIGGER balance_watches_audit`)
+	exec(t, p, `INSERT INTO balance_watches (realm, scope_kind, scope_id, pool, key, threshold) VALUES ('t1','workspace','w1','general','auto_recharge',1000)`)
+	if got, _ := c.Watches(ctx, ws("t1", "w1")); len(got) != 0 {
+		t.Fatalf("%+v: an answer of none was not cached, so the hot path asked the database again", got)
+	}
+	// The TTL is the safety net for a notification that never arrives.
+	mu.Lock()
+	clock = clock.Add(2 * time.Minute)
+	mu.Unlock()
+	if got, _ := c.Watches(ctx, ws("t1", "w1")); len(got) != 1 {
+		t.Fatalf("an expired entry must reload: %+v", got)
+	}
+}
+
+func TestConfigStoreSeesAWatchTheDatabaseAnnounces(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	p := db(t)
+	c := newConfig(t, p, pgadapter.ConfigOptions{TTL: time.Hour})
+	if got, _ := c.Watches(ctx, ws("t1", "w1")); len(got) != 0 {
+		t.Fatalf("setup: %+v", got)
+	}
+	before := c.Invalidations()
+	// Enabling auto top-up writes a watch, and the database announces it in the same transaction: no TTL wait before the
+	// first low balance is noticed.
+	exec(t, p, `INSERT INTO balance_watches (realm, scope_kind, scope_id, pool, key, threshold) VALUES ('t1','workspace','w1','general','auto_recharge',1000)`)
+	eventually(t, 5*time.Second, "the new watch to reach the cache", func() bool {
+		got, err := c.Watches(ctx, ws("t1", "w1"))
+		return err == nil && len(got) == 1 && got[0].Threshold == 1000
+	})
+	if c.Invalidations() <= before {
+		t.Fatal("the change must have arrived as a notification, not by TTL")
+	}
+	exec(t, p, `UPDATE balance_watches SET threshold = 2500 WHERE realm = 't1' AND scope_id = 'w1'`)
+	eventually(t, 5*time.Second, "the edited threshold", func() bool {
+		got, err := c.Watches(ctx, ws("t1", "w1"))
+		return err == nil && len(got) == 1 && got[0].Threshold == 2500
+	})
+	exec(t, p, `DELETE FROM balance_watches WHERE realm = 't1' AND scope_id = 'w1'`)
+	eventually(t, 5*time.Second, "the watch to go when it is deleted", func() bool {
+		got, err := c.Watches(ctx, ws("t1", "w1"))
+		return err == nil && len(got) == 0
+	})
+}
+
+func TestConfigStoreDropsWatchesWhenTheListenerReconnects(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	p := db(t)
+	c := newConfig(t, p, pgadapter.ConfigOptions{TTL: time.Hour})
+	if got, _ := c.Watches(ctx, ws("t1", "w1")); len(got) != 0 {
+		t.Fatalf("setup: %+v", got)
+	}
+	exec(t, p, `ALTER TABLE balance_watches DISABLE TRIGGER balance_watches_audit`)
+	exec(t, p, `INSERT INTO balance_watches (realm, scope_kind, scope_id, pool, key, threshold) VALUES ('t1','workspace','w1','general','auto_recharge',1000)`)
+	before := c.Invalidations()
+	exec(t, p, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE 'LISTEN intelpay_config%' AND pid <> pg_backend_pid()`)
+	eventually(t, 10*time.Second, "the listener to reconnect and drop the watches", func() bool {
+		got, err := c.Watches(ctx, ws("t1", "w1"))
+		return err == nil && len(got) == 1 && c.Invalidations() > before
+	})
+}
+
+// The cache is per scope, and a deployment has as many scopes as it has customers. It holds at most MaxWatchScopes: past
+// that it forgets the lot and reloads what is asked for, which costs a query and never a wrong answer.
+func TestConfigStoreBoundsTheScopesItCachesWatchesFor(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	p := db(t)
+	watchRows(t, p)
+	c := newConfig(t, p, pgadapter.ConfigOptions{TTL: time.Hour, MaxWatchScopes: 3})
+	for i := range 12 {
+		if _, err := c.Watches(ctx, ws("t1", fmt.Sprintf("s%d", i))); err != nil {
+			t.Fatal(err)
+		}
+		if n := c.WatchScopesCached(); n > 3 {
+			t.Fatalf("after %d scopes the cache holds %d, past its bound of 3", i+1, n)
+		}
+	}
+	if got, err := c.Watches(ctx, ws("t1", "w1")); err != nil || len(got) != 2 {
+		t.Fatalf("an answer after the cache was cleared: %+v, %v", got, err)
+	}
+}
+
+// A change in another realm tells this cache nothing about its own: dropping every scope for it would turn a busy realm's
+// edits into a database round trip per debit in every other.
+func TestAnotherRealmsWatchChangeDoesNotEvictThisRealmsScopes(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	p := db(t)
+	watchRows(t, p)
+	c := newConfig(t, p, pgadapter.ConfigOptions{TTL: time.Hour})
+	if got, _ := c.Watches(ctx, ws("t1", "w1")); len(got) != 2 {
+		t.Fatalf("setup: %+v", got)
+	}
+	if c.WatchScopesCached() != 1 {
+		t.Fatalf("setup: %d scopes cached", c.WatchScopesCached())
+	}
+	before := c.Invalidations()
+	exec(t, p, `INSERT INTO balance_watches (realm, scope_kind, scope_id, pool, key, threshold) VALUES ('elsewhere','workspace','x','general','auto_recharge',1)`)
+	eventually(t, 5*time.Second, "the other realm's notification", func() bool { return c.Invalidations() > before })
+	if n := c.WatchScopesCached(); n != 1 {
+		t.Fatalf("%d scopes cached after another realm's change, want t1's w1 still there", n)
+	}
+	// ...and this realm's own change does evict it.
+	before = c.Invalidations()
+	exec(t, p, `UPDATE balance_watches SET threshold = 1 WHERE realm = 't1' AND scope_id = 'w2'`)
+	eventually(t, 5*time.Second, "this realm's notification", func() bool { return c.Invalidations() > before })
+	if n := c.WatchScopesCached(); n != 0 {
+		t.Fatalf("%d scopes cached after this realm's change, want none", n)
+	}
+}
+
+// Two scopes asked about at once are two questions: one must never be answered with the other's watches.
+func TestConcurrentReadersOfDifferentScopesEachGetTheirOwnWatches(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	p := db(t)
+	watchRows(t, p)
+	c := newConfig(t, p, pgadapter.ConfigOptions{TTL: time.Hour})
+	var wg sync.WaitGroup
+	for range 40 {
+		for id, n := range map[string]int{"w1": 2, "w2": 1, "w3": 0} {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if got, err := c.Watches(ctx, ws("t1", id)); err != nil || len(got) != n {
+					t.Errorf("%s = %+v, %v; want %d watches", id, got, err, n)
+				}
+			}()
+		}
+	}
+	wg.Wait()
+}
+
+func TestConfigStoreConcurrentReadersOfOneScopesWatchesAgree(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	p := db(t)
+	watchRows(t, p)
+	c := newConfig(t, p, pgadapter.ConfigOptions{})
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if got, err := c.Watches(ctx, ws("t1", "w1")); err != nil || len(got) != 2 {
+				t.Errorf("%+v %v", got, err)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
 // ------------------------------------------------------------------ journal --
 
 func charge(s domain.Scope, key string, amount domain.Credits) domain.Charge {

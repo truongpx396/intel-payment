@@ -58,6 +58,10 @@ type Fixtures struct {
 	DeclineCharges bool
 	// FailAll makes every API call answer a 500.
 	FailAll bool
+	// ChargeStatus, when not zero, is the HTTP status POST /v1/payment_intents answers with, as an error.
+	ChargeStatus int
+	// IntentStatus, when not empty, is the status of the payment intent a charge creates (default "succeeded").
+	IntentStatus string
 
 	customers map[string]string // idempotency key → customer id
 	charges   map[string]string
@@ -73,6 +77,9 @@ func New(t testing.TB) *Fixtures {
 	t.Cleanup(f.api.Close)
 	return f
 }
+
+// Stop shuts the fake API down, as an outage of Stripe's does.
+func (f *Fixtures) Stop() { f.api.Close() }
 
 // APIURL is where the fake API listens.
 func (f *Fixtures) APIURL() string { return f.api.URL }
@@ -263,7 +270,7 @@ func (f *Fixtures) serve(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 	f.mu.Lock()
 	f.reqs = append(f.reqs, Request{r.Method, r.URL.Path, r.Form, r.Header.Clone()})
-	fail, decline := f.FailAll, f.DeclineCharges
+	fail, decline, chargeStatus, intentStatus := f.FailAll, f.DeclineCharges, f.ChargeStatus, f.IntentStatus
 	f.n++
 	n := f.n
 	f.mu.Unlock()
@@ -326,6 +333,10 @@ func (f *Fixtures) serve(w http.ResponseWriter, r *http.Request) {
 			apiErr(402, "card_error", "card_declined", "Your card was declined.")
 			return
 		}
+		if chargeStatus != 0 {
+			apiErr(chargeStatus, "api_error", "", "The charge was not made.")
+			return
+		}
 		f.mu.Lock()
 		id, ok := f.charges[key]
 		if !ok {
@@ -335,7 +346,11 @@ func (f *Fixtures) serve(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		f.mu.Unlock()
-		reply(200, map[string]any{"id": id, "object": "payment_intent", "status": "succeeded"})
+		status := "succeeded"
+		if intentStatus != "" {
+			status = intentStatus
+		}
+		reply(200, map[string]any{"id": id, "object": "payment_intent", "status": status})
 	default:
 		apiErr(404, "invalid_request_error", "resource_missing", "Unrecognized request URL: "+r.Method+" "+path)
 	}

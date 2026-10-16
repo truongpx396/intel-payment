@@ -45,6 +45,11 @@ type Config struct {
 	UpgradeURL func(ctx context.Context, s domain.Scope) string
 	// MaxBodyBytes caps a request body. Default 1 MiB.
 	MaxBodyBytes int64
+
+	// Extra are routes a host adds to the table: the payment webhook receiver is the first. They are judged as the
+	// table's own are — a webhook route carries no authentication, a /v1 route always does, nothing is declared
+	// twice — and a table they spoil is refused at start.
+	Extra []Route
 }
 
 func (c Config) validate() error {
@@ -112,6 +117,9 @@ func BuildRegistry(cfg Config) (*Registry, error) {
 	}
 	if cfg.Transfers != nil {
 		reg.Add(Route{Method: http.MethodGet, Path: "/v1/transfers/{idem_key}", Surface: V1, Privilege: auth.Grant, Handler: h.transferStatus})
+	}
+	for _, r := range cfg.Extra {
+		reg.Add(r)
 	}
 	return reg, nil
 }

@@ -340,6 +340,10 @@ func (p *Provider) ChargeSaved(ctx context.Context, acct domain.ProviderAccount,
 	}
 	_, raw, err := p.call(ctx, acct, http.MethodPost, "/v1/payment_intents", f, in.IdemKey)
 	if err != nil {
+		var api *APIError
+		if errors.As(err, &api) && refusal(api.Status) {
+			return "", fmt.Errorf("%w: %w", domain.ErrChargeDeclined, err)
+		}
 		return "", err
 	}
 	var pi struct {
@@ -352,5 +356,17 @@ func (p *Provider) ChargeSaved(ctx context.Context, acct domain.ProviderAccount,
 	case "succeeded", "processing":
 		return pi.ID, nil
 	}
-	return pi.ID, fmt.Errorf("stripe: payment intent %s is %s: the saved method could not be charged without the customer", pi.ID, pi.Status)
+	return pi.ID, fmt.Errorf("%w: payment intent %s is %s: the saved method could not be charged without the customer", domain.ErrChargeDeclined, pi.ID, pi.Status)
+}
+
+// refusal reports whether an HTTP status from Stripe is the provider refusing a request for good: a client error that
+// resending the same request will not change. A 401 is our key and not their card, a 408 timed out, a 409 is the same
+// idempotency key still being processed, a 429 is a rate limit, and a 5xx is Stripe's own failure; none of those says the
+// charge was refused, so none is.
+func refusal(status int) bool {
+	switch status {
+	case http.StatusUnauthorized, http.StatusRequestTimeout, http.StatusConflict, http.StatusTooManyRequests:
+		return false
+	}
+	return status >= 400 && status < 500
 }

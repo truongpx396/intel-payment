@@ -279,7 +279,10 @@ type PaymentProvider interface {
 
 	// ChargeSaved charges a saved payment method off-session — auto top-up. Idempotent on
 	// in.IdemKey at the provider. It returns the provider payment id; credits still arrive only
-	// on the verified payment webhook (invariant 18).
+	// on the verified payment webhook (invariant 18). An error wraps domain.ErrChargeDeclined exactly when the
+	// provider REFUSED the charge for good (a declined card, a method that is not there, a customer who must
+	// authenticate); any other error — a timeout, a 5xx, a rate limit, an outage — leaves the outcome unknown,
+	// and the caller tries the SAME key again, which charges at most once.
 	ChargeSaved(ctx context.Context, acct domain.ProviderAccount, in OffSessionInput) (providerPaymentID string, err error)
 }
 
@@ -396,7 +399,7 @@ type Inbox interface {
 	// is dead, and the caller pages. It reports whether the event is now dead.
 	MarkFailed(ctx context.Context, id string, cause error, retryAt time.Time) (dead bool, err error)
 
-	// The parked half. A parked delivery is retried by billing.webhook.tick: Promote when it now
+	// The parked half. A parked delivery is retried by payment-worker's webhook loop: Promote when it now
 	// verifies (the body is deleted that moment), RetryParked while verification is still
 	// unavailable, Reject when it FAILS to verify — a security event; never trusted, body dropped.
 	// A ParkedDelivery carries ReceivedAt, when it FIRST arrived (a redelivery of the same bytes does not move it).
@@ -443,12 +446,20 @@ type Subs interface {
 // charge slot atomically: at most MaxPerDay distinct slots per UTC day however many times a trigger fires,
 // and while one is in flight another claim RESUMES it, so a duplicated trigger names the same idempotency
 // key and the provider charges once. Settle ends the slot: a good charge clears the failure count, a failed
-// one adds one, and the third in a row disables the instruction with the reason recorded.
+// one adds one, and the third in a row disables the instruction with the reason recorded. The rules are the
+// domain's (domain.AutoRecharge.Claim and Settle are pure); a store only makes them atomic.
 type AutoRecharges interface {
 	Get(ctx context.Context, s domain.Scope) (domain.AutoRecharge, bool, error)
+	// Put stores the configuration (never the ledger, so an edit cannot hand out more charges today). Written
+	// enabled it clears the failures — its owner has fixed the card; written disabled it records the reason given.
+	// An invalid instruction is md.ErrInvalid and is not stored. On PostgreSQL the instruction keeps a balance watch
+	// of key auto_recharge in the same transaction — metering's hot function flags a crossing of a watch and its
+	// writer publishes billing.balance.low — and a watch of any other key is the host's and is never touched.
 	Put(ctx context.Context, a domain.AutoRecharge) error
+	// Claim and Settle are the domain's rules under a lock. A scope with no instruction claims nothing (disabled);
+	// settling one is md.ErrNotFound.
 	Claim(ctx context.Context, s domain.Scope, now time.Time, staleAfter time.Duration) (RechargeClaim, RechargeRefusal, error)
-	Settle(ctx context.Context, s domain.Scope, ok bool, reason string, now time.Time) (disabled bool, err error)
+	Settle(ctx context.Context, s domain.Scope, slot RechargeClaim, ok bool, reason string, now time.Time) (disabled bool, err error)
 }
 
 // The driving ports behind the host-facing routes. Checkout has no Meter: it cannot grant. Subscriptions never
@@ -539,7 +550,7 @@ provider → POST /webhooks/{provider}/{account}
   3. PaymentProvider.VerifyWebhook(account, raw, headers)
         invalid → 400 invalid_signature, billing_webhook_verify_failed_total{provider}, SECURITY
                   event, STOP. Never 2xx, never partial processing.
-        unavailable (PayPal's API down) → Inbox.Park(raw) → 202. Retried by billing.webhook.tick.
+        unavailable (PayPal's API down) → Inbox.Park(raw) → 202. Retried by payment-worker's webhook loop.
   4. Inbox.Persist(normalized event) — an existing (account, event id) is a no-op.
   5. 200. Publish billing.webhook.received as a latency hint.
 ```
@@ -548,7 +559,7 @@ A body over the limit (1 MiB) is `413` before anything else. A route that names 
 or an account that does not exist, is inactive or belongs to another provider, is `404 unknown_account`
 and verifies nothing. A delivery is parked under a name made of the SHA-256 of its bytes
 (`parked:<hash>`) — nothing in it may be parsed yet — so the provider's redelivery of the same bytes is
-one row. `billing.webhook.tick` calls `Ingress.Retry`: a parked delivery that now verifies becomes an
+one row. `payment-worker`'s webhook loop (every `PAYMENT_WEBHOOK_TICK_INTERVAL`, one run at a time, at once on start) calls `Ingress.Retry` and `Processor.Tick`: a parked delivery that now verifies becomes an
 ordinary event and loses its raw body; one that fails is rejected (a security event, body dropped, never
 processed); one that still cannot be verified backs off (30 s doubling, one hour at most). A parked delivery is
 verified again as of when it ARRIVED (`ports.WithReceivedAt`), so waiting out an outage longer than the signature
@@ -560,6 +571,31 @@ label is ever keyed on what an unauthenticated caller typed.
 Nothing in stage 1 touches money, so it can run on a single transaction's latency and answer every
 duplicate `200` without a retry storm. **The only way a verified delivery is lost is a failure
 before step 4 commits — and then the provider has not received `200` and retries it.**
+
+### The door and the processes that run it
+
+**The door** (`billing/adapters/driving/webhookhttp`) is mounted by the REST handler as a *webhook* route
+(`resthandler.Config.Extra`), which is why it carries no authentication and no CORS and why the registry refuses to start with
+either on it. It reads at most `MaxBody`+1 bytes of the raw body — over the limit is `413 payload_too_large`, a body that stopped
+short is `400 invalid_request` and is never forwarded — and hands the ingress the body, every header value and the two names the
+route carries. Its answer is the ingress's status: a success carries `{}`; anything else is the REST error envelope
+`{"error":{"code","message"}}` with the ingress's code; an answer that is not an HTTP status is a `500`, so a defect can never
+be read as an acknowledgement. Nothing of a delivery is logged, and a `5xx` names only the provider and the account.
+
+**Secrets.** An account holds *references*: `env:NAME` (read from the environment of the process that needs it — `paymentd`
+verifies, `payment-worker` calls the provider and retries parked deliveries) and `file:/absolute/path` (a regular file under
+64 KiB; one trailing line ending is dropped). Both are resolved at the moment of use and never cached. Any other scheme, an unset
+or empty value, a relative or unclean path and a non-regular file are refused with an error that carries no secret material.
+
+**The worker's loops.** `payment-worker` runs `Processor.Tick`, `Ingress.Retry` and the inbox's retention purge, each at once on
+start and then every `PAYMENT_WEBHOOK_TICK_INTERVAL` (retention: hourly) after the last run ended, so a stage never overlaps
+itself; a failed run is logged with its stage and tried again and stops no other stage. It also joins `<prefix>.balance.low.>` as
+the group `payment-autorecharge` and hands each message to the auto top-up handler; a handler error is not acknowledged, so the
+bus delivers it again. The group's name is part of the deployment. A worker that cannot join exits `1` naming the subject. On a
+stop the context is cancelled and `Run` returns only when the stage in hand has finished.
+
+**Subjects** follow `PAYMENT_SUBJECT_PREFIX` (default `billing`) throughout: `<prefix>.payment.<tag>`, `<prefix>.entitlement.<tag>`,
+`<prefix>.webhook.received` and the `<prefix>.balance.low.<tag>` that auto top-up accepts.
 
 ### Stage 2 — processor (`payment-worker`, from the inbox)
 
@@ -694,6 +730,42 @@ billing owns what it triggers), and the recharge handler:
    trigger cannot charge twice, and a day cannot exceed `max_per_day` distinct charges;
 3. does **nothing else**: credits arrive when the `payment_succeeded` webhook is processed, like any
    purchase, with `kind = auto_recharge`.
+
+The bound on step 1 is a pure rule, `domain.AutoRecharge.Claim`, which every store applies and a fuzz target holds to
+its promises. A day is the UTC day, and it never goes back: a clock that steps back across midnight keeps counting the
+later day, so it cannot hand out a day's charges twice. A day hands out at most `max_per_day` slots, numbered 1, 2, 3…, and
+the key of a slot (`domain.RechargeKey`, read from the right so it is unambiguous however many colons a scope id has) is
+what the provider de-duplicates on. While a slot is in flight and younger than the staleness window, a claim **resumes**
+it — the same slot, so the same key, and the provider charges once however many replicas see the trigger — and resuming
+costs nothing, so it is allowed at the maximum. A slot claimed and never settled is replaced once it is stale, but it was
+spent and still counts, so abandoning slots cannot get round the maximum. A new UTC day starts from slot 1 and drops
+whatever was in flight on the day before. **A settlement names its slot** and releases the slot in flight only if it is that
+one: webhooks are late and replayed, and slot one's arriving after slot two was claimed must not release slot two, or a
+duplicate trigger would claim a third slot under a new key and charge the customer twice for one low balance. The outcome
+counts either way: a good charge clears the count of failures, a failed one adds one, and **the third in a row switches the instruction off** with the reason recorded (a default if the provider
+gave none, so the customer can always be told) and reports that this settling did it, so the news is made once. Nothing
+switches an instruction back on but its owner writing a new one.
+
+**The handler** (`billing/app.AutoRecharge`) takes `billing.balance.low.<tag>` as a **hint** and checks it. The message —
+`{realm, scope, watch, seq}` — is read only if its subject, its realm and its scope tag agree, and a message that cannot be read
+is an error that takes no slot. The instruction must exist, be enabled, and be for the pool whose watch was crossed (a host's own
+watch on another pool is ignored); and the balance is **read** and must be below the threshold, so a duplicate delivered after a
+recharge already restored it charges nothing. Only then is a slot claimed. The price is the catalogue's today for the plan and
+currency the instruction names — never an amount the instruction holds (invariant 4) — and the plan must be a credit pack. The
+charge is `ChargeSaved` under the slot's key, and **the handler grants nothing**. A charge the provider **refused**
+(`domain.ErrChargeDeclined`), a plan nobody sells, an account that is off, a customer the account has never seen, or a provider
+that cannot charge a saved method fails the slot — acknowledged, not retried, since resending would only fail again — and counts
+toward switching the instruction off. Any other error leaves the outcome **unknown**: the message is not acknowledged, the slot
+stays held, and the redelivery resumes it under the same key. An accepted charge leaves a **pending payment** of kind
+`auto_recharge` keyed on the slot (its idempotency key is the slot's key), waiting for its webhook; if the webhook already
+arrived, the payment the processor made is left as it is and the slot is settled at once.
+
+**The processor** fulfils that payment like any purchase — the grant is keyed on the slot, with reason `auto_recharge` — and its
+outcome settles **its** slot, once: the payment's key names the slot, and only the first outcome of a payment reaches the
+settlement, so a replayed failure counts once and a success that arrives after its slot went stale does not release the slot that
+replaced it. That is deliberately at-most-once: an undercount only delays switching an instruction off, and an overcount would
+switch a good card off, so a settlement that cannot be made is logged and does not fail the event. Every outcome of a trigger is
+counted in `billing_autorecharge_total{result}`.
 
 Three consecutive failures disable the row (`disabled_reason`) and emit `billing.payment.<tag>`
 with `failed`, so the host can ask the customer to update their card. The saved method is set up
