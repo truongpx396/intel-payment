@@ -87,5 +87,17 @@ expect_reject "depguard 8: the billing domain imports only metering's domain (bi
   billing/domain/zz_violation.go billing/domain \
   "package domain
 import _ \"$mod/metering/ports\""
+expect_reject "arch: billing's app reaches metering through its ports (billing/app -> metering/adapters/driven/redis)" arch \
+  billing/app/zz_violation.go billing/app \
+  "package app
+import _ \"$mod/metering/adapters/driven/redis\""
+expect_reject "arch: billing ports never reach the app (billing/ports -> billing/app)" arch \
+  billing/ports/zz_violation.go billing/ports \
+  "package ports
+import _ \"$mod/billing/app\""
+expect_reject "depguard 7: no infra in the fiat core (billing/app -> go-redis)" lint \
+  billing/app/zz_violation.go billing/app \
+  "package app
+import _ \"github.com/redis/go-redis/v9\""
 
 [ "$fail" -eq 0 ] && echo "boundary verified" || { echo "boundary NOT verified"; exit 1; }

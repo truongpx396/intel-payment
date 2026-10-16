@@ -23,6 +23,9 @@ components:
   billing:           { in: billing }                      # the root package: documentation only
   billing-domain:    { in: billing/domain }
   billing-ports:     { in: billing/ports }
+  billing-app:       { in: billing/app }
+  # Conformance suites: importable by an adapter's own tests, given constructors — they import no adapter.
+  billing-contracts: { in: billing/contracts }
   entitlement:      { in: entitlement/** }
   events:           { in: events/** }
   api:              { in: api/** }
@@ -55,12 +58,14 @@ deps:
   billing:           { mayDependOn: [ metering-domain, metering-ports ] }
   billing-domain:    { mayDependOn: [ metering-domain ] }
   billing-ports:     { mayDependOn: [ billing-domain, metering-domain, metering-ports ] }
+  billing-app:       { mayDependOn: [ billing-domain, billing-ports, metering-domain, metering-ports ] }
+  billing-contracts: { mayDependOn: [ billing-domain, billing-ports, metering-domain, metering-ports, metering-contracts ] }
   entitlement:      { mayDependOn: [ metering-domain, metering-ports, api ] }   # also implements metering's QuotaSource
   events:           { mayDependOn: [ metering-domain, api ] }                  # outbound delivery to hosts
   # cmd/** includes cmd/internal, the helpers the binaries share (the environment reader, the store wiring), so a
   # binary depends on its own component.
   cmd:              { mayDependOn: [ cmd, metering-domain, metering-ports, metering-config,
                                      metering-app, metering-driven, metering-driving,
-                                     billing-domain, billing-ports,
+                                     billing-domain, billing-ports, billing-app,
                                      entitlement, events, api,
                                      migrate, migrations ] }

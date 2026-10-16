@@ -1544,7 +1544,13 @@ Invariant 15 requires that every terminal state be observable, which means the m
 | `metering_correction_orphan_total` | counter (`realm`) | a correction was booked that closed no suspense entry: it was already closed, or never existed |
 | `metering_correction_stale_total` | counter (`realm`) | an open suspense entry older than `HotIdemTTL`: re-issuing its correction could apply twice, so it is left for a human |
 | `metering_recover_parked_total` | counter (`shard`) | intents a recovery parked because they sat behind a sequence gap that can no longer fill — each is a movement to investigate |
+| `billing_webhook_received_total` | counter (`provider`, `result`) | verified deliveries by outcome: `new`, a `duplicate` acknowledged again, or `parked` because verification was unavailable. `provider` is a registered provider, resolved before anything is counted — never what an unauthenticated route typed |
 | `billing_webhook_verify_failed_total` | counter (`provider`) | a signature failure is a **security** event (see [payment-provider-ports.md](./payment-provider-ports.md)) |
+| `billing_webhook_processed_total` | counter (`provider`, `outcome`) | inbox events the processor finished: `processed`, or `ignored` by design |
+| `billing_webhook_ignored_total` | counter (`provider`, `reason`) | events ignored by design — `unsubscribed_type`, `unknown_customer` (a provider account can carry customers this deployment never created), `unknown_price` (a customer paid for something the catalogue does not sell: investigate) |
+| `billing_webhook_failed_total` | counter (`provider`) | a failed attempt to process an inbox event; each is retried on a backoff |
+| `billing_webhook_dead_total` | counter (`provider`) | an inbox event that failed every attempt: a verified payment event no one has fulfilled. **Pages** |
+| `billing_webhook_foreign_realm_total` | counter (`provider`) | a verified event whose customer resolves to a realm its account does not serve (payments invariant 19): a **security** event |
 | `billing_webhook_inbox_age_seconds` | gauge | the oldest unprocessed verified webhook — a payment someone made that has not been fulfilled yet |
 | `billing_grant_applied_total` | counter (`realm`, `reason`) | reconciles against the provider's own payout report |
 | `events_delivery_failed_total` | counter (`realm`, `endpoint`) | an outbound webhook to a host that is failing — see [outbound-events.md](./outbound-events.md) |

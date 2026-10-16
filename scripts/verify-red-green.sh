@@ -152,7 +152,10 @@ for c in "${red_candidates[@]}"; do
       kind="the build failed (stub the new symbol so the test fails on its assertion, not on a compile error)"
     fi
     echo "RED   $short — $kind"
-    grep -E '^(--- FAIL|FAIL|\s+[a-z_]+_test\.go:[0-9]+:)' "$out" | head -4 | sed 's/^/        /'
+    # The first lines of the failure, read whole and then cut: `grep | head` stops head early, and a grep that still has output
+    # to write gets a broken pipe — which under pipefail fails the gate (exit 141, or 2 where SIGPIPE is ignored, as on CI) for a
+    # red that is perfectly correct. A red must never be refused for how much it said.
+    grep -E '^(--- FAIL|FAIL|\s+[a-z_]+_test\.go:[0-9]+:)' "$out" | sed -n '1,4p' | sed 's/^/        /'
     verified_names="${verified_names:+$verified_names|}$names"
     verified_pkgs="$verified_pkgs $pkgs"; [ "${#tag_args[@]}" -eq 0 ] || verified_tags=("${tag_args[@]}")
   fi

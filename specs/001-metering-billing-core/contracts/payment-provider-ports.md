@@ -437,6 +437,17 @@ provider → POST /webhooks/{provider}/{account}
   5. 200. Publish billing.webhook.received as a latency hint.
 ```
 
+A body over the limit (1 MiB) is `413` before anything else. A route that names no registered provider,
+or an account that does not exist, is inactive or belongs to another provider, is `404 unknown_account`
+and verifies nothing. A delivery is parked under a name made of the SHA-256 of its bytes
+(`parked:<hash>`) — nothing in it may be parsed yet — so the provider's redelivery of the same bytes is
+one row. `billing.webhook.tick` calls `Ingress.Retry`: a parked delivery that now verifies becomes an
+ordinary event and loses its raw body; one that fails is rejected (a security event, body dropped, never
+processed); one that still cannot be verified backs off (30 s doubling, one hour at most). An event whose
+provider or account differs from the route's is an adapter defect, answered `500`, never filed. Metrics
+are counted only after the route has resolved to a registered provider and a live account, so no
+label is ever keyed on what an unauthenticated caller typed.
+
 Nothing in stage 1 touches money, so it can run on a single transaction's latency and answer every
 duplicate `200` without a retry storm. **The only way a verified delivery is lost is a failure
 before step 4 commits — and then the provider has not received `200` and retries it.**
@@ -470,11 +481,37 @@ Inbox.Lease(n) → for each event, in provider CreatedAt order per customer:
   d. On error: MarkFailed with exponential backoff; past MaxAttempts → status dead, page.
 ```
 
+A failed attempt keeps its reason on the row and is retried on a backoff (15 s doubling, 30 minutes at
+most); past the attempt cap (5) the event is **dead**, `billing_webhook_dead_total` pages, and nothing
+touches it again until a human does. An event the deployment does not own is **ignored**, never failed —
+an unsubscribed type, a customer no `Customers` row names (a provider account can carry customers this
+deployment never created), a price the catalogue does not sell (never a default plan) — each with its
+reason on `billing_webhook_ignored_total`; a customer in a realm the account does not serve is ignored
+and counted on `billing_webhook_foreign_realm_total`, which is a security signal. A price whose plan lives
+in a realm other than the customer's fails loudly: money was taken for something the customer's realm does
+not sell. An event that names a payment and not a customer (a dispute) takes its scope from that payment's
+own record. `Lease` hands a customer's events out one at a time, oldest provider timestamp first, so two
+processors never work one customer's money at once.
+
 **Every step is idempotent**, which is what makes the lease-and-retry model safe: `Meter.Grant` is
 keyed on a provider id (unique per realm and op — one payment can mint once, for one scope),
 `Payments.Upsert` on `(account, provider_payment_id)`, `Subs.ApplyIfNewer` on the provider
 timestamp. A processor that crashes mid-event leaves a lease that expires; the next lease re-runs
 the event and every completed step is a no-op.
+
+**Subscriptions.** A subscription event says THAT something changed; the processor fetches the
+provider's current object (`FetchSubscription`) and writes it only if it is newer than the one held
+(`Subs.ApplyIfNewer`), so no delivery order decides state. The adapter has already mapped the provider's
+price to a plan code through the catalogue; an object with no plan code is ignored (`unknown_price`),
+never guessed. When the provider says `past_due` the grace window opens at **the provider's timestamp**
+of that object plus the dunning grace — not at our clock, so a retry computes the same instant — and a
+newer notice of the same trouble carries the window forward instead of moving it; any other status
+clears it. Entitlements lapse by the clock (`Sub.HoldsEntitlements`); every tick also lists the windows
+that have ended and announces each once on `billing.entitlement.<tag>` (`reason: grace_expired`) so
+caches evict at that instant, recording the announcement (`grace_lapsed_at`) after making it. A change
+that was applied is announced on `billing.entitlement.<tag>` (`reason: subscription`); a cancellation also
+on `billing.payment.<tag>` (`event: canceled`). A failed payment is recorded and moves no credits; one that
+follows a success does not undo it; one paid at last under the same payment id is granted then.
 
 ### Partial refunds
 
@@ -510,6 +547,15 @@ Credits the customer *spent* are still revoked: what a refund past the spend doe
 `NegativeBalancePolicy`'s decision (metering invariant 12), not the processor's. The clawback names the
 payment it reverses (`source_key`), so the books empty that payment's own lot before any other. With expiry
 off there are no lots, `LotsOf` is empty and the cap is a no-op.
+
+A refund or a dispute names a payment, and the payment is the authority on whose it is: an event whose
+customer is not the payment's owner fails loudly rather than moving another scope's credits. Both run
+under the payment's lock (`Payments.Update`), read `LotReader.LotsOf` for what expiry has taken — an
+outage of the reader is an error, never a zero — and are announced on `billing.payment.<tag>`
+(`refunded`, `disputed`, `charged_back`, `succeeded`) only when they changed something, **before** the
+event is marked processed: a bus that blinked retries the event, every step of which is idempotent, so a
+notification is never lost. A clawback whose payment commit failed after the grant was made is recomputed
+identically on the retry and replays under the same key.
 
 ### Dispute lifecycle
 
