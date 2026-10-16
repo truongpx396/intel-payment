@@ -187,7 +187,7 @@ variables live wherever your platform keeps secrets:
 |---|---|
 | `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` | Local HMAC verification |
 | `POLAR_ACCESS_TOKEN` / `POLAR_WEBHOOK_SECRET` | Local HMAC verification |
-| `PAYPAL_CLIENT_ID` / `_SECRET` / `_WEBHOOK_ID` | **Remote** verification — an API call per webhook; an outage parks deliveries |
+| `PAYPAL_CREDENTIALS` / `PAYPAL_WEBHOOK_ID` | `PAYPAL_CREDENTIALS` is `<client id>:<client secret>` in one value (an account row references one value); `PAYPAL_WEBHOOK_ID` is the webhook's id. **Remote** verification — an API call per webhook; an outage parks deliveries |
 
 ---
 
