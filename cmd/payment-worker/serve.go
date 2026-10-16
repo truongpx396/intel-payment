@@ -12,7 +12,9 @@ import (
 	"strings"
 	"time"
 
+	billingports "github.com/truongpx396/intel-payment/billing/ports"
 	"github.com/truongpx396/intel-payment/cmd/internal/envcfg"
+	"github.com/truongpx396/intel-payment/cmd/internal/payments"
 	"github.com/truongpx396/intel-payment/cmd/internal/wiring"
 	"github.com/truongpx396/intel-payment/metering"
 	pgarchive "github.com/truongpx396/intel-payment/metering/adapters/driven/archive/postgres"
@@ -30,7 +32,7 @@ func serve(ctx context.Context, getenv func(string) string, stderr io.Writer) in
 		return 2
 	}
 	log := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: s.LogLevel})).With("version", version)
-	if err := runWorker(ctx, s, log); err != nil {
+	if err := runWorker(ctx, s, log, getenv); err != nil {
 		log.Error("payment-worker stopped", "error", err.Error())
 		return 1
 	}
@@ -38,7 +40,7 @@ func serve(ctx context.Context, getenv func(string) string, stderr io.Writer) in
 	return 0
 }
 
-func runWorker(ctx context.Context, s settings, log *slog.Logger) error {
+func runWorker(ctx context.Context, s settings, log *slog.Logger, getenv func(string) string) error {
 	cfg := s.Engine
 	// A worker holds one connection per shard it owns, plus those its batches use.
 	st, err := wiring.Open(ctx, cfg, cfg.Shards+16)
@@ -51,7 +53,7 @@ func runWorker(ctx context.Context, s settings, log *slog.Logger) error {
 		return err
 	}
 	defer closeBus()
-	metrics, metricsHandler, err := otelmetrics.NewPrometheus()
+	metrics, metricsHandler, err := otelmetrics.NewPrometheus(otelmetrics.WithDefs(billingports.MetricCatalog...))
 	if err != nil {
 		return err
 	}
@@ -80,14 +82,46 @@ func runWorker(ctx context.Context, s settings, log *slog.Logger) error {
 		return err
 	}
 
+	// Payments: stage 2 of the webhook flow mints credits through the engine, the same one paymentd fronts, and auto top-up
+	// reads a balance back through it.
+	engine, err := app.NewService(cfg, deps)
+	if err != nil {
+		return err
+	}
+	pay, err := payments.NewWorker(payments.Common{
+		Books: payments.OpenBooks(st.Pool, system.Clock{}), Getenv: getenv, Clock: system.Clock{}, Metrics: metrics, Bus: bus, Log: log,
+		Settings: s.Payments, SubjectPrefix: cfg.SubjectPrefix,
+	}, payments.Money{Meter: engine, Lots: st.Books, Balances: engine})
+	if err != nil {
+		return err
+	}
+
 	ops, err := serveOps(s.OpsAddr, metricsHandler, log)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = ops.Close() }()
 
+	// The payment loops stop with the worker, and the worker stops with them: one that cannot join the low-balance
+	// subscription is a worker that is not topping anyone up, which must be seen as a failure and not as a quiet process.
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	paid := make(chan error, 1)
+	go func() {
+		err := pay.Run(runCtx)
+		if err != nil {
+			stop()
+		}
+		paid <- err
+	}()
+
 	r := &runner{s: s, log: log, books: st.Books, writer: writer, replayer: replayer, expirer: expirer}
-	return r.run(ctx)
+	err = r.run(runCtx)
+	stop()
+	if perr := <-paid; perr != nil && err == nil {
+		err = perr
+	}
+	return err
 }
 
 // serveOps serves /healthz and /metrics for the process. The worker takes no calls; this is for the platform.
