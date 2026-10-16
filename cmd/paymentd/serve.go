@@ -17,7 +17,11 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
+	"github.com/truongpx396/intel-payment/billing/adapters/driving/webhookhttp"
+	billingapp "github.com/truongpx396/intel-payment/billing/app"
+	billingports "github.com/truongpx396/intel-payment/billing/ports"
 	"github.com/truongpx396/intel-payment/cmd/internal/envcfg"
+	"github.com/truongpx396/intel-payment/cmd/internal/payments"
 	"github.com/truongpx396/intel-payment/cmd/internal/wiring"
 	"github.com/truongpx396/intel-payment/metering"
 	pgarchive "github.com/truongpx396/intel-payment/metering/adapters/driven/archive/postgres"
@@ -38,7 +42,7 @@ func serve(ctx context.Context, getenv func(string) string, _, stderr io.Writer)
 		return 2
 	}
 	log := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: s.LogLevel})).With("version", version)
-	if err := runService(ctx, s, log); err != nil {
+	if err := runService(ctx, s, log, getenv); err != nil {
 		log.Error("paymentd stopped", "error", err.Error())
 		return 1
 	}
@@ -59,8 +63,8 @@ func (s *service) close() {
 	}
 }
 
-func runService(ctx context.Context, s settings, log *slog.Logger) error {
-	svc, err := wire(ctx, s, log)
+func runService(ctx context.Context, s settings, log *slog.Logger, getenv func(string) string) error {
+	svc, err := wire(ctx, s, log, getenv)
 	if err != nil {
 		return err
 	}
@@ -131,7 +135,7 @@ func (s *service) drain(timeout time.Duration) error {
 }
 
 // wire connects the stores, checks what must be true before money is served, and builds both transports.
-func wire(ctx context.Context, s settings, log *slog.Logger) (*service, error) {
+func wire(ctx context.Context, s settings, log *slog.Logger, getenv func(string) string) (*service, error) {
 	cfg := s.Engine
 	svc := &service{}
 	ok := false
@@ -152,7 +156,7 @@ func wire(ctx context.Context, s settings, log *slog.Logger) (*service, error) {
 	}
 	svc.closers = append(svc.closers, closeBus)
 
-	metrics, metricsHandler, err := otelmetrics.NewPrometheus()
+	metrics, metricsHandler, err := otelmetrics.NewPrometheus(otelmetrics.WithDefs(billingports.MetricCatalog...))
 	if err != nil {
 		return nil, err
 	}
@@ -174,10 +178,25 @@ func wire(ctx context.Context, s settings, log *slog.Logger) (*service, error) {
 		return nil, err
 	}
 
+	// The door a payment provider knocks on. Payments are always served: an account that does not exist or is inactive is
+	// answered 404 unknown_account, so a deployment with no provider account is a deployment with no payments.
+	ingress, err := payments.NewIngress(payments.Common{
+		Books: payments.OpenBooks(st.Pool, system.Clock{}), Getenv: getenv, Clock: system.Clock{}, Metrics: metrics, Bus: bus, Log: log,
+		Settings: s.Payments, SubjectPrefix: cfg.SubjectPrefix,
+	})
+	if err != nil {
+		return nil, err
+	}
+	door, err := webhookhttp.New(webhookhttp.Config{Ingress: ingress, MaxBody: billingapp.DefaultMaxBody, Logger: log})
+	if err != nil {
+		return nil, err
+	}
+
 	handler, err := resthandler.New(resthandler.Config{
 		Meter: engine, Balance: engine, Credits: engine, Ledger: st.Books, Transfers: st.Books, Admin: admin,
 		Auth: s.Authenticator, Clock: system.Clock{}, Logger: log, Legacy429ForLimits: s.Legacy429,
 		Ready: readiness{db: st.DB, ms: st.Migrations, books: st.Books, shards: cfg.Shards}, Metrics: metricsHandler,
+		Extra: []resthandler.Route{{Method: http.MethodPost, Path: webhookhttp.Path, Surface: resthandler.Webhook, Handler: door}},
 	})
 	if err != nil {
 		return nil, err

@@ -101,7 +101,7 @@ func Open(ctx context.Context, cfg metering.Config, maxConns int) (_ *Stores, er
 		return nil, errors.New("PAYMENT_BALANCE_REDIS_URL is not a redis:// or redis+cluster:// URL")
 	}
 	s.Defer(func() { _ = s.Redis.Close() })
-	if s.Hot, err = hotredis.New(s.Redis, hotredis.Options{Config: cfg, Pools: s.Config, Limits: s.Config, Clock: system.Clock{}}); err != nil {
+	if s.Hot, err = hotredis.New(s.Redis, hotredis.Options{Config: cfg, Pools: s.Config, Limits: s.Config, Watches: s.Config, Clock: system.Clock{}}); err != nil {
 		return nil, err
 	}
 	return s, nil

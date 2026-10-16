@@ -13,7 +13,8 @@ import (
 // settings is everything the process is told, parsed once at start from PAYMENT_* variables (docs/configuration.md).
 // Nothing past this file reads the environment.
 type settings struct {
-	Engine metering.Config // defaults applied
+	Engine   metering.Config // defaults applied
+	Payments envcfg.Payments
 
 	Bus          string // redis_streams | nats_jetstream
 	BusURL       string
@@ -45,6 +46,7 @@ func parseSettings(getenv func(string) string) (settings, error) {
 	cfg := r.Engine()
 	bus := r.Bus()
 	s.Bus, s.BusURL, s.BusRetention = bus.Kind, bus.URL, bus.Retention
+	s.Payments = r.Payments()
 
 	s.HTTPAddr, s.GRPCAddr = r.StrOr("PAYMENT_HTTP_ADDR", ":8080"), r.StrOr("PAYMENT_GRPC_ADDR", ":9090")
 	r.Bool("PAYMENT_LEGACY_429_FOR_LIMITS", &s.Legacy429)

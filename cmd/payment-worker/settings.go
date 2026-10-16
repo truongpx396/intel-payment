@@ -13,7 +13,8 @@ import (
 
 // settings is everything the worker is told, parsed once at start from PAYMENT_* variables.
 type settings struct {
-	Engine metering.Config // defaults applied
+	Engine   metering.Config // defaults applied
+	Payments envcfg.Payments
 
 	DrainInterval         time.Duration // how long a shard with nothing to book waits before it looks again
 	OwnershipRetry        time.Duration // how often unowned shards are tried, and held ones checked
@@ -35,6 +36,7 @@ func parseSettings(getenv func(string) string) (settings, error) {
 	}
 
 	s := settings{
+		Payments:      r.Payments(),
 		DrainInterval: 250 * time.Millisecond, OwnershipRetry: 2 * time.Second, TransferRedrive: 30 * time.Second,
 		JournalReplayInterval: 5 * time.Second, ShutdownTimeout: 30 * time.Second,
 	}
