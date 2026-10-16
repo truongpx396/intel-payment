@@ -76,6 +76,56 @@ bump() { perl -pi -e 's/MaxOperationAmount Credits = 1 << 50/MaxOperationAmount 
 branch a; write_test '1 << 51'; git add "$testfile"; git commit -qm "test(red): the ceiling is 2^51"; bump; git commit -qam "fix(green): raise the ceiling"
 expect "a failing test-only commit, then the change, passes" 0 "red, then green" "$vrg" base
 
+# A red whose failure output is long is still a red. The gate shows the first lines of that output through `grep | head`; when grep
+# has more to write after head has gone — the matching lines span more than one buffer and a long stretch of other output follows
+# them — the write error, under pipefail, failed the whole gate with exit 2 on GNU grep (CI): a correct red refused for how much it
+# said. Eight messages of 600 bytes in one package, and a failing test in the next that prints a 64 MB line, make that happen.
+branch long
+cat >"$testfile" <<'GO'
+package domain_test
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/truongpx396/intel-payment/metering/domain"
+)
+
+func TestScratchGateLongOutput(t *testing.T) {
+	t.Parallel()
+	if domain.MaxOperationAmount == 1<<51 {
+		return
+	}
+	long := strings.Repeat("x", 600)
+	for i := range 8 {
+		t.Errorf("%d: the ceiling is not yet 2^51 %s", i, long)
+	}
+}
+GO
+noisefile=metering/ports/scratch_gate_noise_test.go
+cat >"$noisefile" <<'GO'
+package ports_test
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+
+	"github.com/truongpx396/intel-payment/metering/domain"
+)
+
+func TestScratchGateNoise(t *testing.T) {
+	t.Parallel()
+	if domain.MaxOperationAmount == 1<<51 {
+		return
+	}
+	fmt.Println(strings.Repeat("y", 64<<20))
+	t.Fatal("the ceiling is not yet 2^51")
+}
+GO
+git add "$testfile" "$noisefile"; git commit -qm "test(red): the ceiling is 2^51, and says a lot about it"; bump; git commit -qam "fix(green): raise the ceiling"
+expect "a red with a long failure output is still a red" 0 "red, then green" "$vrg" base
+
 branch b; bump; git commit -qam "raise the ceiling"
 expect "production code with no test-only commit is refused" 1 "no test-only commit" "$vrg" base
 
