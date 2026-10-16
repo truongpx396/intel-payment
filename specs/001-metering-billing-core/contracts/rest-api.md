@@ -31,17 +31,23 @@ Conventions: `Idempotency-Key` required on every mutating request, and it **is**
 
 ## Catalogue, checkout & subscription
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/v1/plans` | Active plans for the realm. `?currency=`. Host slugs, prices, allotments, pools and entitlements — **never a provider price id** |
-| POST | `/v1/checkout` | `{scope, plan_code, currency, mode?: payment\|subscription\|setup, account?, success_url, cancel_url}` → `{redirect_url}`. **Never grants** |
-| GET | `/v1/subscription` | `{plan_code, status, current_period_end, cancel_at_period_end, grace_until}` or `null` |
-| POST | `/v1/subscription/change` | `{plan_code}` under the deployment's `PlanChangePolicy`. Status changes when the resulting webhook is processed |
-| POST | `/v1/subscription/cancel` | Cancel at period end; local status syncs via webhook |
-| GET | `/v1/portal` | `{portal_url}` — card management stays with the provider |
-| GET / PUT | `/v1/auto-recharge` | `{enabled, pool, threshold, plan_code, currency, max_per_day}`; `PUT` requires a saved method from a `setup` checkout |
-| GET | `/v1/payments` | Payment history, cursor-paginated, with refund and dispute state |
-| GET | `/v1/fulfilment` | `{kind: none\|processing\|granted\|failed, …}` — **the only sanctioned way a UI learns credits arrived** |
+Served by `billing/adapters/driving/paymenthttp`, mounted by `paymentd` on the `/v1` surface: the registry authenticates every call and checks the route's privilege before a handler runs. The door has no `Meter`, so none of these can grant a credit — credits arrive when a verified payment is processed ([payments invariant 2](./payment-provider-ports.md)). **A scope is named the way the metering routes name it** — `?scope_kind=&scope_id=` (and `&scope_realm=` when the credential spans several) on a read, `"scope": {kind, id, realm?}` in a body — and its realm is the credential's, never the body's. A route is registered only when the deployment serves its port.
+
+**Privileges.** Reads, `checkout` and `portal` are the host's everyday calls and need `record`. What commits a customer to charges — a plan change, a cancellation, a standing instruction to top up — needs `grant`, so a credential that can only meter cannot spend a customer's money.
+
+| Method | Path | Privilege | Purpose |
+|--------|------|-----------|---------|
+| GET | `/v1/plans` | `record` | `?currency=` (required, upper-case ISO 4217 — a currency is never guessed) `&realm=` → `{data:[{code, name, kind, credit_allotment (null when negotiated), pool, interval?, sort_order, prices: {USD: 1000}, entitlements?}]}`. The realm's active plans priced in the currency, in their order. **Never a provider price id**, nor a provider account |
+| POST | `/v1/checkout` | `record` | `{scope, plan_code, currency, mode?: payment\|subscription\|setup, account?, success_url, cancel_url, billing_email?}` → `{redirect_url}`. `Idempotency-Key` required and it is the checkout's identity: a double-clicked buy button is one session. **Never grants**, and the body has no field for a price, an amount or a quantity of credits — the catalogue says what a plan costs, and a field that tries is `400` naming it. `success_url`/`cancel_url` must be `https` on a host of `PAYMENT_CHECKOUT_RETURN_HOSTS` |
+| GET | `/v1/subscription` | `record` | `{plan_code, status, current_period_end, cancel_at_period_end, grace_until}` (`grace_until` is `null` outside a grace) or `null`. No provider identifier |
+| POST | `/v1/subscription/change` | `grant` | `{scope, plan_code}` under the deployment's `PlanChangePolicy` → `202 {accepted: true}`: the provider was asked. Status changes when the resulting webhook is processed, never here. `409 below_usage` when the change would take an entitlement below what the scope uses |
+| POST | `/v1/subscription/cancel` | `grant` | `{scope}` — cancel at period end, and only that → `202`; local status syncs via webhook |
+| GET | `/v1/portal` | `record` | `?scope_kind=&scope_id=&return_url=` (`&account=`) → `{portal_url}` — card management stays with the provider. `404` for a scope that has never bought |
+| GET / PUT | `/v1/auto-recharge` | `record` / `grant` | `GET` → `{enabled, pool, threshold, plan_code, currency, account, max_per_day, has_payment_method, disabled_reason?}` or `null`. `PUT {scope, enabled, pool, threshold, plan_code, currency, account, payment_method_ref, max_per_day}` stores the standing instruction (invariant 18) and answers it as stored. `payment_method_ref` is the provider's reference to a method saved by a `setup` checkout or the portal — never card data — and is **never read back**: the instruction says only whether one is saved. The day's ledger (`charges_today`, the slot in flight, the failure count) has no field in the request, so editing an instruction cannot hand out more charges today |
+| GET | `/v1/payments` | `record` | `?scope_kind=&scope_id=&limit=&cursor=` (limit 1–200) → `{data:[{id, plan_code?, kind, amount: {minor_units, currency}, tax_amount?, credits_granted, credits_revoked, pool?, refunded_minor, status, dispute_status?, receipt_url?, failure_reason?, created_at}], next}`, newest first, with refund and dispute state. No idempotency key, no provider account |
+| GET | `/v1/fulfilment` | `record` | `{kind: none\|processing\|granted\|failed, since?, amount?, receipt_url?, reason?}` — **the only sanctioned way a UI learns credits arrived** |
+
+Errors added by these routes (additive within `/v1`): `404 unknown_account` (the named account does not serve the realm), `409 below_usage`, `422 unknown_price` (a plan, currency or mapping the catalogue does not sell — never a default plan), `422 unsupported` (the provider cannot do this at all, such as saving a payment method). Anything the door does not name is `500 internal` with fixed text; the cause goes to the operator's log.
 
 ## Entitlements
 

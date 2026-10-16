@@ -26,6 +26,8 @@ tags:
     description: Admit before the expensive work, record after it.
   - name: credits
     description: Granting, moving and reading credits.
+  - name: payments
+    description: Selling, and managing what was sold. Credits are never granted here — only a verified payment grants them.
   - name: admin
     description: Configuration as data, every write attributed to a person and a reason.
   - name: platform
@@ -291,6 +293,292 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/Unavailable" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/plans:
+    get:
+      operationId: listPlans
+      tags: [payments]
+      x-served-by: payments
+      summary: What the realm sells, in one currency.
+      description: |
+        The active plans of the credential's realm that are priced in `currency`, in their order: the host's slugs,
+        prices (integer minor units), credit allotments, pools and entitlements. **Never a provider's price id** — a
+        client that learned one could name a price the catalogue did not offer it.
+      x-privilege: record
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: currency
+          in: query
+          required: true
+          schema: { type: string, pattern: "^[A-Z]{3}$" }
+          description: An upper-case ISO 4217 code. A currency is required, never guessed.
+        - $ref: "#/components/parameters/Realm"
+      responses:
+        "200":
+          description: The plans, possibly none.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlanList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/checkout:
+    post:
+      operationId: startCheckout
+      tags: [payments]
+      x-served-by: payments
+      summary: Start a hosted checkout and learn where to send the buyer.
+      description: |
+        Names WHAT is wanted — a plan and a currency — and nothing about what it costs: the amount and the credit
+        quantity come from the catalogue. **Never grants.** Credits arrive when the provider's verified webhook is
+        processed; `GET /v1/fulfilment` is the only sanctioned way to learn that they did.
+      x-privilege: record
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CheckoutRequest" }
+      responses:
+        "200":
+          description: The hosted checkout.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CheckoutResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/subscription:
+    get:
+      operationId: getSubscription
+      tags: [payments]
+      x-served-by: payments
+      summary: The scope's subscription, or null.
+      x-privilege: record
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ScopeKind"
+        - $ref: "#/components/parameters/ScopeID"
+        - $ref: "#/components/parameters/ScopeRealm"
+      responses:
+        "200":
+          description: The subscription as the provider last said it, or `null` for a scope with none.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Subscription" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/subscription/change:
+    post:
+      operationId: changeSubscription
+      tags: [payments]
+      x-served-by: payments
+      summary: Ask the provider to move the subscription to another plan.
+      description: |
+        Under the deployment's plan-change policy. The answer is `202`: the provider was asked. The subscription's
+        status changes when the resulting webhook is processed, never here.
+      x-privilege: grant
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChangeRequest" }
+      responses:
+        "202": { $ref: "#/components/responses/Accepted" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/subscription/cancel:
+    post:
+      operationId: cancelSubscription
+      tags: [payments]
+      x-served-by: payments
+      summary: Ask the provider to end the subscription when the paid period does.
+      x-privilege: grant
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CancelRequest" }
+      responses:
+        "202": { $ref: "#/components/responses/Accepted" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/portal:
+    get:
+      operationId: getPortal
+      tags: [payments]
+      x-served-by: payments
+      summary: The provider's page where a customer manages cards and invoices.
+      description: Card management stays with the provider; this service never touches card data.
+      x-privilege: record
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ScopeKind"
+        - $ref: "#/components/parameters/ScopeID"
+        - $ref: "#/components/parameters/ScopeRealm"
+        - name: account
+          in: query
+          schema: { type: string }
+          description: The provider account to open the portal of, when the scope has bought through several.
+        - name: return_url
+          in: query
+          required: true
+          schema: { type: string, format: uri }
+          description: Where the provider sends the customer back. https only, and on a configured host.
+      responses:
+        "200":
+          description: The portal.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PortalResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/auto-recharge:
+    get:
+      operationId: getAutoRecharge
+      tags: [payments]
+      x-served-by: payments
+      summary: The scope's standing instruction to top up, or null.
+      x-privilege: record
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ScopeKind"
+        - $ref: "#/components/parameters/ScopeID"
+        - $ref: "#/components/parameters/ScopeRealm"
+      responses:
+        "200":
+          description: The instruction, or `null`. The saved method is reported as present or absent, never by its reference.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutoRecharge" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "504": { $ref: "#/components/responses/Timeout" }
+    put:
+      operationId: putAutoRecharge
+      tags: [payments]
+      x-served-by: payments
+      summary: Set the scope's standing instruction to top up.
+      description: |
+        When the pool's balance falls below `threshold`, the saved payment method is charged off-session for one pack
+        of `plan_code`, at most `max_per_day` times a UTC day. Credits arrive only when the verified payment is
+        processed. Writing the instruction cannot hand out more charges today, and three declined charges in a row
+        switch it off (`disabled_reason`) until it is written again.
+      x-privilege: grant
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AutoRechargeRequest" }
+      responses:
+        "200":
+          description: The instruction as stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutoRecharge" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/payments:
+    get:
+      operationId: listPayments
+      tags: [payments]
+      x-served-by: payments
+      summary: The scope's payment history, newest first, a page at a time.
+      x-privilege: record
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ScopeKind"
+        - $ref: "#/components/parameters/ScopeID"
+        - $ref: "#/components/parameters/ScopeRealm"
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: A page, with each payment's refund and dispute state. `next` is null at the end.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/fulfilment:
+    get:
+      operationId: getFulfilment
+      tags: [payments]
+      x-served-by: payments
+      summary: What the server says about the credits the latest purchase should bring.
+      description: |
+        **The only sanctioned way a UI learns credits arrived.** `granted` is a state the server reports from a
+        processed webhook; a client never infers it from having returned from a checkout.
+      x-privilege: record
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ScopeKind"
+        - $ref: "#/components/parameters/ScopeID"
+        - $ref: "#/components/parameters/ScopeRealm"
+      responses:
+        "200":
+          description: The fulfilment.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Fulfilment" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
         "504": { $ref: "#/components/responses/Timeout" }
   /v1/admin/rate-cards:
     get:
@@ -655,6 +943,15 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    Accepted:
+      description: The provider was asked. What changed is told by the webhook about it, never by this answer.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [accepted]
+            properties:
+              accepted: { type: boolean }
     Unavailable:
       description: A store the call needs is unavailable; retry with the same `Idempotency-Key`. `hot_store_unavailable`, `quota_unavailable`.
       content:
@@ -680,6 +977,158 @@ components:
               type: object
               additionalProperties: true
               description: "For a refused admission: `limit`, `resets_at` (or `window` and `dur_seconds`), and `upgrade_url` when a plan exists to buy."
+    Money:
+      type: object
+      required: [minor_units, currency]
+      properties:
+        minor_units: { type: integer, format: int64 }
+        currency: { type: string }
+    Entitlement:
+      type: object
+      required: [key, kind, value]
+      properties:
+        key: { type: string }
+        kind: { type: string, enum: [flag, quota, enum] }
+        value:
+          description: A flag is a boolean, a quota an integer (-1 is unlimited), an enum a string.
+          oneOf:
+            - { type: boolean }
+            - { type: integer, format: int64 }
+            - { type: string }
+    Plan:
+      type: object
+      required: [code, name, kind, credit_allotment, pool, sort_order, prices]
+      properties:
+        code: { type: string, description: "The host's slug, and the only plan id that crosses to a client." }
+        name: { type: string }
+        kind: { type: string, enum: [one_time, subscription] }
+        credit_allotment: { type: integer, format: int64, nullable: true, description: "Null for a negotiated plan." }
+        pool: { type: string }
+        interval: { type: string, enum: [month, year] }
+        sort_order: { type: integer }
+        prices:
+          type: object
+          additionalProperties: { type: integer, format: int64 }
+          description: Minor units by ISO 4217 code.
+        entitlements:
+          type: array
+          items: { $ref: "#/components/schemas/Entitlement" }
+    PlanList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Plan" }
+    CheckoutRequest:
+      type: object
+      required: [scope, currency, success_url, cancel_url]
+      additionalProperties: false
+      properties:
+        scope: { $ref: "#/components/schemas/Scope" }
+        plan_code: { type: string, description: "Required for `payment` and `subscription`; a `setup` checkout sells nothing." }
+        currency: { type: string, pattern: "^[A-Z]{3}$" }
+        mode: { type: string, enum: [payment, subscription, setup], description: "Omit for whatever the plan is: a pack is `payment`, a recurring plan `subscription`." }
+        account: { type: string, description: "The provider account to sell through. Omit for the one of the realm that sells the plan in the currency." }
+        success_url: { type: string, format: uri }
+        cancel_url: { type: string, format: uri }
+        billing_email: { type: string }
+    CheckoutResult:
+      type: object
+      required: [redirect_url]
+      properties:
+        redirect_url: { type: string, format: uri }
+    Subscription:
+      type: object
+      nullable: true
+      required: [plan_code, status, current_period_end, cancel_at_period_end, grace_until]
+      properties:
+        plan_code: { type: string }
+        status: { type: string, enum: [trialing, active, past_due, paused, canceled, incomplete] }
+        current_period_end: { type: string, format: date-time }
+        cancel_at_period_end: { type: boolean }
+        grace_until: { type: string, format: date-time, nullable: true, description: "Entitlements hold until this instant after a failed payment." }
+    ChangeRequest:
+      type: object
+      required: [scope, plan_code]
+      additionalProperties: false
+      properties:
+        scope: { $ref: "#/components/schemas/Scope" }
+        plan_code: { type: string, minLength: 1 }
+    CancelRequest:
+      type: object
+      required: [scope]
+      additionalProperties: false
+      properties:
+        scope: { $ref: "#/components/schemas/Scope" }
+    PortalResult:
+      type: object
+      required: [portal_url]
+      properties:
+        portal_url: { type: string, format: uri }
+    AutoRechargeRequest:
+      type: object
+      required: [scope, enabled, pool, threshold, plan_code, currency, account, payment_method_ref, max_per_day]
+      additionalProperties: false
+      properties:
+        scope: { $ref: "#/components/schemas/Scope" }
+        enabled: { type: boolean }
+        pool: { type: string }
+        threshold: { type: integer, format: int64, minimum: 1, description: "Credits; the pool is topped up when it falls below this." }
+        plan_code: { type: string, description: "A credit pack." }
+        currency: { type: string, pattern: "^[A-Z]{3}$" }
+        account: { type: string }
+        payment_method_ref: { type: string, description: "The provider's reference to a saved method. Never card data." }
+        max_per_day: { type: integer, minimum: 1, maximum: 50 }
+    AutoRecharge:
+      type: object
+      nullable: true
+      required: [enabled, pool, threshold, plan_code, currency, account, max_per_day, has_payment_method]
+      properties:
+        enabled: { type: boolean }
+        pool: { type: string }
+        threshold: { type: integer, format: int64 }
+        plan_code: { type: string }
+        currency: { type: string }
+        account: { type: string }
+        max_per_day: { type: integer }
+        has_payment_method: { type: boolean }
+        disabled_reason: { type: string, description: "Why it was switched off, when it was." }
+    Payment:
+      type: object
+      required: [id, kind, amount, credits_granted, credits_revoked, refunded_minor, status, created_at]
+      properties:
+        id: { type: string }
+        plan_code: { type: string }
+        kind: { type: string, enum: [one_time, subscription_invoice, auto_recharge] }
+        amount: { $ref: "#/components/schemas/Money" }
+        tax_amount: { $ref: "#/components/schemas/Money" }
+        credits_granted: { type: integer, format: int64 }
+        credits_revoked: { type: integer, format: int64 }
+        pool: { type: string }
+        refunded_minor: { type: integer, format: int64, description: "Cumulative, as the provider reports it." }
+        status: { type: string, enum: [pending, succeeded, failed, refunded, partially_refunded, disputed, charged_back] }
+        dispute_status: { type: string, enum: [open, won, lost] }
+        receipt_url: { type: string }
+        failure_reason: { type: string }
+        created_at: { type: string, format: date-time }
+    PaymentPage:
+      type: object
+      required: [data, next]
+      properties:
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Payment" }
+        next: { type: string, nullable: true }
+    Fulfilment:
+      type: object
+      required: [kind]
+      properties:
+        kind: { type: string, enum: [none, processing, granted, failed] }
+        since: { type: string, format: date-time, description: "`processing`: when the payment began." }
+        amount: { type: integer, format: int64, description: "`granted`: the credits that arrived." }
+        receipt_url: { type: string }
+        reason: { type: string, description: "`failed`: the provider's reason." }
     Scope:
       type: object
       required: [kind, id]

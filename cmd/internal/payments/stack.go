@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	pgbilling "github.com/truongpx396/intel-payment/billing/adapters/driven/postgres"
+	"github.com/truongpx396/intel-payment/billing/adapters/driving/paymenthttp"
 	"github.com/truongpx396/intel-payment/billing/app"
 	"github.com/truongpx396/intel-payment/billing/ports"
 	"github.com/truongpx396/intel-payment/cmd/internal/envcfg"
@@ -108,4 +109,51 @@ func NewWorker(c Common, m Money) (*Loops, error) {
 		Processor: processor, Ingress: ingress, Inbox: c.Books.Inbox, Recharge: recharge, Bus: c.Bus, Clock: c.Clock, Log: c.Log,
 		SubjectPrefix: c.SubjectPrefix, Tick: c.Settings.WebhookTick, Retention: c.Settings.EventRetention,
 	})
+}
+
+// Sell is what paymentd serves besides the door a provider knocks on: selling, and managing what was sold. Neither has a
+// Meter, so neither can grant a credit.
+type Sell struct {
+	Checkout *app.Checkout
+	Changes  *app.PlanChanges
+}
+
+// NewSell builds the use cases behind the host's /v1 payment routes, over the same books and provider registry the webhook
+// door verifies with, under the selling settings. A setting that cannot work stops it here.
+func NewSell(c Common, s envcfg.Selling) (Sell, error) {
+	providers, err := c.providers()
+	if err != nil {
+		return Sell{}, err
+	}
+	tax, err := app.NewTaxStrategy(s.TaxStrategy, nil)
+	if err != nil {
+		return Sell{}, fmt.Errorf("payments: %w", err)
+	}
+	checkout, err := app.NewCheckout(app.CheckoutDeps{
+		Providers: providers, Accounts: c.Books.Accounts, Catalog: c.Books.Catalog, Customers: c.Books.Customers, Payments: c.Books.Payments,
+		Tax: tax, Clock: c.Clock, ReturnHosts: s.ReturnHosts, Log: c.Log,
+	})
+	if err != nil {
+		return Sell{}, fmt.Errorf("payments: checkout: %w", err)
+	}
+	changes, err := app.NewSubscriptions(app.SubscriptionsDeps{
+		Providers: providers, Accounts: c.Books.Accounts, Catalog: c.Books.Catalog, Subs: c.Books.Subs, Payments: c.Books.Payments,
+		Policy: s.PlanChangePolicy, Log: c.Log,
+	})
+	if err != nil {
+		return Sell{}, fmt.Errorf("payments: subscriptions: %w", err)
+	}
+	return Sell{Checkout: checkout, Changes: changes}, nil
+}
+
+// NewDoor is the host's /v1 payment routes over the books and the use cases of Sell.
+func NewDoor(c Common, sell Sell) (*paymenthttp.Door, error) {
+	d, err := paymenthttp.New(paymenthttp.Config{
+		Catalog: c.Books.Catalog, Checkout: sell.Checkout, Subs: c.Books.Subs, Changes: sell.Changes, Recharges: c.Books.Recharges,
+		Payments: c.Books.Payments, Caller: CredentialCaller{}, Logger: c.Log,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("payments: %w", err)
+	}
+	return d, nil
 }

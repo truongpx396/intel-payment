@@ -12,12 +12,14 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	billing "github.com/truongpx396/intel-payment/billing/domain"
 	"github.com/truongpx396/intel-payment/metering"
 	hotredis "github.com/truongpx396/intel-payment/metering/adapters/driven/redis"
 	"github.com/truongpx396/intel-payment/metering/domain"
@@ -341,3 +343,52 @@ func parseRetention(v string) (time.Duration, error) {
 	}
 	return time.ParseDuration(v)
 }
+
+// Selling is what paymentd is told about selling: when a plan change takes effect, who computes tax, and where a buyer may
+// be sent back to. Each is a decision about a customer's money, so an unusable value is reported, never replaced.
+type Selling struct {
+	PlanChangePolicy billing.PlanChangePolicy // PAYMENT_PLAN_CHANGE_POLICY
+	TaxStrategy      billing.TaxMode          // PAYMENT_TAX_STRATEGY
+	// ReturnHosts are the hosts a checkout or portal return URL may name (PAYMENT_CHECKOUT_RETURN_HOSTS), lower-cased. Empty
+	// accepts any https host, which a deployment that knows its hosts should not.
+	ReturnHosts []string
+}
+
+// Selling reads the selling settings.
+func (r *Reader) Selling() Selling {
+	s := Selling{PlanChangePolicy: billing.AtPeriodEnd, TaxStrategy: billing.TaxProviderManaged}
+
+	if v := r.Str("PAYMENT_PLAN_CHANGE_POLICY"); v != "" {
+		if p := billing.PlanChangePolicy(v); p.Valid() {
+			s.PlanChangePolicy = p
+		} else {
+			r.Fail("PAYMENT_PLAN_CHANGE_POLICY", fmt.Sprintf("must be at_period_end, immediate_prorate or immediate_no_prorate, got %q", v))
+		}
+	}
+
+	if v := r.Str("PAYMENT_TAX_STRATEGY"); v != "" {
+		switch m := billing.TaxMode(v); {
+		case m == billing.TaxExternalHook:
+			r.Fail("PAYMENT_TAX_STRATEGY", "external_hook needs the host's own tax service, which this binary has no way to be given: use provider_managed or none, so that tax is somebody's")
+		case m.Valid():
+			s.TaxStrategy = m
+		default:
+			r.Fail("PAYMENT_TAX_STRATEGY", fmt.Sprintf("must be provider_managed or none, got %q (there is no mode that computes tax here)", v))
+		}
+	}
+
+	if v := r.Str("PAYMENT_CHECKOUT_RETURN_HOSTS"); v != "" {
+		for _, h := range strings.Split(v, ",") {
+			h = strings.ToLower(strings.TrimSpace(h))
+			if !returnHost.MatchString(h) {
+				r.Fail("PAYMENT_CHECKOUT_RETURN_HOSTS", fmt.Sprintf("must be a comma-separated list of hosts or host:port, with no scheme, path or empty entry, got %q", h))
+				return s
+			}
+			s.ReturnHosts = append(s.ReturnHosts, h)
+		}
+	}
+	return s
+}
+
+// returnHost is a DNS name or IPv4 address, optionally with a port: what a URL's host is spelled as.
+var returnHost = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$`)
