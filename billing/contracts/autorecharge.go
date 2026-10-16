@@ -511,6 +511,14 @@ func (w *RechargeWorld) rechargeInFlight(t testing.TB, paymentID string) (slot p
 	return slot, key
 }
 
+// priceless is the success event of a charge made off-session: Stripe's payment_intent.succeeded names an amount and a method
+// and no price, because a payment intent has none.
+func (w *RechargeWorld) priceless(eventID, paymentID string) FakeEvent {
+	ev := w.PaymentSucceeded(eventID, paymentID)
+	ev.Price = ""
+	return ev
+}
+
 func (w *RechargeWorld) paymentFailed(eventID, paymentID string) FakeEvent {
 	return FakeEvent{ID: eventID, Type: string(domain.PaymentFailed), Created: w.Now(), Customer: "cus_1", Payment: paymentID, Price: PackPriceID,
 		Amount: 1000, Currency: "USD", Reason: "card_declined"}
@@ -537,6 +545,56 @@ func AutoRechargeSettlementCases() []ProcessorCase {
 			}
 			if got := w.instruction(t); got.InflightN != 0 || got.ConsecutiveFailed != 0 {
 				t.Fatalf("instruction = %+v: the slot is released and the failures cleared by a confirmed charge", got)
+			}
+		}},
+		{"an auto top-up's success needs no price: the provider's event about a charge made off-session names none, and its plan was fixed when it was charged", func(t testing.TB, mk ProcessorFactory) {
+			w := NewRechargeWorld()
+			p := mk(t, w.Harness)
+			_, key := w.rechargeInFlight(t, "pi_1")
+			ev := w.PaymentSucceeded("evt_1", "pi_1")
+			ev.Price = "" // a Stripe payment_intent.succeeded carries an amount and a method, and no price
+			w.Persisted(ev)
+			w.Tick(t, p)
+			wantRow(t, w.Harness, "evt_1", RowProcessed)
+			g := w.Meter.LastGrant()
+			if g.Reason != "auto_recharge" || g.IdemKey != key || g.Amount != PackCredits || g.Scope != w.Scope.Normalized() {
+				t.Fatalf("grant = %+v, want %d credits as an auto_recharge under %s: the customer was charged and the credits must arrive", g, PackCredits, key)
+			}
+			pay, _, _ := w.Payments.Get(Ctx(), AccountID, "pi_1")
+			if pay.Status != domain.Succeeded || pay.Kind != "auto_recharge" || pay.PlanCode != PackCode || pay.CreditsGranted != PackCredits {
+				t.Fatalf("payment = %+v", pay)
+			}
+			if got := w.instruction(t); got.InflightN != 0 {
+				t.Fatalf("instruction = %+v: the slot is released by the confirmed charge", got)
+			}
+			w.Persisted(w.priceless("evt_2", "pi_1")) // redelivered
+			w.Tick(t, p)
+			if n := w.Meter.Grants(key); n != 1 {
+				t.Fatalf("the credits were granted %d times", n)
+			}
+		}},
+		{"a success that names no price and was never charged by this service is ignored, not guessed at", func(t testing.TB, mk ProcessorFactory) {
+			w := NewRechargeWorld()
+			p := mk(t, w.Harness)
+			w.Persisted(w.priceless("evt_1", "pi_unknown"))
+			w.Tick(t, p)
+			wantRow(t, w.Harness, "evt_1", RowIgnored)
+			if n := w.Meter.GrantCalls(); n != 0 {
+				t.Fatalf("%d grants for a payment nobody here charged and no price names (FR-021: never a default plan)", n)
+			}
+		}},
+		{"an auto top-up charged for a plan that is no longer sold fails loudly instead of taking the customer's money for nothing", func(t testing.TB, mk ProcessorFactory) {
+			w := NewRechargeWorld()
+			p := mk(t, w.Harness)
+			w.rechargeInFlight(t, "pi_1")
+			retired := WorldPlans()[0]
+			retired.Plan.Active = false
+			w.Catalog.Add(retired.Plan, retired.Account, retired.Currency, retired.ProviderPriceID)
+			w.Persisted(w.priceless("evt_1", "pi_1"))
+			w.Tick(t, p)
+			row := wantRow(t, w.Harness, "evt_1", RowFailed)
+			if row.Attempts != 1 || w.Meter.GrantCalls() != 0 {
+				t.Fatalf("row = %+v, grants %d: the event must be retried and, in the end, page — the customer was charged", row, w.Meter.GrantCalls())
 			}
 		}},
 		{"a success that arrives after its slot went stale does not release the slot that replaced it, and replaying it grants nothing more", func(t testing.TB, mk ProcessorFactory) {
