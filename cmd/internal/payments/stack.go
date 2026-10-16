@@ -9,6 +9,7 @@ import (
 	pgbilling "github.com/truongpx396/intel-payment/billing/adapters/driven/postgres"
 	"github.com/truongpx396/intel-payment/billing/adapters/driving/paymenthttp"
 	"github.com/truongpx396/intel-payment/billing/app"
+	"github.com/truongpx396/intel-payment/billing/domain"
 	"github.com/truongpx396/intel-payment/billing/ports"
 	"github.com/truongpx396/intel-payment/cmd/internal/envcfg"
 	mports "github.com/truongpx396/intel-payment/metering/ports"
@@ -23,6 +24,7 @@ type Books struct {
 	Subs      *pgbilling.Subs
 	Inbox     *pgbilling.Inbox
 	Recharges *pgbilling.AutoRecharges
+	Config    *pgbilling.ConfigWriter
 }
 
 // OpenBooks returns the stores of a database. Opening them dials nothing: the pool is the caller's.
@@ -30,7 +32,7 @@ func OpenBooks(pool *pgxpool.Pool, clock mports.Clock) *Books {
 	return &Books{
 		Accounts: pgbilling.NewAccounts(pool), Customers: pgbilling.NewCustomers(pool), Catalog: pgbilling.NewCatalog(pool),
 		Payments: pgbilling.NewPayments(pool), Subs: pgbilling.NewSubs(pool), Inbox: pgbilling.NewInbox(pool, clock, pgbilling.InboxOptions{}),
-		Recharges: pgbilling.NewAutoRecharges(pool),
+		Recharges: pgbilling.NewAutoRecharges(pool), Config: pgbilling.NewConfigWriter(pool),
 	}
 }
 
@@ -116,6 +118,7 @@ func NewWorker(c Common, m Money) (*Loops, error) {
 type Sell struct {
 	Checkout *app.Checkout
 	Changes  *app.PlanChanges
+	Admin    *app.Admin
 }
 
 // NewSell builds the use cases behind the host's /v1 payment routes, over the same books and provider registry the webhook
@@ -143,14 +146,22 @@ func NewSell(c Common, s envcfg.Selling) (Sell, error) {
 	if err != nil {
 		return Sell{}, fmt.Errorf("payments: subscriptions: %w", err)
 	}
-	return Sell{Checkout: checkout, Changes: changes}, nil
+	names := make([]domain.Provider, 0, len(providers))
+	for name := range providers {
+		names = append(names, name)
+	}
+	admin, err := app.NewAdmin(app.AdminDeps{Writer: c.Books.Config, Providers: names, SecretSchemes: SecretSchemes})
+	if err != nil {
+		return Sell{}, fmt.Errorf("payments: admin: %w", err)
+	}
+	return Sell{Checkout: checkout, Changes: changes, Admin: admin}, nil
 }
 
 // NewDoor is the host's /v1 payment routes over the books and the use cases of Sell.
 func NewDoor(c Common, sell Sell) (*paymenthttp.Door, error) {
 	d, err := paymenthttp.New(paymenthttp.Config{
 		Catalog: c.Books.Catalog, Checkout: sell.Checkout, Subs: c.Books.Subs, Changes: sell.Changes, Recharges: c.Books.Recharges,
-		Payments: c.Books.Payments, Caller: CredentialCaller{}, Logger: c.Log,
+		Payments: c.Books.Payments, Admin: sell.Admin, Caller: CredentialCaller{}, Logger: c.Log,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("payments: %w", err)

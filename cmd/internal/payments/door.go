@@ -17,6 +17,14 @@ type CredentialCaller struct{}
 
 var _ paymenthttp.Caller = CredentialCaller{}
 
+// Via implements paymenthttp.Caller: the caller the credential identifies.
+func (CredentialCaller) Via(r *http.Request) string {
+	if p, ok := auth.FromContext(r.Context()); ok {
+		return p.CallerID
+	}
+	return ""
+}
+
 // Resolve implements paymenthttp.Caller.
 func (CredentialCaller) Resolve(r *http.Request, s domain.Scope) (domain.Scope, error) {
 	p, ok := auth.FromContext(r.Context())
