@@ -54,6 +54,15 @@ func TestTheDocumentAndTheRouteTableAgreeInBothDirections(t *testing.T) {
 	ops := map[string]*openapi3.Operation{}
 	for path, item := range doc.Paths.Map() {
 		for method, op := range item.Operations() {
+			// An operation marked `x-served-by` is a route a host adds to the table (payments are the first): the
+			// handler that serves it holds it to this document in its own test, in both directions. It must not ALSO be
+			// registered here — one route, one owner.
+			if by, _ := op.Extensions["x-served-by"].(string); by != "" {
+				if _, mine := routes[method+" "+path]; mine {
+					t.Errorf("%s %s is marked x-served-by %q and the REST handler registers it too: one route has one owner", method, path, by)
+				}
+				continue
+			}
 			ops[method+" "+path] = op
 		}
 	}
@@ -306,7 +315,10 @@ func TestEveryOperationsRequestsAndResponsesValidateAgainstTheDocument(t *testin
 			}
 		}
 		for p, item := range doc.Paths.Map() {
-			for method := range item.Operations() {
+			for method, op := range item.Operations() {
+				if by, _ := op.Extensions["x-served-by"].(string); by != "" {
+					continue // sent by the test of the handler that serves it
+				}
 				if !reached[method+" "+p] {
 					t.Errorf("%s %s is documented and no case sends it", method, p)
 				}
