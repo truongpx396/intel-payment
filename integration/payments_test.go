@@ -51,14 +51,20 @@ func seedPayments(t *testing.T, pool *pgxpool.Pool, realm string, sc domain.Scop
 func paymentsEnv(env map[string]string) map[string]string {
 	env["STRIPE_SECRET_KEY"], env["STRIPE_WEBHOOK_SECRET"] = itAPIKey, itWebhookSk
 	env["PAYMENT_WEBHOOK_TICK_INTERVAL"] = "100ms"
+	env["PAYMENT_WEBHOOK_TOLERANCE"] = "10s"
 	return env
 }
 
 // delivery is a signed invoice.paid for the pack, as Stripe would send it now.
 func delivery(t *testing.T, eventID, paymentIntent string) (string, string) {
 	t.Helper()
+	return deliveryAt(t, eventID, paymentIntent, time.Now())
+}
+
+// deliveryAt is that delivery signed at an instant of the provider's choosing.
+func deliveryAt(t *testing.T, eventID, paymentIntent string, now time.Time) (string, string) {
+	t.Helper()
 	fx := stripefix.New(t)
-	now := time.Now()
 	body := fx.Event(eventID, "invoice.paid", now, stripefix.Invoice("in_"+eventID, itCustomer, paymentIntent, "", itPriceID, 1000))
 	return string(body), stripefix.SignatureHeader(itWebhookSk, now, body)
 }
@@ -98,6 +104,17 @@ func TestAProvidersSignedPaymentIsVerifiedAtTheDoorAndFulfilledByTheWorkerExactl
 	awaitReady(t, d, c, base)
 	hook := base + "/webhooks/stripe/" + itAccount
 
+	// An operator alerts on a name before it has seen traffic: both processes declare the payment metrics on the first scrape.
+	wbase := "http://" + w.listening(t, "ops")
+	for _, url := range []string{base + "/metrics", wbase + "/metrics"} {
+		_, scraped := httpDo(t, c, "GET", url, "", "")
+		for _, name := range []string{"billing_webhook_received_total counter", "billing_webhook_inbox_age_seconds gauge", "billing_autorecharge_total counter"} {
+			if !strings.Contains(scraped, "# TYPE "+name) {
+				t.Errorf("%s does not declare %s on the first scrape", url, name)
+			}
+		}
+	}
+
 	body, sig := delivery(t, "evt_it_1", "pi_it_1")
 	code, answer := httpDo(t, c, "POST", hook, "", body, "Stripe-Signature", sig, "Content-Type", "application/json")
 	if code != http.StatusOK {
@@ -126,14 +143,26 @@ func TestAProvidersSignedPaymentIsVerifiedAtTheDoorAndFulfilledByTheWorkerExactl
 	}
 	eventually(t, 30*time.Second, "the worker to book the grant", func() bool { return bookedFor(t, pool, realm, sc).sum == itCredits })
 
+	// The door hinted that a delivery arrived and the processor told the host a payment succeeded, both on the bus, under the
+	// prefix, with the scope's token in the subject.
+	subjects := busSubjects(t, rd)
+	for _, want := range []string{"billing.webhook.received", "billing.payment." + sc.SubjectToken()} {
+		if !subjects[want] {
+			t.Errorf("nothing was published on %q; the bus holds %v", want, subjects)
+		}
+	}
+
 	// What the door refuses leaves nothing behind.
 	forged := strings.Replace(body, `"amount_paid":1000`, `"amount_paid":100000`, 1)
+	// PAYMENT_WEBHOOK_TOLERANCE=10s reaches the adapter: a genuine delivery signed a minute ago is a replay.
+	staleBody, staleSig := deliveryAt(t, "evt_it_stale", "pi_it_stale", time.Now().Add(-time.Minute))
 	for name, tc := range map[string]struct {
 		method, path, body, sig string
 		want                    int
 	}{
 		"a tampered body":       {"POST", "/webhooks/stripe/" + itAccount, forged, sig, 400},
 		"no signature":          {"POST", "/webhooks/stripe/" + itAccount, body, "", 400},
+		"a signature too old":   {"POST", "/webhooks/stripe/" + itAccount, staleBody, staleSig, 400},
 		"an unknown account":    {"POST", "/webhooks/stripe/nobody", body, sig, 404},
 		"an unknown provider":   {"POST", "/webhooks/nopay/" + itAccount, body, sig, 404},
 		"another provider's":    {"POST", "/webhooks/polar/" + itAccount, body, sig, 404},
@@ -163,10 +192,25 @@ func TestAProvidersSignedPaymentIsVerifiedAtTheDoorAndFulfilledByTheWorkerExactl
 	// Both processes report what they did, under the names an operator alerts on.
 	assertMetric(t, c, base+"/metrics", `billing_webhook_received_total{provider="stripe",result="new"} 1`)
 	assertMetric(t, c, base+"/metrics", `billing_webhook_received_total{provider="stripe",result="duplicate"} 3`)
-	assertMetric(t, c, base+"/metrics", `billing_webhook_verify_failed_total{provider="stripe"} 2`)
-	wbase := "http://" + w.listening(t, "ops")
+	assertMetric(t, c, base+"/metrics", `billing_webhook_verify_failed_total{provider="stripe"} 3`)
 	assertMetric(t, c, wbase+"/metrics", `billing_webhook_processed_total{outcome="processed",provider="stripe"} 1`)
 	assertMetric(t, c, wbase+"/metrics", `billing_grant_applied_total`)
+}
+
+// busSubjects are the subjects of everything published to the events stream of a Redis Streams bus.
+func busSubjects(t *testing.T, addr string) map[string]bool {
+	t.Helper()
+	rdb := hotredisClient(addr)
+	defer func() { _ = rdb.Close() }()
+	entries, err := rdb.XRange(context.Background(), "billing:events", "-", "+").Result()
+	must(t, err)
+	out := map[string]bool{}
+	for _, e := range entries {
+		if subject, ok := e.Values["subject"].(string); ok {
+			out[subject] = true
+		}
+	}
+	return out
 }
 
 func assertMetric(t *testing.T, c *http.Client, url, line string) {
@@ -204,4 +248,18 @@ func TestALowBalanceReachesAutoTopUpInTheWorker(t *testing.T) {
 
 	wbase := "http://" + w.listening(t, "ops")
 	assertMetric(t, c, wbase+"/metrics", `billing_autorecharge_total{result="ignored"} 1`)
+}
+
+func TestAWorkerThatCannotJoinTheLowBalanceSubscriptionStopsAndSaysWhich(t *testing.T) {
+	t.Parallel()
+	realm, dsn := seededRealm(t)
+	rd := dedicatedRedis(t)
+	// A prefix the bus will not take: the worker could run, and book usage, and never top anyone up. It must not.
+	w := startWorker(t, paymentsEnv(workerEnv(realm, dsn, "PAYMENT_BALANCE_REDIS_URL", "redis://"+rd+"/0", "PAYMENT_SUBJECT_PREFIX", "bad prefix")))
+	if code := w.waitExit(t, 60*time.Second); code != 1 {
+		t.Fatalf("the worker exited %d, want 1; logs:\n%s", code, w.logs.String())
+	}
+	if !strings.Contains(w.logs.String(), "bad prefix.balance.low.>") {
+		t.Errorf("the worker did not say which subscription it could not join; logs:\n%s", w.logs.String())
+	}
 }
