@@ -4,3 +4,8 @@
 # like a Stripe live key — sk_live_51Habcdef, not a credential — to prove an account that holds a secret instead of a reference
 # (env:NAME, file:/path) is refused. The shape is the point of the test.
 9abbc5676c3114560f3cbf631c5a76bf0f44ac1d:billing/domain/account_test.go:generic-api-key:57
+
+# billing/domain/account_test.go, as it is in main. The entry above is the finding in the commit PR #20 was written as; #20 was
+# squash-merged, which made the same line a finding again in the commit main holds (d8dde46), with a new fingerprint. Same line, same
+# reason: the made-up sk_live_51Habcdef the test hands to Validate to prove a raw secret where a reference belongs is refused.
+d8dde46014b3739ce195dbf220a47782816e5322:billing/domain/account_test.go:generic-api-key:57
