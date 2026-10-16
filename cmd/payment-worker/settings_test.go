@@ -10,6 +10,7 @@ import (
 
 	"go.uber.org/goleak"
 
+	"github.com/truongpx396/intel-payment/cmd/internal/envcfg"
 	"github.com/truongpx396/intel-payment/metering"
 )
 
@@ -141,5 +142,33 @@ func TestABadConfigurationStopsTheWorkerBeforeItDialsAnything(t *testing.T) {
 	}
 	if code := run(ctx, []string{"drain"}, getenv(base()), &out, &errb); code != 2 || !strings.Contains(errb.String(), "usage") {
 		t.Errorf("an unknown command: exit %d, stderr:\n%s", code, errb.String())
+	}
+}
+
+// R098: the worker is where payments are fulfilled, and it reads their settings like every other: documented defaults,
+// each value in its field, and a refusal that names the variable.
+func TestThePaymentSettingsOfTheWorkerAreReadAndChecked(t *testing.T) {
+	t.Parallel()
+	s, err := parseSettings(getenv(base()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := envcfg.Payments{WebhookTolerance: 5 * time.Minute, DunningGrace: 7 * 24 * time.Hour, WebhookTick: 5 * time.Second, EventRetention: 90 * 24 * time.Hour}
+	if s.Payments != want {
+		t.Errorf("payment defaults %+v, want %+v", s.Payments, want)
+	}
+	s, err = parseSettings(getenv(with("PAYMENT_WEBHOOK_TOLERANCE", "2m", "PAYMENT_DUNNING_GRACE_DAYS", "3", "PAYMENT_WEBHOOK_TICK_INTERVAL", "1s", "PAYMENT_PAYMENT_EVENT_RETENTION", "30d")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (envcfg.Payments{WebhookTolerance: 2 * time.Minute, DunningGrace: 3 * 24 * time.Hour, WebhookTick: time.Second, EventRetention: 30 * 24 * time.Hour}); s.Payments != want {
+		t.Errorf("payment settings %+v, want %+v", s.Payments, want)
+	}
+	for name, bad := range map[string]string{
+		"PAYMENT_WEBHOOK_TOLERANCE": "0", "PAYMENT_DUNNING_GRACE_DAYS": "0", "PAYMENT_WEBHOOK_TICK_INTERVAL": "10m", "PAYMENT_PAYMENT_EVENT_RETENTION": "1d",
+	} {
+		if _, err := parseSettings(getenv(with(name, bad))); err == nil || !strings.Contains(err.Error(), name) {
+			t.Errorf("%s=%q: %v, want a refusal naming the variable", name, bad, err)
+		}
 	}
 }

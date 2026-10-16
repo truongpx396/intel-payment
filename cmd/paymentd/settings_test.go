@@ -289,3 +289,34 @@ func TestAuthNoneIsPermittedOnlyWhereNothingCanReachIt(t *testing.T) {
 		}
 	}
 }
+
+// R098: the webhook door is paymentd's, and the one setting it has — how far a signature's timestamp may be from the
+// delivery's arrival — is read here like every other: documented default, a value that lands in its field, and a refusal
+// that names the variable.
+func TestThePaymentSettingsAreReadAndCheckedLikeTheRest(t *testing.T) {
+	t.Parallel()
+	s, err := parseSettings(getenv(base()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Payments.WebhookTolerance != 5*time.Minute {
+		t.Errorf("the webhook tolerance defaults to %v, documented 5m", s.Payments.WebhookTolerance)
+	}
+	s, err = parseSettings(getenv(with("PAYMENT_WEBHOOK_TOLERANCE", "90s")))
+	if err != nil || s.Payments.WebhookTolerance != 90*time.Second {
+		t.Errorf("PAYMENT_WEBHOOK_TOLERANCE=90s read as %v, %v", s.Payments.WebhookTolerance, err)
+	}
+	for _, bad := range []string{"0", "-1m", "soon", "2h"} {
+		if _, err := parseSettings(getenv(with("PAYMENT_WEBHOOK_TOLERANCE", bad))); err == nil || !strings.Contains(err.Error(), "PAYMENT_WEBHOOK_TOLERANCE") {
+			t.Errorf("PAYMENT_WEBHOOK_TOLERANCE=%q: %v, want a refusal naming the variable", bad, err)
+		}
+	}
+}
+
+func TestPaymentdPrefixesItsSubjectsWithTheEngines(t *testing.T) {
+	t.Parallel()
+	s, err := parseSettings(getenv(with("PAYMENT_SUBJECT_PREFIX", "acme")))
+	if err != nil || s.Engine.SubjectPrefix != "acme" {
+		t.Fatalf("prefix %q, %v: the payment layer follows the engine's, which this is", s.Engine.SubjectPrefix, err)
+	}
+}
