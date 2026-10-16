@@ -4,15 +4,17 @@
 //
 // Counts and gauges are int64 and only durations are observed as float seconds, so money never passes
 // through a float. Every metric in ports.Catalog gets an instrument of its declared kind, unit and
-// description up front; a name outside it — the billing_* and events_* metrics of later phases — is
-// created on first use from the method that reported it.
+// description up front, and so does every metric a host adds with WithDefs — the billing_* metrics of the
+// payment layer; a name outside both is created on first use from the method that reported it.
 package otelmetrics
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
+	"strings"
 	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -36,6 +38,8 @@ type Metrics struct {
 	gauges   map[string]metric.Int64Gauge
 	hists    map[string]metric.Float64Histogram
 	onError  func(error)
+	defs     []ports.MetricDef // a host's own, after metering's
+	all      []ports.MetricDef // metering's, then the host's: built once, read on every call
 }
 
 var _ ports.Metrics = (*Metrics)(nil)
@@ -46,6 +50,45 @@ type Option func(*Metrics)
 // OnError sees an instrument that could not be created. The default drops it: telemetry must never
 // break the call it describes.
 func OnError(f func(error)) Option { return func(m *Metrics) { m.onError = f } }
+
+// WithDefs adds a host's own metrics to the catalogue the exporter declares: the payment layer's, for a service that
+// serves more than metering. Each is held to the rules of metering's own — a name an operator can write an alert
+// against (lower snake case, a counter ending _total, a histogram in _seconds), a help line, a kind New knows — and none may
+// repeat a name already taken.
+func WithDefs(defs ...ports.MetricDef) Option {
+	return func(m *Metrics) { m.defs = append(m.defs, defs...) }
+}
+
+var metricName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// checkDefs reports every way the host's definitions would make the catalogue ambiguous.
+func checkDefs(defs []ports.MetricDef) error {
+	taken := map[string]bool{}
+	for _, d := range ports.Catalog {
+		taken[d.Name] = true
+	}
+	var errs []error
+	for _, d := range defs {
+		bad := func(why string) { errs = append(errs, fmt.Errorf("metric %q: %s", d.Name, why)) }
+		switch {
+		case !metricName.MatchString(d.Name):
+			bad("a name is lower snake case")
+		case taken[d.Name]:
+			bad("the name is already taken")
+		case strings.TrimSpace(d.Help) == "":
+			bad("a metric has a help line")
+		case d.Kind == ports.KindCounter && !strings.HasSuffix(d.Name, "_total"):
+			bad("a counter's name ends _total")
+		case d.Kind == ports.KindHistogram && !strings.HasSuffix(d.Name, "_seconds"):
+			bad("a histogram is in seconds and its name ends _seconds")
+		}
+		taken[d.Name] = true
+	}
+	return errors.Join(errs...)
+}
+
+// catalog is every metric this exporter declares: metering's, then the host's.
+func (m *Metrics) catalog() []ports.MetricDef { return m.all }
 
 // New registers every catalogued metric on the provider's meter.
 func New(mp metric.MeterProvider, opts ...Option) (*Metrics, error) {
@@ -59,8 +102,12 @@ func New(mp metric.MeterProvider, opts ...Option) (*Metrics, error) {
 	for _, o := range opts {
 		o(m)
 	}
+	if err := checkDefs(m.defs); err != nil {
+		return nil, fmt.Errorf("otelmetrics: %w", err)
+	}
+	m.all = append(append([]ports.MetricDef(nil), ports.Catalog...), m.defs...)
 	var errs []error
-	for _, d := range ports.Catalog {
+	for _, d := range m.catalog() {
 		var err error
 		switch d.Kind {
 		case ports.KindCounter:
@@ -83,8 +130,8 @@ func New(mp metric.MeterProvider, opts ...Option) (*Metrics, error) {
 }
 
 // def finds the catalogued unit and description of a name, if it has one.
-func def(name string) (unit, help string) {
-	for _, d := range ports.Catalog {
+func (m *Metrics) def(name string) (unit, help string) {
+	for _, d := range m.catalog() {
 		if d.Name == name {
 			return d.Unit, d.Help
 		}
@@ -177,7 +224,7 @@ func (m *Metrics) Count(name string, n int64, l ports.Labels) {
 	if n <= 0 {
 		return
 	}
-	unit, help := def(name)
+	unit, help := m.def(name)
 	c, err := m.counter(name, unit, help)
 	if err != nil {
 		m.fail(err)
@@ -188,7 +235,7 @@ func (m *Metrics) Count(name string, n int64, l ports.Labels) {
 
 // Gauge records a gauge's current value.
 func (m *Metrics) Gauge(name string, v int64, l ports.Labels) {
-	unit, help := def(name)
+	unit, help := m.def(name)
 	g, err := m.gauge(name, unit, help)
 	if err != nil {
 		m.fail(err)
@@ -199,7 +246,7 @@ func (m *Metrics) Gauge(name string, v int64, l ports.Labels) {
 
 // Observe records one duration, in seconds.
 func (m *Metrics) Observe(name string, seconds float64, l ports.Labels) {
-	unit, help := def(name)
+	unit, help := m.def(name)
 	if unit == "1" {
 		unit = "s"
 	}
