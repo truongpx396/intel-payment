@@ -54,6 +54,8 @@ type ProcessorDeps struct {
 	Backoff func(attempts int) time.Duration
 	// Grace is how long entitlements hold after a failed payment (default DefaultGrace; PAYMENT_DUNNING_GRACE_DAYS).
 	Grace time.Duration
+	// SubjectPrefix is the namespace the announcements go out under (default DefaultSubjectPrefix; PAYMENT_SUBJECT_PREFIX).
+	SubjectPrefix string
 }
 
 // Processor is stage 2 of the webhook flow, run by payment-worker: it fulfils verified events from the inbox.
@@ -109,6 +111,9 @@ func NewProcessor(d ProcessorDeps) (*Processor, error) {
 	}
 	if d.Grace == 0 {
 		d.Grace = DefaultGrace
+	}
+	if d.SubjectPrefix == "" {
+		d.SubjectPrefix = DefaultSubjectPrefix
 	}
 	if d.Backoff == nil {
 		d.Backoff = defaultRetryBackoff
@@ -597,10 +602,10 @@ func (p *Processor) noteOf(pay domain.Payment, event string, amount int64, grace
 		Payment: pay.ProviderPaymentID, Amount: amount, Currency: pay.Amount.Currency, GraceUntil: graceUntil, ReceiptURL: pay.ReceiptURL}
 }
 
-// announcePayment publishes billing.payment.<tag>. It happens before the event is marked processed and a failure
+// announcePayment publishes <prefix>.payment.<tag>. It happens before the event is marked processed and a failure
 // retries the event — every step before it is idempotent — so a notification is never lost to a bus that blinked.
 func (p *Processor) announcePayment(ctx context.Context, scope domain.Scope, n paymentNote) error {
-	return p.publish(ctx, "billing.payment."+scope.SubjectToken(), n)
+	return p.publish(ctx, p.d.SubjectPrefix+".payment."+scope.SubjectToken(), n)
 }
 
 // entitlementNote is the body of billing.entitlement.<tag>: a scope's entitlements may have changed, so evict it
@@ -612,7 +617,7 @@ type entitlementNote struct {
 }
 
 func (p *Processor) announceEntitlement(ctx context.Context, scope domain.Scope, reason string) error {
-	return p.publish(ctx, "billing.entitlement."+scope.SubjectToken(),
+	return p.publish(ctx, p.d.SubjectPrefix+".entitlement."+scope.SubjectToken(),
 		entitlementNote{Realm: string(scope.Realm.Or()), Scope: scopeRef{scope.Kind, scope.ID}, Reason: reason})
 }
 

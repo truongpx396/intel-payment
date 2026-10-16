@@ -20,9 +20,12 @@ const (
 	DefaultMaxBody       = 1 << 20          // 1 MiB: a webhook is a few kilobytes; more is not one
 	DefaultVerifyTimeout = 10 * time.Second // PayPal verifies by API call; a slow one is parked, not waited for
 	retryBatch           = 100
-	// WebhookReceivedSubject is the latency hint published after a delivery is persisted. The inbox sweep is the
+	// DefaultSubjectPrefix is the namespace of every subject the payment layer publishes or listens on, as the engine's
+	// own (PAYMENT_SUBJECT_PREFIX): billing.payment.<tag>, billing.entitlement.<tag>, billing.balance.low.<tag> …
+	DefaultSubjectPrefix = "billing"
+	// webhookReceived is the latency hint published after a delivery is persisted, under the prefix. The inbox sweep is the
 	// guarantee; the hint only makes the common case fast.
-	WebhookReceivedSubject = "billing.webhook.received"
+	webhookReceived = ".webhook.received"
 )
 
 // IngressDeps are the ports stage 1 needs.
@@ -32,10 +35,13 @@ type IngressDeps struct {
 	Inbox     ports.Inbox
 	Metrics   mports.Metrics
 	Clock     mports.Clock
-	// Bus is optional: with one, a persisted delivery publishes billing.webhook.received. A failed hint never
+	// Bus is optional: with one, a persisted delivery publishes <prefix>.webhook.received. A failed hint never
 	// fails the acknowledgement — the delivery is durable either way.
 	Bus mports.Bus
 	Log *slog.Logger
+
+	// SubjectPrefix is the namespace the hint goes out under (default DefaultSubjectPrefix; PAYMENT_SUBJECT_PREFIX).
+	SubjectPrefix string
 
 	MaxBody       int           // default DefaultMaxBody
 	VerifyTimeout time.Duration // default DefaultVerifyTimeout
@@ -79,6 +85,9 @@ func NewIngress(d IngressDeps) (*Ingress, error) {
 	}
 	if d.Log == nil {
 		d.Log = slog.Default()
+	}
+	if d.SubjectPrefix == "" {
+		d.SubjectPrefix = DefaultSubjectPrefix
 	}
 	if d.MaxBody == 0 {
 		d.MaxBody = DefaultMaxBody
@@ -218,13 +227,13 @@ func (g *Ingress) park(ctx context.Context, provider domain.Provider, label, acc
 	return result(http.StatusAccepted, "")
 }
 
-// hint publishes billing.webhook.received. It is a latency optimisation only: the inbox sweep is the guarantee.
+// hint publishes <prefix>.webhook.received. It is a latency optimisation only: the inbox sweep is the guarantee.
 func (g *Ingress) hint(ctx context.Context, e domain.Event) {
 	if g.d.Bus == nil {
 		return
 	}
 	payload := fmt.Sprintf(`{"account":%q,"event_id":%q}`, e.Account, e.ProviderEventID)
-	if err := g.d.Bus.Publish(ctx, WebhookReceivedSubject, []byte(payload)); err != nil {
+	if err := g.d.Bus.Publish(ctx, g.d.SubjectPrefix+webhookReceived, []byte(payload)); err != nil {
 		g.d.Log.Warn("webhook: the received hint was not published; the inbox sweep will find the event", "error", err.Error())
 	}
 }

@@ -47,7 +47,7 @@ Switching is a `cmd/` wiring change. No subject, payload, handler or invariant d
 
 ## Subjects
 
-`<tag>` is `Scope.SubjectToken()`: the scope's `Tag()` = `<realm>/<kind>:<id>` with the characters a subject reserves — `.`, `*`, `>`, whitespace and `%` itself — percent-encoded, so a scope id with a dot or a space in it can never split into two tokens or read as a wildcard. The realm is inside the token, so a subject can never be consumed as another product's. `SubjectPrefix` (default `billing`) is configurable.
+`<tag>` is `Scope.SubjectToken()`: the scope's `Tag()` = `<realm>/<kind>:<id>` with the characters a subject reserves — `.`, `*`, `>`, whitespace and `%` itself — percent-encoded, so a scope id with a dot or a space in it can never split into two tokens or read as a wildcard. The realm is inside the token, so a subject can never be consumed as another product's. `SubjectPrefix` (default `billing`; `PAYMENT_SUBJECT_PREFIX`) is configurable, and the whole of this table follows it: the payment layer announces `<prefix>.payment.<tag>`, `<prefix>.entitlement.<tag>` and `<prefix>.webhook.received`, and auto top-up acts only on `<prefix>.balance.low.<tag>` — a low-balance message under another prefix is not this deployment's and is refused, not charged for.
 
 | Subject | Publisher | Consumer | Payload (key fields) |
 |---|---|---|---|
