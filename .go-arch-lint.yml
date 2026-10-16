@@ -25,6 +25,7 @@ components:
   billing-ports:     { in: billing/ports }
   billing-app:       { in: billing/app }
   billing-driven:    { in: billing/adapters/driven/** }   # postgres, then stripe, polar and paypal
+  billing-driving:   { in: billing/adapters/driving/** }  # the webhook door
   # Conformance suites: importable by an adapter's own tests, given constructors — they import no adapter.
   billing-contracts: { in: billing/contracts/** }   # the suites, the in-memory world, and each provider's fixtures
   entitlement:      { in: entitlement/** }
@@ -64,12 +65,14 @@ deps:
   # An adapter implements billing's ports and reaches metering through its ports. That no provider adapter imports
   # another is a depguard rule (.golangci.yml): this graph cannot tell stripe from postgres.
   billing-driven:    { mayDependOn: [ billing-domain, billing-ports, metering-domain, metering-ports, billing-driven ] }
+  # A door speaks HTTP for a port: it reaches the use cases only through billing's ports, and is mounted by cmd.
+  billing-driving:   { mayDependOn: [ billing-ports, billing-domain, billing-driving ] }
   entitlement:      { mayDependOn: [ metering-domain, metering-ports, api ] }   # also implements metering's QuotaSource
   events:           { mayDependOn: [ metering-domain, api ] }                  # outbound delivery to hosts
   # cmd/** includes cmd/internal, the helpers the binaries share (the environment reader, the store wiring), so a
   # binary depends on its own component.
   cmd:              { mayDependOn: [ cmd, metering-domain, metering-ports, metering-config,
                                      metering-app, metering-driven, metering-driving,
-                                     billing-domain, billing-ports, billing-app, billing-driven,
+                                     billing-domain, billing-ports, billing-app, billing-driven, billing-driving,
                                      entitlement, events, api,
                                      migrate, migrations ] }
