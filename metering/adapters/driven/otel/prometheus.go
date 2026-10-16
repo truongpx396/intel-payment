@@ -24,7 +24,7 @@ import (
 // traffic: an alert on a counter that has not moved yet must not be an alert on a name that does not exist.
 // The OTel exporter omits a metric with no samples, so the missing declarations are appended; the format allows
 // a declaration with no samples after it.
-func NewPrometheus() (*Metrics, http.Handler, error) {
+func NewPrometheus(opts ...Option) (*Metrics, http.Handler, error) {
 	reg := prometheus.NewRegistry()
 	// The catalog's names already carry their suffixes (_total, _seconds), and an alert is written against
 	// them: the exporter must not rename them.
@@ -33,15 +33,15 @@ func NewPrometheus() (*Metrics, http.Handler, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("otelmetrics: prometheus exporter: %w", err)
 	}
-	m, err := New(sdkmetric.NewMeterProvider(sdkmetric.WithReader(exp)))
+	m, err := New(sdkmetric.NewMeterProvider(sdkmetric.WithReader(exp)), opts...)
 	if err != nil {
 		return nil, nil, err
 	}
-	return m, declareCatalog(promhttp.HandlerFor(reg, promhttp.HandlerOpts{})), nil
+	return m, declareCatalog(m.catalog(), promhttp.HandlerFor(reg, promhttp.HandlerOpts{})), nil
 }
 
 // declareCatalog serves next's exposition followed by the declaration of every catalogued metric it left out.
-func declareCatalog(next http.Handler) http.Handler {
+func declareCatalog(catalog []ports.MetricDef, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The declarations are appended to the body as text, so the body must be text: a compressed stream with
 		// plain lines stuck on its end is one no scraper can read. The exposition is small and served on a
@@ -53,7 +53,7 @@ func declareCatalog(next http.Handler) http.Handler {
 		body := buf.body.String()
 		if buf.code == http.StatusOK {
 			var missing strings.Builder
-			for _, d := range ports.Catalog {
+			for _, d := range catalog {
 				if !strings.Contains(body, "# TYPE "+d.Name+" ") {
 					fmt.Fprintf(&missing, "# HELP %s %s\n# TYPE %s %s\n", d.Name, escapeHelp(d.Help), d.Name, d.Kind)
 				}
