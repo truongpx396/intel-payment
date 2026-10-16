@@ -48,6 +48,7 @@ func fullDoor(t *testing.T) *door {
 	sub.Entitlements = []domain.Entitlement{{Key: "sso", Kind: "flag", Bool: &on}}
 	tax := domain.Money{MinorUnits: 80, Currency: "USD"}
 	return newDoor(t, paymenthttp.Config{
+		Admin: fixtureAdmin(),
 		Catalog: catalogStub{list: func(context.Context, domain.Realm, string) ([]domain.Plan, error) {
 			return []domain.Plan{plan, sub}, nil
 		}},
@@ -80,6 +81,46 @@ func fullDoor(t *testing.T) *door {
 			}}, "next", nil
 		}},
 	})
+}
+
+// fixtureAdmin answers the admin routes from fixtures: the pro plan, the stripe account of realm acme, and one customer.
+func fixtureAdmin() adminStub {
+	acct := stripeAccount("acme")
+	return adminStub{
+		plans: func(context.Context, domain.Realm) ([]ports.PlanConfig, error) {
+			return []ports.PlanConfig{proConfig()}, nil
+		},
+		plan: func(_ context.Context, _ domain.Realm, code string) (ports.PlanConfig, error) {
+			if code != "pro" {
+				return ports.PlanConfig{}, md.ErrNotFound
+			}
+			return proConfig(), nil
+		},
+		createPlan: func(_ context.Context, _ ports.ConfigChange, p domain.Plan) (ports.PlanConfig, error) {
+			return ports.PlanConfig{Plan: p}, nil
+		},
+		patchPlan: func(context.Context, ports.ConfigChange, domain.Realm, string, ports.PlanPatch) (ports.PlanConfig, error) {
+			return proConfig(), nil
+		},
+		putPrice: func(context.Context, ports.ConfigChange, domain.Realm, string, domain.ProviderPrice) (bool, error) {
+			return true, nil
+		},
+		accounts: func(context.Context) ([]domain.ProviderAccount, error) { return []domain.ProviderAccount{acct}, nil },
+		account: func(_ context.Context, id string) (domain.ProviderAccount, error) {
+			if id != acct.ID {
+				return domain.ProviderAccount{}, md.ErrNotFound
+			}
+			return acct, nil
+		},
+		putAccount: func(context.Context, ports.ConfigChange, domain.ProviderAccount) (bool, error) { return false, nil },
+		customer: func(_ context.Context, s domain.Scope, account string) (domain.Customer, error) {
+			if s.ID != "u1" {
+				return domain.Customer{}, md.ErrNotFound
+			}
+			return domain.Customer{Scope: s, Account: account, ProviderCustomerID: "cus_1", BillingEmail: "a@example.com"}, nil
+		},
+		putCustomer: func(context.Context, ports.ConfigChange, domain.Customer) (bool, error) { return true, nil },
+	}
 }
 
 func TestTheDocumentAndTheDoorAgreeInBothDirections(t *testing.T) {
@@ -118,8 +159,8 @@ func TestTheDocumentAndTheDoorAgreeInBothDirections(t *testing.T) {
 	if len(missingFromDoor) > 0 {
 		t.Errorf("marked `x-served-by: payments` in api/openapi/v1.yaml and not served — a generated client would call a route that does not exist: %v", missingFromDoor)
 	}
-	if len(routes) != 10 {
-		t.Fatalf("the full door serves %d routes, want the 10 of rest-api.md's catalogue, checkout and subscription tables", len(routes))
+	if len(routes) != 20 {
+		t.Fatalf("the full door serves %d routes, want the 10 of rest-api.md's catalogue, checkout and subscription tables and the 10 of its payment configuration", len(routes))
 	}
 	for key, priv := range routes {
 		op, found := ops[key]
@@ -175,6 +216,19 @@ func TestEveryOperationsRequestsAndResponsesValidateAgainstTheDocument(t *testin
 			})
 		}
 	}
+	adminFailing := func(err error) func(t *testing.T) *door {
+		return func(t *testing.T) *door {
+			t.Helper()
+			a := fixtureAdmin()
+			a.createPlan = func(context.Context, ports.ConfigChange, domain.Plan) (ports.PlanConfig, error) {
+				return ports.PlanConfig{}, err
+			}
+			a.putPrice = func(context.Context, ports.ConfigChange, domain.Realm, string, domain.ProviderPrice) (bool, error) {
+				return false, err
+			}
+			return newDoor(t, paymenthttp.Config{Admin: a})
+		}
+	}
 	noSub := func(t *testing.T) *door {
 		t.Helper()
 		return newDoor(t, paymenthttp.Config{Subs: subsStub{get: func(context.Context, domain.Scope) (domain.Sub, bool, error) { return domain.Sub{}, false, nil }}})
@@ -214,6 +268,23 @@ func TestEveryOperationsRequestsAndResponsesValidateAgainstTheDocument(t *testin
 		{"payments", "GET", "/v1/payments?" + scopeQ + "&limit=10", "", nil, 200, nil},
 		{"payments bad limit", "GET", "/v1/payments?" + scopeQ + "&limit=0", "", nil, 400, nil},
 		{"fulfilment", "GET", "/v1/fulfilment?" + scopeQ, "", nil, 200, nil},
+		{"admin plans", "GET", "/v1/admin/plans", "", nil, 200, nil},
+		{"admin plan", "GET", "/v1/admin/plans/pro", "", nil, 200, nil},
+		{"admin plan of nothing", "GET", "/v1/admin/plans/ghost", "", nil, 404, nil},
+		{"admin plan created", "POST", "/v1/admin/plans", createPlanBody, nil, 201, nil},
+		{"admin plan created twice", "POST", "/v1/admin/plans", createPlanBody, nil, 409, adminFailing(md.ErrAlreadyExists)},
+		{"admin plan without a reason", "POST", "/v1/admin/plans", strings.Replace(createPlanBody, `"reason":"launch"`, `"reason":""`, 1), nil, 400, nil},
+		{"admin plan patched", "PATCH", "/v1/admin/plans/pro", `{"actor":"alice","reason":"reprice","name":"Pro 2","prices":{"USD":2500,"EUR":null}}`, nil, 200, nil},
+		{"admin provider price", "PUT", "/v1/admin/plans/pro/provider-prices/stripe-test/USD", `{"actor":"alice","reason":"wire it","provider_price_id":"price_pro"}`, nil, 201, nil},
+		{"admin provider price replaced", "PUT", "/v1/admin/plans/pro/provider-prices/stripe-test/USD", `{"actor":"alice","reason":"x","provider_price_id":"price_new"}`, nil, 409, adminFailing(md.ErrAlreadyExists)},
+		{"admin accounts", "GET", "/v1/admin/provider-accounts", "", nil, 200, nil},
+		{"admin account", "GET", "/v1/admin/provider-accounts/stripe-test", "", nil, 200, nil},
+		{"admin account of nothing", "GET", "/v1/admin/provider-accounts/nobody", "", nil, 404, nil},
+		{"admin account replaced", "PUT", "/v1/admin/provider-accounts/stripe-test", accountBody, nil, 200, nil},
+		{"admin account in a realm the credential lacks", "PUT", "/v1/admin/provider-accounts/stripe-test", strings.Replace(accountBody, `["acme"]`, `["acme","elsewhere"]`, 1), nil, 403, nil},
+		{"admin customer", "GET", "/v1/admin/customers?" + scopeQ + "&account=stripe-test", "", nil, 200, nil},
+		{"admin customer of nothing", "GET", "/v1/admin/customers?scope_kind=user&scope_id=nobody&account=stripe-test", "", nil, 404, nil},
+		{"admin customer linked", "PUT", "/v1/admin/customers", `{"actor":"alice","reason":"migrate","scope":{"kind":"user","id":"w2"},"account":"stripe-test","provider_customer_id":"cus_2"}`, nil, 201, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -261,18 +332,35 @@ func TestEveryOperationsRequestsAndResponsesValidateAgainstTheDocument(t *testin
 
 	t.Run("the cases reach every operation the door serves", func(t *testing.T) {
 		t.Parallel()
-		reached := map[string]bool{}
-		for _, tc := range cases {
-			path := tc.path
-			if i := strings.IndexByte(path, '?'); i >= 0 {
-				path = path[:i]
-			}
-			reached[tc.method+" "+path] = true
-		}
 		for _, r := range fullDoor(t).routes {
-			if !reached[r.Method+" "+r.Path] {
+			sent := false
+			for _, tc := range cases {
+				path := tc.path
+				if i := strings.IndexByte(path, '?'); i >= 0 {
+					path = path[:i]
+				}
+				sent = sent || (tc.method == r.Method && tmplMatches(r.Path, path))
+			}
+			if !sent {
 				t.Errorf("%s %s is served and no case sends it", r.Method, r.Path)
 			}
 		}
 	})
+}
+
+// tmplMatches reports whether a concrete path fits a path template.
+func tmplMatches(tmpl, path string) bool {
+	a, b := strings.Split(tmpl, "/"), strings.Split(path, "/")
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if strings.HasPrefix(a[i], "{") {
+			continue
+		}
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/truongpx396/intel-payment/billing/contracts/stripefix"
 	"github.com/truongpx396/intel-payment/metering/adapters/driving/auth"
 	"github.com/truongpx396/intel-payment/metering/domain"
 )
@@ -117,4 +118,121 @@ func TestPaymentdRefusesToStartUnderASellingSettingThatCannotWork(t *testing.T) 
 			t.Errorf("%s=%s: the refusal does not name the variable:\n%s", name, value, d.logs.String())
 		}
 	}
+}
+
+// R101a: payment configuration is data with an admin API, and it is the API — not SQL — that makes a deployment able to sell:
+// an account, a plan, the provider's price that sells it, and a customer. Every change names a person and a reason and is
+// attributed by the database, an account created through it is the one the webhook door then verifies against, and a
+// credential that can only meter touches none of it.
+func TestPaymentdAdministersThePaymentConfigurationAndAttributesEveryChange(t *testing.T) {
+	t.Parallel()
+	realm, dsn := seededRealm(t)
+	pool := ledgerPool(t, dsn)
+	env := paymentsEnv(paymentdEnv(realm, dsn))
+	env["PAYMENT_SERVICE_TOKENS"] += ",viewer:" + auth.HashToken(readOnlyToken) + ":" + realm + ":record"
+	d := startPaymentd(t, env)
+	base := d.httpURL(t)
+	c := &http.Client{Timeout: 10 * time.Second}
+	awaitReady(t, d, c, base)
+	const acct, price = "stripe-admin", "price_admin_pack"
+	who := `"actor":"ops@example.test","reason":"onboarding"`
+	status := func(method, path, token, body string) (int, string) {
+		return httpDo(t, c, method, base+path, token, body)
+	}
+
+	// A credential that can only meter cannot read or write configuration.
+	for _, call := range []struct{ method, path, body string }{
+		{"GET", "/v1/admin/plans", ""}, {"GET", "/v1/admin/provider-accounts", ""},
+		{"PUT", "/v1/admin/provider-accounts/" + acct, ""}, {"POST", "/v1/admin/plans", ""},
+	} {
+		if code, body := status(call.method, call.path, readOnlyToken, call.body); code != http.StatusForbidden {
+			t.Errorf("%s %s with a record-only credential = %d %s, want 403", call.method, call.path, code, body)
+		}
+	}
+
+	// An account this deployment cannot use is refused, whoever asks.
+	account := func(provider, ref string, realms ...string) string {
+		quoted := make([]string, len(realms))
+		for i, r := range realms {
+			quoted[i] = `"` + r + `"`
+		}
+		return fmt.Sprintf(`{%s,"provider":%q,"realms":[%s],"mode":"test","secret_ref":%q,"webhook_secret_ref":"env:STRIPE_WEBHOOK_SECRET","active":true}`,
+			who, provider, strings.Join(quoted, ","), ref)
+	}
+	for name, body := range map[string]string{
+		"a provider with no adapter":   account("quickbooks", "env:STRIPE_SECRET_KEY", realm),
+		"a scheme nothing resolves":    account("stripe", "vault:secret/stripe", realm),
+		"a realm the credential lacks": account("stripe", "env:STRIPE_SECRET_KEY", realm, "someone-else"),
+	} {
+		if code, out := status("PUT", "/v1/admin/provider-accounts/"+acct, serviceToken, body); code < 400 || code >= 500 {
+			t.Errorf("%s: %d %s, want a 4xx", name, code, out)
+		}
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM provider_accounts WHERE id = $1`, acct); n != 0 {
+		t.Fatalf("%d accounts stored from requests that were refused", n)
+	}
+
+	// Onboarding through the API: the account, a plan, the provider's price that sells it, and a customer.
+	if code, out := status("PUT", "/v1/admin/provider-accounts/"+acct, serviceToken, account("stripe", "env:STRIPE_SECRET_KEY", realm)); code != http.StatusCreated {
+		t.Fatalf("PUT account = %d %s, want 201", code, out)
+	}
+	planBody := fmt.Sprintf(`{%s,"code":"pack-admin","name":"Admin pack","kind":"one_time","credit_allotment":%d,"prices":{"USD":1000}}`, who, itCredits)
+	if code, out := status("POST", "/v1/admin/plans", serviceToken, planBody); code != http.StatusCreated {
+		t.Fatalf("POST plan = %d %s, want 201", code, out)
+	}
+	if code, out := status("POST", "/v1/admin/plans", serviceToken, planBody); code != http.StatusConflict {
+		t.Errorf("POST the same plan again = %d %s, want 409", code, out)
+	}
+	mapping := "/v1/admin/plans/pack-admin/provider-prices/" + acct + "/USD"
+	if code, out := status("PUT", mapping, serviceToken, fmt.Sprintf(`{%s,"provider_price_id":%q}`, who, price)); code != http.StatusCreated {
+		t.Fatalf("PUT provider price = %d %s, want 201", code, out)
+	}
+	if code, out := status("PUT", mapping, serviceToken, fmt.Sprintf(`{%s,"provider_price_id":"price_replacement"}`, who)); code != http.StatusConflict {
+		t.Errorf("replacing a mapping = %d %s, want 409: a subscriber still renews at the old price", code, out)
+	}
+	customer := fmt.Sprintf(`{%s,"scope":{"kind":"workspace","id":"w-admin"},"account":%q,"provider_customer_id":%q}`, who, acct, itCustomer)
+	if code, out := status("PUT", "/v1/admin/customers", serviceToken, customer); code != http.StatusCreated {
+		t.Fatalf("PUT customer = %d %s, want 201", code, out)
+	}
+	if code, out := status("PUT", "/v1/admin/customers", serviceToken, strings.Replace(customer, itCustomer, "cus_other", 1)); code != http.StatusConflict {
+		t.Errorf("re-pointing a customer = %d %s, want 409", code, out)
+	}
+
+	// What was written is what is sold: the client's catalogue shows the pack by its slug, and not the provider's price.
+	code, out := status("GET", "/v1/plans?currency=USD", readOnlyToken, "")
+	if code != http.StatusOK || !strings.Contains(out, `"code":"pack-admin"`) || strings.Contains(out, price) {
+		t.Errorf("GET /v1/plans = %d %s", code, out)
+	}
+	// ... and the admin sees the mapping.
+	if code, out := status("GET", "/v1/admin/plans/pack-admin", serviceToken, ""); code != http.StatusOK || !strings.Contains(out, price) {
+		t.Errorf("GET admin plan = %d %s, want the provider's price id", code, out)
+	}
+
+	// The account made through the API is the one the door verifies against.
+	body, _ := delivery(t, "evt_admin_1", "pi_admin_1")
+	body = strings.ReplaceAll(body, itPriceID, price)
+	sig := resign(t, body)
+	if code, out := httpDo(t, c, "POST", base+"/webhooks/stripe/"+acct, "", body, "Stripe-Signature", sig, "Content-Type", "application/json"); code != http.StatusOK {
+		t.Errorf("a signed delivery for the account made through the API = %d %s, want 200", code, out)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM payment_events WHERE provider_account = $1`, acct); n != 1 {
+		t.Errorf("%d events in the inbox for the account, want 1", n)
+	}
+
+	// Every change is attributed: the person, the reason, and the credential it came through.
+	for _, want := range []struct{ kind, action string }{
+		{"provider_accounts", "config.insert"}, {"plans", "config.insert"}, {"plan_provider_prices", "config.insert"}, {"billing_customers", "customer.link"},
+	} {
+		var actor, reason string
+		err := pool.QueryRow(context.Background(), `SELECT actor, coalesce(reason,'') FROM audit_log WHERE subject_kind = $1 AND action = $2 AND actor LIKE 'ops@example.test%' LIMIT 1`, want.kind, want.action).Scan(&actor, &reason)
+		if err != nil || actor != "ops@example.test (via integration)" || reason != "onboarding" {
+			t.Errorf("audit of %s %s = %q %q (%v), want the person, the reason and the credential", want.kind, want.action, actor, reason, err)
+		}
+	}
+}
+
+// resign signs a body the way Stripe would have, now, with the secret the test gives the process.
+func resign(t *testing.T, body string) string {
+	t.Helper()
+	return stripefix.SignatureHeader(itWebhookSk, time.Now(), []byte(body))
 }

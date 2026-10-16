@@ -196,6 +196,8 @@ func TestNewRefusesWhatWouldServeMoneyToAnyone(t *testing.T) {
 // anonymous is a Caller for a call no credential reached: a wiring slip, which must refuse and never serve.
 type anonymous struct{}
 
+func (anonymous) Via(*http.Request) string { return "" }
+
 func (anonymous) Resolve(*http.Request, domain.Scope) (domain.Scope, error) {
 	return domain.Scope{}, paymenthttp.ErrUnauthenticated
 }

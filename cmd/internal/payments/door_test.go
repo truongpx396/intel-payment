@@ -78,3 +78,14 @@ func TestEachDoorRouteIsMountedOnTheV1SurfaceWithItsPrivilege(t *testing.T) {
 		t.Error("a route with no privilege was mounted: it would be served to any caller")
 	}
 }
+
+func TestTheCredentialsCallerIsRecordedBesideEveryAdminChange(t *testing.T) {
+	t.Parallel()
+	p := &auth.Principal{CallerID: "billing-console", Realms: []md.Realm{"acme"}, Privileges: auth.Admin}
+	if got := (payments.CredentialCaller{}).Via(requestAs(p)); got != "billing-console" {
+		t.Errorf("Via = %q, want the credential's caller", got)
+	}
+	if got := (payments.CredentialCaller{}).Via(requestAs(nil)); got != "" {
+		t.Errorf("Via with no credential = %q, want nothing", got)
+	}
+}
