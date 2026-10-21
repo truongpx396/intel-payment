@@ -1,0 +1,84 @@
+{
+  "api_version": "2024-06-20",
+  "created": 1792181047,
+  "data": {
+    "object": {
+      "allowed_payment_method_types": null,
+      "amount": 1000,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 1000,
+      "application": null,
+      "application_fee_amount": null,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "scrubbed",
+      "confirmation_method": "automatic",
+      "created": 1792181045,
+      "currency": "usd",
+      "customer": "cus_VSBjkZ2Tt7fTaf",
+      "customer_account": null,
+      "description": "Payment for Invoice",
+      "excluded_payment_method_types": null,
+      "id": "pi_3URHMHPJXgtZX5D624wwgobF",
+      "invoice": "in_1URHMGPJXgtZX5D6doaG0u1e",
+      "last_payment_error": null,
+      "latest_charge": "ch_3URHMHPJXgtZX5D62Q25bkGv",
+      "livemode": false,
+      "managed_payments": {
+        "enabled": false
+      },
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "on_behalf_of": null,
+      "payment_details": {
+        "customer_reference": null,
+        "order_reference": "in_1URHMGPJXgtZX5D6doaG0u1e"
+      },
+      "payment_method": "pm_1URHMEPJXgtZX5D6IWOR8Ecj",
+      "payment_method_configuration_details": null,
+      "payment_method_options": {
+        "card": {
+          "installments": null,
+          "mandate_options": null,
+          "network": null,
+          "request_three_d_secure": "automatic"
+        },
+        "link": {
+          "persistent_token": null
+        }
+      },
+      "payment_method_types": [
+        "card",
+        "link"
+      ],
+      "payment_record": null,
+      "processing": null,
+      "receipt_email": null,
+      "review": null,
+      "setup_future_usage": null,
+      "shared_payment_granted_token": null,
+      "shipping": null,
+      "source": null,
+      "statement_descriptor": null,
+      "statement_descriptor_suffix": null,
+      "status": "succeeded",
+      "transfer_data": null,
+      "transfer_group": null
+    }
+  },
+  "id": "evt_3URHMHPJXgtZX5D62XW8YWe1",
+  "livemode": false,
+  "object": "event",
+  "pending_webhooks": 1,
+  "request": {
+    "id": "req_rInFoOD1NbOdiC",
+    "idempotency_key": "scrubbed"
+  },
+  "type": "payment_intent.succeeded"
+}

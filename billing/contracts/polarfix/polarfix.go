@@ -1,7 +1,9 @@
 // Package polarfix is the Polar adapter's test support: deliveries signed the way Polar signs them (the Standard
 // Webhooks scheme, and the older Polar HMAC that secrets made before 8 September 2026 still use), event bodies in the
 // shapes Polar documents, and a fake Polar API that records what the adapter asks of it. The bodies are built from the
-// documentation, not captured from an account; a sandbox rehearsal before the first real order is still owed.
+// documentation; the ones under captured/ (see Captured) are real deliveries from a Polar sandbox, which the adapter's
+// captured_test.go holds it to. They are of a free order: a paid Polar order, a refund and a subscription renewal have not
+// been captured.
 //
 // For Polar the "provider price id" the engine stores is the Polar PRODUCT id: it is what a checkout is created for and
 // what every order and subscription names.

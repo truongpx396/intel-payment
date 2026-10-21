@@ -1,8 +1,9 @@
 // Package paypalfix is the PayPal adapter's test support: deliveries as PayPal sends them (an envelope with an event
 // type and a resource, five PAYPAL-* headers), and a fake PayPal API that does what PayPal does with them — it answers
 // "verify this signature" by checking the delivery against the webhook it was configured for — and records what the
-// adapter asks of it. The bodies are built from the documentation, not captured from an account; a sandbox rehearsal
-// before the first real order is still owed.
+// adapter asks of it. The bodies these helpers build are from the documentation; the ones under captured/ (see Captured) are the
+// PayPal webhook simulator's, which are not a buyer's payment. A real capture, refund and dispute have not been captured:
+// that needs a buyer to approve an order in a browser.
 //
 // PayPal signs with RSA and a certificate the adapter never sees, so the fake signs with a private scheme of its own:
 // an HMAC over the transmission id, the time, the webhook id and the CRC32 of the event's exact bytes. What the fixtures

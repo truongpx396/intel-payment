@@ -1,0 +1,48 @@
+{
+  "create_time": "2015-10-07T16:58:15Z",
+  "event_type": "PAYMENT.CAPTURE.DENIED",
+  "event_version": "1.0",
+  "id": "WH-8Y6524781B2662740-6BA13970S75831204",
+  "links": [
+    {
+      "href": "https://api.sandbox.paypal.com/v1/notifications/webhooks-events/WH-8Y6524781B2662740-6BA13970S75831204",
+      "method": "GET",
+      "rel": "self"
+    },
+    {
+      "href": "https://api.sandbox.paypal.com/v1/notifications/webhooks-events/WH-8Y6524781B2662740-6BA13970S75831204/resend",
+      "method": "POST",
+      "rel": "resend"
+    }
+  ],
+  "resource": {
+    "amount": {
+      "currency": "EUR",
+      "total": "0.50"
+    },
+    "create_time": "2015-10-07T16:42:50Z",
+    "id": "1YH34677BD7819356",
+    "links": [
+      {
+        "href": "https://api.sandbox.paypal.com/v1/payments/capture/1YH34677BD7819356",
+        "method": "GET",
+        "rel": "self"
+      },
+      {
+        "href": "https://api.sandbox.paypal.com/v1/payments/capture/1YH34677BD7819356/refund",
+        "method": "POST",
+        "rel": "refund"
+      },
+      {
+        "href": "https://api.sandbox.paypal.com/v1/payments/payment/PAY-6AG64245W53716013KYKUWNI",
+        "method": "GET",
+        "rel": "parent_payment"
+      }
+    ],
+    "parent_payment": "PAY-6AG64245W53716013KYKUWNI",
+    "state": "denied",
+    "update_time": "2015-10-07T16:42:57Z"
+  },
+  "resource_type": "capture",
+  "summary": "A EUR 0.5 EUR capture payment was denied"
+}

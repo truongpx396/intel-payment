@@ -1,7 +1,8 @@
 // Package stripefix is the Stripe adapter's test support: deliveries signed the way Stripe signs them, event bodies in
 // the shapes Stripe documents for API version 2024-06-20, and a fake Stripe API that records what the adapter asks of
-// it. The bodies are built from the documentation, not captured from an account — a sandbox rehearsal before the first
-// real card is still owed (the adoption checklist).
+// it. The bodies these helpers build are from the documentation; the ones under captured/ (see Captured) are real
+// deliveries from a Stripe sandbox, which the adapter's captured_test.go holds it to. A sandbox rehearsal is a step of the
+// adoption checklist, but only a live-mode first order shows a live account's configuration.
 package stripefix
 
 import (

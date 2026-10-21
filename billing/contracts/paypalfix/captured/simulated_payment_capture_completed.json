@@ -1,0 +1,89 @@
+{
+  "create_time": "2015-02-17T18:51:33Z",
+  "event_type": "PAYMENT.CAPTURE.COMPLETED",
+  "event_version": "1.0",
+  "id": "WH-7Y7254563A4550640-11V2185806837105M",
+  "links": [
+    {
+      "href": "https://api.sandbox.paypal.com/v1/notifications/webhooks-events/WH-7Y7254563A4550640-11V2185806837105M",
+      "method": "GET",
+      "rel": "self"
+    },
+    {
+      "href": "https://api.sandbox.paypal.com/v1/notifications/webhooks-events/WH-7Y7254563A4550640-11V2185806837105M/resend",
+      "method": "POST",
+      "rel": "resend"
+    }
+  ],
+  "resource": {
+    "amount": {
+      "currency_code": "USD",
+      "value": "57.00"
+    },
+    "create_time": "2022-08-26T18:29:50Z",
+    "custom_id": "d93e4fcb-d3af-137c-82fe-1a8101f1ad11",
+    "disbursement_mode": "DELAYED",
+    "final_capture": true,
+    "id": "42311647XV020574X",
+    "invoice_id": "3942619:fdv09c49-a3g6-4cbf-1358-f6d241dacea2",
+    "links": [
+      {
+        "href": "https://api.sandbox.paypal.com/v2/payments/captures/0KG12345VG343800K",
+        "method": "GET",
+        "rel": "self"
+      },
+      {
+        "href": "https://api.sandbox.paypal.com/v2/payments/captures/0KG12345VG343880K/refund",
+        "method": "POST",
+        "rel": "refund"
+      },
+      {
+        "href": "https://api.sandbox.paypal.com/v2/checkout/orders/8U481631H66031715",
+        "method": "GET",
+        "rel": "up"
+      }
+    ],
+    "seller_protection": {
+      "dispute_categories": [
+        "ITEM_NOT_RECEIVED",
+        "UNAUTHORIZED_TRANSACTION"
+      ],
+      "status": "ELIGIBLE"
+    },
+    "seller_receivable_breakdown": {
+      "gross_amount": {
+        "currency_code": "USD",
+        "value": "57.00"
+      },
+      "net_amount": {
+        "currency_code": "USD",
+        "value": "49.39"
+      },
+      "paypal_fee": {
+        "currency_code": "USD",
+        "value": "2.48"
+      },
+      "platform_fees": [
+        {
+          "amount": {
+            "currency_code": "USD",
+            "value": "5.13"
+          },
+          "payee": {
+            "merchant_id": "CDD7K6247RPCC"
+          }
+        }
+      ]
+    },
+    "status": "COMPLETED",
+    "supplementary_data": {
+      "related_ids": {
+        "order_id": "8U481631H66031715"
+      }
+    },
+    "update_time": "2022-08-26T18:29:50Z"
+  },
+  "resource_type": "capture",
+  "resource_version": "2.0",
+  "summary": "Payment completed for $ 57.0 USD"
+}
