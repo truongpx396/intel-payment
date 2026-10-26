@@ -760,7 +760,12 @@ stays held, and the redelivery resumes it under the same key. An accepted charge
 `auto_recharge` keyed on the slot (its idempotency key is the slot's key), waiting for its webhook; if the webhook already
 arrived, the payment the processor made is left as it is and the slot is settled at once.
 
-**The processor** fulfils that payment like any purchase — the grant is keyed on the slot, with reason `auto_recharge` — and its
+**The processor** fulfils that payment like any purchase — the grant is keyed on the slot, with reason `auto_recharge` — except
+for what names the plan. A purchase's event carries the provider's price; a charge made off-session does not (Stripe's
+`payment_intent.succeeded` has an amount and a method and no price — the sandbox showed the card charged and no credits arriving,
+because the event was ignored as "no price"). What it bought was fixed when the handler charged it, so the plan is the one **the
+payment the handler recorded names**, and never one an event's metadata or amount points at. A charge whose plan the catalogue no
+longer sells is an error, not an ignore: the customer has been charged, so the event is retried and in the end pages a person. Its
 outcome settles **its** slot, once: the payment's key names the slot, and only the first outcome of a payment reaches the
 settlement, so a replayed failure counts once and a success that arrives after its slot went stale does not release the slot that
 replaced it. That is deliberately at-most-once: an undercount only delays switching an instruction off, and an overcount would
@@ -786,7 +791,13 @@ never fulfils. The provider's current subscription is dated by the `Date` of Str
 catalogue does not sell comes back with no plan code. A plan change now is a subscription update with Stripe's
 proration (or none); a change at the period's end is a schedule that keeps the running phase, adds the new price
 after it and releases itself. A secret is read from its reference at each call and is scrubbed from every error.
-The event bodies the tests use are built from the documentation, not captured: a sandbox rehearsal is still owed.
+
+**What a sandbox taught** (a real Stripe sandbox, 2026-10): a new Stripe account has Managed Payments on, and a Checkout Session
+created at API 2024-06-20 is then refused with a 400 that has no code and no param, only a message that names it; the adapter
+retries **once**, under its own idempotency key (`<key>:no-managed-payments`), with `managed_payments[enabled]=false`, and any other
+400 is an error as before. An account's default currency is its country's (SGD for a Singapore account), so a price in another
+currency must say so. The event bodies the unit tests use are still built from the documentation: the rest of a sandbox rehearsal
+is still owed.
 
 ### The Polar adapter
 
