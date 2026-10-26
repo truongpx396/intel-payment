@@ -6,7 +6,7 @@ self-contained container.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-> ## ⚠️ Status: the metering core and the payment pipeline are built and served; checkout, entitlements and the UI are not
+> ## ⚠️ Status: the metering core, the payment pipeline and the host's payment routes are built and served; the admin API, entitlements and the UI are not
 > The foundation and the **metering core** — domain, ports, the hot path on Redis, the durable
 > writer on Postgres, the Redis Streams and JetStream buses, pricers, and the conformance suites they
 > all pass — are implemented and verified in CI, and served by two binaries: **`paymentd`** (gRPC and
@@ -16,8 +16,8 @@ self-contained container.
 > **Payments, as far as they go:** `paymentd` serves `POST /webhooks/{provider}/{account}` — a Stripe, Polar or PayPal
 > delivery is verified on its raw body, persisted, and only then acknowledged — and `payment-worker` fulfils it: a purchase
 > mints credits through the engine exactly once, refunds and chargebacks take back exactly what is owed, a failed payment
-> opens a grace window, and a low balance can charge a saved card. **What is not there:** no `/v1` route to start a checkout,
-> read the catalogue, change a plan or switch auto top-up on (the code exists as a library, tested, and is not served); no
+> opens a grace window, and a low balance can charge a saved card. A host sells through `/v1` — the catalogue, a checkout, the
+> subscription and its change and cancellation, the billing portal, auto top-up and fulfilment. **What is not there:** no
 > admin API for provider accounts, plans or customers, so they are rows you insert; all three provider adapters were written
 > from the providers' documentation and have **not** been run against a sandbox. Entitlements, outbound events, the
 > operational surface and the UI are designed, not built. Start at [ROADMAP.md](ROADMAP.md) for the
@@ -190,7 +190,7 @@ these are the load-bearing few:
 ## Status
 
 The metering core and the payment pipeline (webhook door, processor, three provider adapters, auto top-up) are built
-and verified, and served by `paymentd` and `payment-worker`; checkout and the other `/v1` payment routes, the admin API,
+and verified, and served by `paymentd` and `payment-worker`, with the host's `/v1` payment routes; the admin API,
 entitlements, outbound events and the UI are not. The task count, what is built, and the honest gap list are in
 [ROADMAP.md](ROADMAP.md).
 

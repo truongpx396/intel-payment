@@ -11,9 +11,10 @@ Status is derived, not asserted: [ROADMAP.md](ROADMAP.md) states task counts tha
 verified and served by `cmd/paymentd` (gRPC and REST) and `cmd/payment-worker` (the durable writer), and the
 payment pipeline is built and served with them: `paymentd` mounts `POST /webhooks/{provider}/{account}`
 (`billing/adapters/driving/webhookhttp`) and `payment-worker` runs the processor, the parked-delivery retry, retention
-and the auto top-up subscription (`cmd/internal/payments`). `entitlement/` and `events/` are still `doc.go` stubs, there
-is no `/v1` route for checkout, plans, subscriptions or auto top-up (the use cases exist, tested, unserved), no admin API
-for provider accounts or plans, and no UI. The provider adapters were written from documentation and have never met a
+and the auto top-up subscription (`cmd/internal/payments`). The host's payment routes (`/v1/plans`, `/v1/checkout`,
+`/v1/subscription*`, `/v1/portal`, `/v1/auto-recharge`, `/v1/payments`, `/v1/fulfilment`) are served by `paymentd`
+(`billing/adapters/driving/paymenthttp`). `entitlement/` and `events/` are still `doc.go` stubs, there is no admin API for
+provider accounts or plans, and no UI. The provider adapters were written from documentation and have never met a
 sandbox. Do not write code, docs or comments that imply otherwise.
 
 ## Layout
@@ -21,7 +22,7 @@ sandbox. Do not write code, docs or comments that imply otherwise.
 | Path | What it is |
 |---|---|
 | `metering/` | The engine, standalone and portable. `domain` → `ports` → `app` → `adapters/{driven,driving}`; `contracts/` holds the conformance suites |
-| `billing/` | The payment layer: `domain` → `ports` → `app` → `adapters/{driven (postgres, stripe, polar, paypal), driving (webhookhttp)}`, and its `contracts/`. It depends on metering's *ports* only |
+| `billing/` | The payment layer: `domain` → `ports` → `app` → `adapters/{driven (postgres, stripe, polar, paypal), driving (webhookhttp, paymenthttp)}`, and its `contracts/`. It depends on metering's *ports* only |
 | `entitlement/` `events/` `api/` | Designed; `entitlement/` and `events/` are still `doc.go` stubs. They may depend on metering's *ports* only |
 | `migrations/` `migrate/` `cmd/payment-migrate` | Forward-only schema and its migrator |
 | `specs/001-metering-billing-core/` | `spec`, `plan`, `tasks`, `design-decisions`, and the normative `contracts/` |

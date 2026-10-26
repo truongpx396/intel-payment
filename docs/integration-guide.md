@@ -198,8 +198,14 @@ a second time. The amount is yours to choose; a refund past what was spent falls
 - **Credits screen** — proxy `GET /v1/credits` behind your own session (never expose a `/v1/*`
   credential to a browser) and render with `@intel-payment/credits-ui`, supplying `UnitLabels`
   (with `scale`), your `LedgerColumn`s and your `BillingAnchor`. Or consume the JSON.
-- **Checkout** — `POST /v1/checkout` → redirect. On return, show **processing** and poll
-  `GET /v1/fulfilment`, or wait for the `fulfilment.granted` event.
+- **Checkout** — `GET /v1/plans`, then `POST /v1/checkout` with a plan's slug and an `Idempotency-Key` → redirect. A checkout names
+  a plan, never a price, an amount or a number of credits. On return, show **processing** and poll `GET /v1/fulfilment`, or wait
+  for the `fulfilment.granted` event. Return URLs must be on `PAYMENT_CHECKOUT_RETURN_HOSTS`.
+- **Subscription** — `GET /v1/subscription`, `POST /v1/subscription/change` and `/cancel` (a change is *accepted*, never reported as
+  made: the plan changes when the provider's webhook says so), `GET /v1/portal` for the provider's own page. Changing and cancelling
+  want the `grant` privilege on your credential, because they spend or stop a customer's money.
+- **Auto top-up** — `GET`/`PUT /v1/auto-recharge`. The host passes the saved method's `payment_method_ref`; capturing it from a
+  `setup` checkout is not automatic yet. Only Stripe can charge a saved method.
 - **Feature gates** — `POST /v1/entitlements/check`, batched per page render.
 - **Events** — register an endpoint (`POST /v1/admin/event-endpoints`) for `credits.low`,
   `credits.blocked`, `payment.*`, `entitlements.changed`…; verify each delivery's signature, dedup on
