@@ -16,12 +16,15 @@ self-contained container.
 > **Payments, as far as they go:** `paymentd` serves `POST /webhooks/{provider}/{account}` — a Stripe, Polar or PayPal
 > delivery is verified on its raw body, persisted, and only then acknowledged — and `payment-worker` fulfils it: a purchase
 > mints credits through the engine exactly once, refunds and chargebacks take back exactly what is owed, a failed payment
-> opens a grace window, and a low balance can charge a saved card. A host sells through `/v1` — the catalogue, a checkout, the
-> subscription and its change and cancellation, the billing portal, auto top-up and fulfilment — and an operator configures
-> provider accounts, plans, the provider's prices and customers through `/v1/admin`, each change audited. **What is not
-> there:** all three provider adapters were written
-> from the providers' documentation and have **not** been run against a sandbox. Entitlements, outbound events, the
-> operational surface and the UI are designed, not built. Start at [ROADMAP.md](ROADMAP.md) for the
+> opens a grace window, and a low balance can charge a saved card. A host sells through `/v1` — the catalogue, a checkout,
+> the subscription and its change and cancellation, the billing portal, auto top-up and fulfilment — and an operator
+> configures provider accounts, plans, the provider's prices and customers through `/v1/admin`, each change audited.
+> **Provider contact, as far as it goes:** the three adapters were rehearsed once against the Stripe and Polar sandboxes and
+> PayPal's sandbox and webhook simulator ([docs/sandbox.md](docs/sandbox.md)), which found and fixed two defects; what
+> that could not reach (a PayPal buyer approving an order, a paid Polar order, a Stripe test clock) is listed there and is
+> still unrehearsed. **What is not there:** a saved payment method is not yet captured automatically from a `setup` checkout (the
+> host passes its reference when it switches auto top-up on); entitlements, outbound events, the operational surface and the UI
+> are designed, not built. Start at [ROADMAP.md](ROADMAP.md) for the
 > task count and what is deliberately absent; [tasks.md](specs/001-metering-billing-core/tasks.md) is
 > the build order, and [docs/testing.md](docs/testing.md) is how it is being built (test-first, with
 > the evidence checked).
@@ -191,8 +194,8 @@ these are the load-bearing few:
 ## Status
 
 The metering core and the payment pipeline (webhook door, processor, three provider adapters, auto top-up) are built
-and verified, and served by `paymentd` and `payment-worker`, with the `/v1` payment routes and the admin API;
-entitlements, outbound events and the UI are not. The task count, what is built, and the honest gap list are in
+and verified, and served by `paymentd` and `payment-worker`, with the `/v1` payment routes and the admin API; entitlements,
+outbound events and the UI are not. The task count, what is built, and the honest gap list are in
 [ROADMAP.md](ROADMAP.md).
 
 ## Provenance
