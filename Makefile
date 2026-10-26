@@ -1,5 +1,7 @@
 # intel-payment — metering, credits & payments
-COMPOSE := docker compose -f deploy/docker-compose.yml
+# Compose reads .env from the compose file's directory (deploy/), not the repo root where .env.example says to put it; without
+# --env-file the root .env is silently ignored and no provider credential in it reaches the containers.
+COMPOSE := docker compose -f deploy/docker-compose.yml $(if $(wildcard .env),--env-file .env)
 MODULE  := github.com/truongpx396/intel-payment
 
 .DEFAULT_GOAL := help
