@@ -13,8 +13,8 @@ payment pipeline is built and served with them: `paymentd` mounts `POST /webhook
 (`billing/adapters/driving/webhookhttp`) and `payment-worker` runs the processor, the parked-delivery retry, retention
 and the auto top-up subscription (`cmd/internal/payments`). The host's payment routes (`/v1/plans`, `/v1/checkout`,
 `/v1/subscription*`, `/v1/portal`, `/v1/auto-recharge`, `/v1/payments`, `/v1/fulfilment`) are served by `paymentd`
-(`billing/adapters/driving/paymenthttp`). `entitlement/` and `events/` are still `doc.go` stubs, there is no admin API for
-provider accounts or plans, and no UI. The provider adapters were written from documentation and have never met a
+(`billing/adapters/driving/paymenthttp`), and so is the admin API (`/v1/admin`: provider accounts, plans, the provider's prices,
+customers). `entitlement/` and `events/` are still `doc.go` stubs, and there is no UI. The provider adapters were written from documentation and have never met a
 sandbox. Do not write code, docs or comments that imply otherwise.
 
 ## Layout

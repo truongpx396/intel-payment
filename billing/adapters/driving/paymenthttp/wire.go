@@ -173,3 +173,5 @@ func limitOf(r *http.Request) (int, error) {
 	}
 	return n, nil
 }
+
+func isNotFound(err error) bool { return errors.Is(err, domain.ErrNotFound) }

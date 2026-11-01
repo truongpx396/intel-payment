@@ -10,6 +10,10 @@ import (
 	"strings"
 )
 
+// SecretSchemes are the reference schemes Resolve understands. An account naming any other would have its deliveries answered
+// 500 for ever, so the admin API accepts only these.
+var SecretSchemes = []string{"env", "file"}
+
 // ErrSecretUnavailable is why a reference could not be turned into a secret. Its message never holds secret material: it is
 // logged.
 var ErrSecretUnavailable = errors.New("secret unavailable")

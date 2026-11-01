@@ -1051,8 +1051,8 @@ func ProcessorContract(t *testing.T, p ports.WebhookProcessor, fx Fixtures) {
 
 ## Adoption checklist (per host product)
 
-- [ ] **Provider account row(s)** — `provider_accounts` with secret *references*, the realms each serves, live vs test.
-- [ ] **Plans defined as data** — `plans` + `plan_prices` + `plan_provider_prices` per account and currency; each plan's `pool`.
+- [ ] **Provider account(s)** — `PUT /v1/admin/provider-accounts/{id}` with secret *references*, the realms each serves, live vs test.
+- [ ] **Plans defined as data** — `POST /v1/admin/plans`, then `PUT …/provider-prices/{account}/{currency}` per account and currency; each plan's `pool`.
 - [ ] **Webhook URL registered** — `/webhooks/{provider}/{account}` per account, and its delivery log checked after the first live payment.
 - [ ] **Inbox alerts wired** — `billing_webhook_inbox_age_seconds` and dead events page a human.
 - [ ] **Tax strategy chosen** — `provider_managed` unless the host already owns tax.

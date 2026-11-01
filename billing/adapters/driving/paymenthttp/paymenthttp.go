@@ -58,6 +58,8 @@ type Caller interface {
 	// realm is never guessed — a realm the credential does not cover is ErrRealmMismatch, and a request no credential
 	// reached is ErrUnauthenticated.
 	Resolve(r *http.Request, s domain.Scope) (domain.Scope, error)
+	// Via names the credential the request came through, for the operator who asks which tool made a change.
+	Via(r *http.Request) string
 }
 
 // Config is what the door is built from. A route whose port is absent is not registered: the deployment does not serve it.
@@ -68,6 +70,7 @@ type Config struct {
 	Changes   ports.Subscriptions // POST /v1/subscription/change and /cancel
 	Recharges ports.AutoRecharges // GET and PUT /v1/auto-recharge
 	Payments  ports.Payments      // GET /v1/payments
+	Admin     ports.Admin         // /v1/admin/plans, /v1/admin/provider-accounts and /v1/admin/customers: the `admin` privilege
 
 	// Caller resolves realms from the credential. Required: without it the door could not tell whose realm a call is for.
 	Caller Caller
@@ -121,6 +124,18 @@ func New(cfg Config) (*Door, error) {
 	}
 	if cfg.Payments != nil {
 		add(http.MethodGet, "/v1/payments", Record, d.payments)
+	}
+	if cfg.Admin != nil {
+		add(http.MethodGet, "/v1/admin/plans", Admin, d.listPlans)
+		add(http.MethodPost, "/v1/admin/plans", Admin, d.createPlan)
+		add(http.MethodGet, "/v1/admin/plans/{code}", Admin, d.getPlan)
+		add(http.MethodPatch, "/v1/admin/plans/{code}", Admin, d.patchPlan)
+		add(http.MethodPut, "/v1/admin/plans/{code}/provider-prices/{account}/{currency}", Admin, d.putProviderPrice)
+		add(http.MethodGet, "/v1/admin/provider-accounts", Admin, d.listAccounts)
+		add(http.MethodGet, "/v1/admin/provider-accounts/{id}", Admin, d.getAccount)
+		add(http.MethodPut, "/v1/admin/provider-accounts/{id}", Admin, d.putAccount)
+		add(http.MethodGet, "/v1/admin/customers", Admin, d.getCustomer)
+		add(http.MethodPut, "/v1/admin/customers", Admin, d.putCustomer)
 	}
 	if len(d.routes) == 0 {
 		return nil, errors.New("paymenthttp: no port was given, so the door would serve nothing: that is a wiring mistake")

@@ -766,6 +766,307 @@ paths:
         "422": { $ref: "#/components/responses/Unprocessable" }
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/admin/plans:
+    get:
+      operationId: listAdminPlans
+      tags: [admin]
+      x-served-by: payments
+      summary: Every plan of the realm, on sale or not, with the provider prices that sell it.
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Realm"
+      responses:
+        "200":
+          description: The plans, in their order.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminPlanList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "504": { $ref: "#/components/responses/Timeout" }
+    post:
+      operationId: createPlan
+      tags: [admin]
+      x-served-by: payments
+      summary: Create a plan.
+      description: |
+        What a plan GRANTS — its kind, allotment, pool and interval — is fixed when it is created. A code the realm
+        already has is `409`, and changes nothing.
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Realm"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreatePlanRequest" }
+      responses:
+        "201":
+          description: The plan as stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminPlan" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/admin/plans/{code}:
+    get:
+      operationId: getAdminPlan
+      tags: [admin]
+      x-served-by: payments
+      summary: One plan, with the provider prices that sell it.
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PlanCode"
+        - $ref: "#/components/parameters/Realm"
+      responses:
+        "200":
+          description: The plan.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminPlan" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "504": { $ref: "#/components/responses/Timeout" }
+    patch:
+      operationId: patchPlan
+      tags: [admin]
+      x-served-by: payments
+      summary: Rename a plan, take it on or off sale, reorder it, or change its prices.
+      description: |
+        Nothing that changes what the plan grants can be patched: a customer who paid for 2000 credits must not be granted another
+        quantity because a plan was edited in between. To change what is sold, create a new plan and take the old one off sale; a
+        payment for a plan taken off sale is still recognised.
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PlanCode"
+        - $ref: "#/components/parameters/Realm"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PatchPlanRequest" }
+      responses:
+        "200":
+          description: The plan as stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminPlan" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/admin/plans/{code}/provider-prices/{account}/{currency}:
+    put:
+      operationId: putProviderPrice
+      tags: [admin]
+      x-served-by: payments
+      summary: Map a plan's price in a currency to the provider's price, through an account.
+      description: |
+        A mapping is how a verified payment finds its plan, and it is **never replaced**: a subscriber still renews at the old price, and
+        a payment for a price nobody maps is ignored. Repeating an identical mapping is a no-op (`200`); a different price for the
+        same plan, account and currency, or a price that already sells another plan, is `409`.
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PlanCode"
+        - $ref: "#/components/parameters/AccountPath"
+        - $ref: "#/components/parameters/CurrencyPath"
+        - $ref: "#/components/parameters/Realm"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProviderPriceRequest" }
+      responses:
+        "200":
+          description: The mapping already existed exactly so; nothing was written.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderPrice" }
+        "201":
+          description: The mapping.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderPrice" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/admin/provider-accounts:
+    get:
+      operationId: listProviderAccounts
+      tags: [admin]
+      x-served-by: payments
+      summary: The provider accounts that serve a realm the credential covers, inactive ones included.
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The accounts.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderAccountList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/admin/provider-accounts/{id}:
+    get:
+      operationId: getProviderAccount
+      tags: [admin]
+      x-served-by: payments
+      summary: One provider account.
+      description: |
+        An account that serves no realm the credential covers is `404`, not `403`: whether it exists is not for this credential to probe.
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AccountID"
+      responses:
+        "200":
+          description: The account. Its secrets are references, never values.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderAccount" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "504": { $ref: "#/components/responses/Timeout" }
+    put:
+      operationId: putProviderAccount
+      tags: [admin]
+      x-served-by: payments
+      summary: Create or replace a provider account.
+      description: |
+        The request states the whole account. Its secrets are **references** (`env:NAME`, `file:/absolute/path`), never values, and
+        only the schemes this deployment resolves are accepted. Its provider is fixed once it exists: its webhooks arrive at a route that
+        names it. Every realm named — and every realm it serves now — must be one the credential covers.
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AccountID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProviderAccountRequest" }
+      responses:
+        "201":
+          description: The account was created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderAccount" }
+        "200":
+          description: The account was replaced; the account as stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderAccount" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/admin/customers:
+    get:
+      operationId: getCustomer
+      tags: [admin]
+      x-served-by: payments
+      summary: The provider customer a scope is linked to on an account.
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ScopeKind"
+        - $ref: "#/components/parameters/ScopeID"
+        - $ref: "#/components/parameters/ScopeRealm"
+        - $ref: "#/components/parameters/AccountQuery"
+      responses:
+        "200":
+          description: The link.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CustomerLink" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "504": { $ref: "#/components/responses/Timeout" }
+    put:
+      operationId: linkCustomer
+      tags: [admin]
+      x-served-by: payments
+      summary: Link a scope to a provider customer that already exists.
+      description: |
+        The way a customer of an earlier billing system is brought across. A link is **never re-pointed**: the provider customer of a
+        scope is fixed once linked, and a provider customer belongs to one scope, because either would send a payment into the wrong
+        books. Only the billing email moves.
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CustomerLinkRequest" }
+      responses:
+        "201":
+          description: The link was created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CustomerLink" }
+        "200":
+          description: The link already existed (its email may have moved); the link as stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CustomerLink" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "504": { $ref: "#/components/responses/Timeout" }
   /healthz:
     get:
       operationId: getHealth
@@ -876,6 +1177,32 @@ components:
       in: query
       schema: { type: string }
       description: The realm to configure, when the credential spans several. Otherwise the credential's.
+    PlanCode:
+      name: code
+      in: path
+      required: true
+      schema: { type: string }
+    AccountPath:
+      name: account
+      in: path
+      required: true
+      schema: { type: string }
+    CurrencyPath:
+      name: currency
+      in: path
+      required: true
+      schema: { type: string, pattern: "^[A-Z]{3}$" }
+    AccountID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+    AccountQuery:
+      name: account
+      in: query
+      required: true
+      schema: { type: string }
+      description: The provider account.
     Name:
       name: name
       in: path
@@ -1129,6 +1456,134 @@ components:
         amount: { type: integer, format: int64, description: "`granted`: the credits that arrived." }
         receipt_url: { type: string }
         reason: { type: string, description: "`failed`: the provider's reason." }
+    ProviderPrice:
+      type: object
+      required: [account, currency, provider_price_id]
+      properties:
+        account: { type: string }
+        currency: { type: string }
+        provider_price_id: { type: string }
+    AdminPlan:
+      type: object
+      required: [code, name, kind, credit_allotment, pool, active, sort_order, prices, provider_prices]
+      properties:
+        code: { type: string }
+        name: { type: string }
+        kind: { type: string, enum: [one_time, subscription] }
+        credit_allotment: { type: integer, format: int64, nullable: true }
+        pool: { type: string }
+        interval: { type: string, enum: [month, year] }
+        active: { type: boolean, description: "On sale. A plan taken off sale is still recognised when a payment for it arrives." }
+        sort_order: { type: integer }
+        prices:
+          type: object
+          additionalProperties: { type: integer, format: int64 }
+        provider_prices:
+          type: array
+          items: { $ref: "#/components/schemas/ProviderPrice" }
+    AdminPlanList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/AdminPlan" }
+    CreatePlanRequest:
+      type: object
+      required: [actor, reason, code, name, kind]
+      additionalProperties: false
+      properties:
+        actor: { type: string, minLength: 1 }
+        reason: { type: string, minLength: 1 }
+        code: { type: string, pattern: "^[a-z0-9][a-z0-9_-]{0,62}$", description: "The host's slug, and the only plan id a client ever sees." }
+        name: { type: string, minLength: 1 }
+        kind: { type: string, enum: [one_time, subscription] }
+        credit_allotment: { type: integer, format: int64, minimum: 0, nullable: true, description: "Omit for a negotiated plan." }
+        pool: { type: string, description: "The pool the allotment is granted into. Omit for `general`." }
+        interval: { type: string, enum: [month, year], description: "Required for a subscription, forbidden for a pack." }
+        active: { type: boolean, description: "Defaults to true." }
+        sort_order: { type: integer }
+        prices:
+          type: object
+          additionalProperties: { type: integer, format: int64, minimum: 0 }
+          description: Minor units by upper-case ISO 4217 code.
+    PatchPlanRequest:
+      type: object
+      required: [actor, reason]
+      additionalProperties: false
+      properties:
+        actor: { type: string, minLength: 1 }
+        reason: { type: string, minLength: 1 }
+        name: { type: string, minLength: 1 }
+        active: { type: boolean }
+        sort_order: { type: integer }
+        prices:
+          type: object
+          additionalProperties: { type: integer, format: int64, minimum: 0, nullable: true }
+          description: Sets the price in a currency; `null` removes it.
+    ProviderPriceRequest:
+      type: object
+      required: [actor, reason, provider_price_id]
+      additionalProperties: false
+      properties:
+        actor: { type: string, minLength: 1 }
+        reason: { type: string, minLength: 1 }
+        provider_price_id: { type: string, minLength: 1 }
+    ProviderAccount:
+      type: object
+      required: [id, provider, realms, mode, secret_ref, webhook_secret_ref, active]
+      properties:
+        id: { type: string }
+        provider: { type: string }
+        realms:
+          type: array
+          items: { type: string }
+        mode: { type: string, enum: [live, test] }
+        secret_ref: { type: string, description: "A reference such as `env:STRIPE_SECRET_KEY`, never the secret." }
+        webhook_secret_ref: { type: string }
+        active: { type: boolean }
+    ProviderAccountList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/ProviderAccount" }
+    ProviderAccountRequest:
+      type: object
+      required: [actor, reason, provider, realms, mode, secret_ref, webhook_secret_ref, active]
+      additionalProperties: false
+      properties:
+        actor: { type: string, minLength: 1 }
+        reason: { type: string, minLength: 1 }
+        provider: { type: string, description: "An adapter this deployment runs. Fixed once the account exists." }
+        realms:
+          type: array
+          minItems: 1
+          items: { type: string }
+        mode: { type: string, enum: [live, test] }
+        secret_ref: { type: string, description: "`env:NAME` or `file:/absolute/path`. PayPal's is `client_id:client_secret` in one value." }
+        webhook_secret_ref: { type: string }
+        active: { type: boolean, description: "Required: a replacement states the whole account, and an omitted flag must not switch a live one off." }
+    CustomerLink:
+      type: object
+      required: [scope, account, provider_customer_id]
+      properties:
+        scope: { $ref: "#/components/schemas/Scope" }
+        account: { type: string }
+        provider_customer_id: { type: string }
+        billing_email: { type: string }
+    CustomerLinkRequest:
+      type: object
+      required: [actor, reason, scope, account, provider_customer_id]
+      additionalProperties: false
+      properties:
+        actor: { type: string, minLength: 1 }
+        reason: { type: string, minLength: 1 }
+        scope: { $ref: "#/components/schemas/Scope" }
+        account: { type: string }
+        provider_customer_id: { type: string }
+        billing_email: { type: string }
     Scope:
       type: object
       required: [kind, id]

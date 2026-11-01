@@ -79,6 +79,14 @@ type Plan struct {
 	Entitlements    []Entitlement
 }
 
+// ProviderPrice is the provider's price that sells a plan through one account in one currency. A verified payment finds
+// its plan by it (FR-021), so it is never replaced once a plan is sold: a subscriber still renews at the old price.
+type ProviderPrice struct {
+	Account         string
+	Currency        string // ISO-4217, upper case: the plan must be priced in it
+	ProviderPriceID string
+}
+
 // Customer maps a scope to the provider's customer — the only sanctioned way a webhook learns whom it is about.
 type Customer struct {
 	Scope              Scope

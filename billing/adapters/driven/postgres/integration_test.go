@@ -166,3 +166,14 @@ func TestPostgresAutoRechargesHonourTheAutoRechargesContract(t *testing.T) {
 	t.Parallel()
 	contracts.AutoRechargesContract(t, func(t testing.TB) ports.AutoRecharges { return pgadapter.NewAutoRecharges(world(t)) })
 }
+
+func TestPostgresConfigWriterHonoursTheConfigWriterContract(t *testing.T) {
+	t.Parallel()
+	contracts.ConfigWriterContract(t, func(t testing.TB) ports.ConfigWriter {
+		pool := db(t)
+		for _, a := range contracts.WorldAccounts() {
+			seedAccount(t, pool, a)
+		}
+		return pgadapter.NewConfigWriter(pool)
+	})
+}
