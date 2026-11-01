@@ -179,6 +179,19 @@ func (p *Provider) CreateCheckout(ctx context.Context, acct domain.ProviderAccou
 		f.Set("metadata["+k+"]", v)
 	}
 	_, raw, err := p.call(ctx, acct, http.MethodPost, "/v1/checkout/sessions", f, in.IdemKey)
+	if managedPaymentsRefusal(err) {
+		// A new account has Managed Payments (Stripe as the merchant of record) on by default, and it needs an API version
+		// later than the one this adapter is written against. Whether Stripe is the merchant of record is the deployment's
+		// decision, made by its tax strategy, not something the pinned version can express — so the session opts out, and only
+		// when Stripe says it must, which keeps the parameter from an account that may not know it. The retry is a different
+		// request and so gets a key of its own, one that still names the first: Stripe refuses one key for two requests.
+		f.Set("managed_payments[enabled]", "false")
+		retryKey := ""
+		if in.IdemKey != "" {
+			retryKey = in.IdemKey + ":no-managed-payments"
+		}
+		_, raw, err = p.call(ctx, acct, http.MethodPost, "/v1/checkout/sessions", f, retryKey)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -187,6 +200,13 @@ func (p *Provider) CreateCheckout(ctx context.Context, acct domain.ProviderAccou
 		return "", errors.Join(err, errors.New("stripe: a checkout session has no url"))
 	}
 	return s.URL, nil
+}
+
+// managedPaymentsRefusal reports whether Stripe refused a call because the account has Managed Payments on. Stripe gives such a
+// refusal no code and no param, only a message.
+func managedPaymentsRefusal(err error) bool {
+	var ae *APIError
+	return errors.As(err, &ae) && ae.Status == http.StatusBadRequest && ae.Type == "invalid_request_error" && strings.Contains(ae.Message, "Managed Payments")
 }
 
 // CreatePortalSession implements ports.PaymentProvider.

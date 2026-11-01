@@ -633,6 +633,10 @@ type MemPayments struct {
 	// that goes away between the work and the commit does.
 	failCommit int
 
+	// HidesPlan is a store that does not give back which plan a payment was made for, as one that reads the row without that
+	// column does: what the processor knows of an auto top-up's plan is only what this store remembers.
+	HidesPlan bool
+
 	log   *CallLog
 	mu    sync.Mutex
 	rows  map[string]domain.Payment
@@ -659,6 +663,9 @@ func (m *MemPayments) Get(_ context.Context, account, id string) (domain.Payment
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	p, ok := m.rows[paymentKey(account, id)]
+	if m.HidesPlan {
+		p.PlanCode = ""
+	}
 	return p, ok, nil
 }
 

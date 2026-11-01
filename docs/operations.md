@@ -200,7 +200,9 @@ is about *delay*. Check `payment-worker` is running and that its log has no
 `inbox retention`), then the `error` on the oldest rows. A `dead` event exhausted its retries and is never leased again:
 fix the cause (commonly a plan with no `plan_provider_prices` mapping for the price bought: `PUT
 /v1/admin/plans/{code}/provider-prices/{account}/{currency}`, which never replaces a mapping — a wrong one is a new plan or a database
-fix, because a payment already made keeps the price it was made at). The admin API configures; it has no route to re-drive a dead
+fix, because a payment already made keeps the price it was made at). An auto top-up whose card was charged and whose plan the
+catalogue no longer sells is also a `dead` event on purpose: the customer has paid, so it pages a person rather than being ignored —
+restore the plan, or refund the charge at the provider. The admin API configures; it has no route to re-drive a dead
 event yet.
 
 A `payment-worker` that cannot join the `<prefix>.balance.low.>` subscription exits `1` and says which; it does not run on

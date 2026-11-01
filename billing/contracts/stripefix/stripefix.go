@@ -62,6 +62,15 @@ type Fixtures struct {
 	ChargeStatus int
 	// IntentStatus, when not empty, is the status of the payment intent a charge creates (default "succeeded").
 	IntentStatus string
+	// ManagedPayments is an account that has Stripe's Managed Payments on by default, as a new sandbox does: a Checkout Session
+	// created at the API version this adapter is pinned to is refused (the feature needs a later one), unless the call opts
+	// out with managed_payments[enabled]=false. The refusal is what Stripe really answers: a 400 invalid_request_error with
+	// no code and no param, only a message.
+	ManagedPayments bool
+	// ManagedPaymentsEvenOptedOut refuses the session even with the opt-out, as an account Stripe will not exempt would.
+	ManagedPaymentsEvenOptedOut bool
+	// CheckoutStatus, when not zero, is the HTTP status POST /v1/checkout/sessions answers with, as an error.
+	CheckoutStatus int
 
 	customers map[string]string // idempotency key → customer id
 	charges   map[string]string
@@ -271,6 +280,7 @@ func (f *Fixtures) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.reqs = append(f.reqs, Request{r.Method, r.URL.Path, r.Form, r.Header.Clone()})
 	fail, decline, chargeStatus, intentStatus := f.FailAll, f.DeclineCharges, f.ChargeStatus, f.IntentStatus
+	managed, managedAlways, checkoutStatus := f.ManagedPayments, f.ManagedPaymentsEvenOptedOut, f.CheckoutStatus
 	f.n++
 	n := f.n
 	f.mu.Unlock()
@@ -308,6 +318,14 @@ func (f *Fixtures) serve(w http.ResponseWriter, r *http.Request) {
 		f.mu.Unlock()
 		reply(200, map[string]any{"id": id, "object": "customer"})
 	case r.Method == http.MethodPost && path == "/v1/checkout/sessions":
+		if checkoutStatus != 0 {
+			apiErr(checkoutStatus, "invalid_request_error", "", "Invalid line_items[0]: something Stripe does not like.")
+			return
+		}
+		if (managed && r.Form.Get("managed_payments[enabled]") != "false") || managedAlways {
+			apiErr(400, "invalid_request_error", "", "Managed Payments is not supported on API version "+APIVersion+". Update your API version, or set the API Version of this request to 2025-03-31.basil or greater.")
+			return
+		}
 		reply(200, map[string]any{"id": fmt.Sprintf("cs_%d", n), "object": "checkout.session", "url": fmt.Sprintf("https://checkout.stripe.test/c/pay/cs_%d", n)})
 	case r.Method == http.MethodPost && path == "/v1/billing_portal/sessions":
 		reply(200, map[string]any{"id": "bps_1", "url": "https://billing.stripe.test/p/session/" + r.Form.Get("customer")})

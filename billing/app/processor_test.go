@@ -240,6 +240,7 @@ func TestProcessorAutoRechargeRejectsEveryBrokenStoreByName(t *testing.T) {
 	const (
 		lateReplay = "a success that arrives after its slot went stale does not release the slot that replaced it, and replaying it grants nothing more"
 		thirdFail  = "the third failure switches the instruction off and tells the customer why"
+		noPrice    = "an auto top-up's success needs no price: the provider's event about a charge made off-session names none, and its plan was fixed when it was charged"
 	)
 	broken := []struct {
 		name     string
@@ -248,6 +249,8 @@ func TestProcessorAutoRechargeRejectsEveryBrokenStoreByName(t *testing.T) {
 	}{
 		{"a store that releases whichever slot a report names", func(w *contracts.RechargeWorld) { w.Recharges.ReleasesAnySlot = true }, lateReplay},
 		{"a store that never switches an instruction off", func(w *contracts.RechargeWorld) { w.Recharges.NeverDisables = true }, thirdFail},
+		// The event names no price, so what the customer bought can only come from the payment the handler recorded when it charged.
+		{"a payments store that does not remember which plan a payment was for", func(w *contracts.RechargeWorld) { w.Payments.HidesPlan = true }, noPrice},
 	}
 	for _, b := range broken {
 		t.Run(b.name, func(t *testing.T) {

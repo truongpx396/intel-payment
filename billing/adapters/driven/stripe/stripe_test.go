@@ -478,6 +478,98 @@ func TestCreateCheckoutAsksForTheModeThePriceAndTheReturnPages(t *testing.T) {
 	}
 }
 
+// Found against the real sandbox: a new account has Managed Payments on by default, and a Checkout Session created at the
+// API version this adapter is pinned to is refused — "Managed Payments is not supported on API version 2024-06-20" — so a
+// first checkout failed with a bare 500 on an account that had done nothing wrong. Whether Stripe is the merchant of record is
+// the deployment's decision (PAYMENT_TAX_STRATEGY), not something the pinned version can express, so the session opts out
+// when Stripe says it must; and only then, so an account without the feature never sees the parameter.
+func TestCheckoutOptsOutOfManagedPaymentsOnlyWhenStripeRefusesTheSessionForIt(t *testing.T) {
+	t.Parallel()
+	p, fx := setup(t)
+	fx.ManagedPayments = true
+	in := fx.Checkout()
+	url, err := p.CreateCheckout(ctx(), fx.Account(), in)
+	if err != nil || !strings.HasPrefix(url, "https://checkout.stripe.test/c/pay/") {
+		t.Fatalf("CreateCheckout = %q, %v: the account has Managed Payments on and the checkout must still be made", url, err)
+	}
+	var sessions []stripefix.Request
+	for _, r := range fx.Requests() {
+		if r.Method == http.MethodPost && r.Path == "/v1/checkout/sessions" {
+			sessions = append(sessions, r)
+		}
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("%d session requests, want the refused one and one that opts out", len(sessions))
+	}
+	first, second := sessions[0], sessions[1]
+	if first.Form.Has("managed_payments[enabled]") {
+		t.Errorf("the first request already opted out: an account without the feature would see a parameter it may not know")
+	}
+	if second.Form.Get("managed_payments[enabled]") != "false" {
+		t.Errorf("the second request = %v, want managed_payments[enabled]=false", second.Form)
+	}
+	if k1, k2 := first.Header.Get("Idempotency-Key"), second.Header.Get("Idempotency-Key"); k1 != "checkout-1" || k2 == "" || k2 == k1 || !strings.HasPrefix(k2, k1) {
+		t.Errorf("idempotency keys %q then %q: Stripe refuses one key for two different requests, so the second needs a key of its own that still names the first", k1, k2)
+	}
+	for _, k := range []string{"mode", "customer", "success_url", "cancel_url", "line_items[0][price]", "invoice_creation[enabled]"} {
+		if first.Form.Get(k) != second.Form.Get(k) {
+			t.Errorf("%s changed between the two requests (%q then %q): only the opt-out may differ", k, first.Form.Get(k), second.Form.Get(k))
+		}
+	}
+	// A repeat of the whole checkout names the same keys, so the same session comes back and no second customer is billed twice.
+	if _, err := p.CreateCheckout(ctx(), fx.Account(), in); err != nil {
+		t.Fatalf("the repeat: %v", err)
+	}
+}
+
+func TestCheckoutNeverMentionsManagedPaymentsToAnAccountThatHasNoQuarrelWithIt(t *testing.T) {
+	t.Parallel()
+	p, fx := setup(t)
+	if _, err := p.CreateCheckout(ctx(), fx.Account(), fx.Checkout()); err != nil {
+		t.Fatal(err)
+	}
+	req, _ := fx.Last(http.MethodPost, "/v1/checkout/sessions")
+	if req.Form.Has("managed_payments[enabled]") {
+		t.Errorf("form = %v: an ordinary account is sent an ordinary session", req.Form)
+	}
+}
+
+func TestACheckoutRefusedForAnyOtherReasonIsNotAskedAgain(t *testing.T) {
+	t.Parallel()
+	p, fx := setup(t)
+	fx.CheckoutStatus = 400
+	if _, err := p.CreateCheckout(ctx(), fx.Account(), fx.Checkout()); err == nil {
+		t.Fatal("a refused checkout succeeded")
+	}
+	if n := countSessions(fx); n != 1 {
+		t.Errorf("%d session requests, want 1: only Managed Payments is worth asking twice", n)
+	}
+}
+
+func TestACheckoutStripeRefusesEvenOptedOutIsReportedNotRetriedForEver(t *testing.T) {
+	t.Parallel()
+	p, fx := setup(t)
+	fx.ManagedPaymentsEvenOptedOut = true
+	_, err := p.CreateCheckout(ctx(), fx.Account(), fx.Checkout())
+	var ae *stripe.APIError
+	if !errors.As(err, &ae) || ae.Status != 400 {
+		t.Fatalf("err = %v, want Stripe's refusal", err)
+	}
+	if n := countSessions(fx); n != 2 {
+		t.Errorf("%d session requests, want exactly 2: the one that was refused and one that opted out", n)
+	}
+}
+
+func countSessions(fx *stripefix.Fixtures) int {
+	n := 0
+	for _, r := range fx.Requests() {
+		if r.Method == http.MethodPost && r.Path == "/v1/checkout/sessions" {
+			n++
+		}
+	}
+	return n
+}
+
 func TestPortalSessionIsTheProvidersPageForTheCustomer(t *testing.T) {
 	t.Parallel()
 	p, fx := setup(t)

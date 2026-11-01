@@ -286,9 +286,9 @@ func (p *Processor) paymentSucceeded(ctx context.Context, acct domain.ProviderAc
 	if err := obj.Amount.Validate(); err != nil {
 		return "", err
 	}
-	plan, ok, err := p.d.Catalog.PlanForPrice(ctx, acct.ID, obj.ProviderPriceID)
+	plan, ok, err := p.planOf(ctx, acct, scope, obj)
 	if err != nil {
-		return "", fmt.Errorf("catalogue: price %s: %w", obj.ProviderPriceID, err)
+		return "", err
 	}
 	if !ok {
 		// Never a default plan (FR-021): a customer paid for something this deployment does not sell.
@@ -347,6 +347,35 @@ func (p *Processor) paymentSucceeded(ctx context.Context, acct domain.ProviderAc
 		p.settleRecharge(ctx, *announce, true, "")
 	}
 	return outcomeProcessed, nil
+}
+
+// planOf finds what a verified payment bought. A purchase names the provider's price, and the catalogue maps it back to a
+// plan. A charge this service made off-session for an auto top-up does not: the provider's event about it (a Stripe
+// payment_intent) carries an amount and a method and no price, because a payment intent has none. What it bought was fixed when
+// the handler charged it and recorded then, on the payment the handler left waiting for this event — so the plan is the one that
+// payment names, and never one the event's metadata or amount points at. Such a charge whose plan is no longer sold is an error,
+// not an ignore: the customer has been charged, and the event is retried and, in the end, pages a person rather than taking the
+// money for nothing.
+func (p *Processor) planOf(ctx context.Context, acct domain.ProviderAccount, scope domain.Scope, obj domain.EventObject) (domain.Plan, bool, error) {
+	if obj.ProviderPriceID != "" {
+		plan, ok, err := p.d.Catalog.PlanForPrice(ctx, acct.ID, obj.ProviderPriceID)
+		if err != nil {
+			return domain.Plan{}, false, fmt.Errorf("catalogue: price %s: %w", obj.ProviderPriceID, err)
+		}
+		return plan, ok, nil
+	}
+	pending, found, err := p.d.Payments.Get(ctx, acct.ID, obj.ProviderPaymentID)
+	if err != nil {
+		return domain.Plan{}, false, fmt.Errorf("read payment %s: %w", obj.ProviderPaymentID, err)
+	}
+	if !found || pending.Kind != kindAutoRecharge || pending.PlanCode == "" {
+		return domain.Plan{}, false, nil
+	}
+	plan, _, err := p.d.Catalog.Resolve(ctx, scope.Realm.Or(), pending.PlanCode, pending.Amount.Currency, acct.ID)
+	if err != nil {
+		return domain.Plan{}, false, fmt.Errorf("auto top-up payment %s was charged for plan %s, which the catalogue no longer sells: %w", obj.ProviderPaymentID, pending.PlanCode, err)
+	}
+	return plan, true, nil
 }
 
 // kindAutoRecharge is the kind of a payment made by an auto top-up's charge.
