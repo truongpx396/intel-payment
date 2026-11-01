@@ -320,3 +320,26 @@ func TestPaymentdPrefixesItsSubjectsWithTheEngines(t *testing.T) {
 		t.Fatalf("prefix %q, %v: the payment layer follows the engine's, which this is", s.Engine.SubjectPrefix, err)
 	}
 }
+
+// R099c: paymentd sells, and what it sells under — when a plan change takes effect, who computes tax, where a buyer may be
+// sent back to — is read here like every other setting: a documented default, a value that lands in its field, and a
+// refusal that names the variable.
+func TestTheSellingSettingsAreReadAndCheckedLikeTheRest(t *testing.T) {
+	t.Parallel()
+	s, err := parseSettings(getenv(base()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Selling.PlanChangePolicy != "at_period_end" || s.Selling.TaxStrategy != "provider_managed" {
+		t.Errorf("defaults %+v, documented at_period_end and provider_managed", s.Selling)
+	}
+	s, err = parseSettings(getenv(with("PAYMENT_PLAN_CHANGE_POLICY", "immediate_no_prorate", "PAYMENT_CHECKOUT_RETURN_HOSTS", "app.example.com")))
+	if err != nil || s.Selling.PlanChangePolicy != "immediate_no_prorate" || len(s.Selling.ReturnHosts) != 1 {
+		t.Errorf("read as %+v, %v", s.Selling, err)
+	}
+	for name, bad := range map[string]string{"PAYMENT_PLAN_CHANGE_POLICY": "never", "PAYMENT_TAX_STRATEGY": "external_hook", "PAYMENT_CHECKOUT_RETURN_HOSTS": "https://app.example.com"} {
+		if _, err := parseSettings(getenv(with(name, bad))); err == nil || !strings.Contains(err.Error(), name) {
+			t.Errorf("%s=%q: %v, want a refusal naming the variable", name, bad, err)
+		}
+	}
+}

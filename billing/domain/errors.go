@@ -1,6 +1,10 @@
 package domain
 
-import "errors"
+import (
+	"errors"
+
+	md "github.com/truongpx396/intel-payment/metering/domain"
+)
 
 // Errors of the fiat layer. The metering errors (ErrInvalid, ErrNotFound, ErrIdemConflict, …) are reused as they
 // are; these are the ones only a payment boundary can raise.
@@ -28,4 +32,14 @@ var (
 	ErrChargeDeclined = errors.New("the provider refused the charge")
 	// ErrNotImplemented is what a stub answers; production code never returns it.
 	ErrNotImplemented = errors.New("not implemented")
+)
+
+// The engine's errors, which billing reuses as they are (a payment can be invalid, missing, already there, or a replay of
+// another request), named here so that a layer that speaks for billing — a door — need not import the engine's domain to
+// recognise them. They are the same values, so errors.Is finds either name.
+var (
+	ErrInvalid       = md.ErrInvalid
+	ErrNotFound      = md.ErrNotFound
+	ErrAlreadyExists = md.ErrAlreadyExists
+	ErrIdemConflict  = md.ErrIdemConflict
 )

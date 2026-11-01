@@ -180,10 +180,11 @@ func wire(ctx context.Context, s settings, log *slog.Logger, getenv func(string)
 
 	// The door a payment provider knocks on. Payments are always served: an account that does not exist or is inactive is
 	// answered 404 unknown_account, so a deployment with no provider account is a deployment with no payments.
-	ingress, err := payments.NewIngress(payments.Common{
+	common := payments.Common{
 		Books: payments.OpenBooks(st.Pool, system.Clock{}), Getenv: getenv, Clock: system.Clock{}, Metrics: metrics, Bus: bus, Log: log,
 		Settings: s.Payments, SubjectPrefix: cfg.SubjectPrefix,
-	})
+	}
+	ingress, err := payments.NewIngress(common)
 	if err != nil {
 		return nil, err
 	}
@@ -192,11 +193,25 @@ func wire(ctx context.Context, s settings, log *slog.Logger, getenv func(string)
 		return nil, err
 	}
 
+	// The routes a host's backend calls to sell and to manage what was sold. They have no Meter: they cannot grant a credit.
+	sell, err := payments.NewSell(common, s.Selling)
+	if err != nil {
+		return nil, err
+	}
+	host, err := payments.NewDoor(common, sell)
+	if err != nil {
+		return nil, err
+	}
+	hostRoutes, err := payments.V1Routes(host.Routes())
+	if err != nil {
+		return nil, err
+	}
+
 	handler, err := resthandler.New(resthandler.Config{
 		Meter: engine, Balance: engine, Credits: engine, Ledger: st.Books, Transfers: st.Books, Admin: admin,
 		Auth: s.Authenticator, Clock: system.Clock{}, Logger: log, Legacy429ForLimits: s.Legacy429,
 		Ready: readiness{db: st.DB, ms: st.Migrations, books: st.Books, shards: cfg.Shards}, Metrics: metricsHandler,
-		Extra: []resthandler.Route{{Method: http.MethodPost, Path: webhookhttp.Path, Surface: resthandler.Webhook, Handler: door}},
+		Extra: append([]resthandler.Route{{Method: http.MethodPost, Path: webhookhttp.Path, Surface: resthandler.Webhook, Handler: door}}, hostRoutes...),
 	})
 	if err != nil {
 		return nil, err

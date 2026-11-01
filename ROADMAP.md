@@ -32,9 +32,9 @@ else**, and saying so is more useful than pretending otherwise:
 
 ## Phase 1 — Metering, credits & payment collection
 
-**Status: in progress — the foundation, the metering core, the transports and the payment pipeline (webhook door, processor, Stripe/Polar/PayPal adapters, auto top-up) are built and verified; the payment `/v1` routes, entitlements, outbound events, the operational surface and the UI are not.** → [specs/001-metering-billing-core](specs/001-metering-billing-core/)
+**Status: in progress — the foundation, the metering core, the transports and the payment pipeline (webhook door, processor, Stripe/Polar/PayPal adapters, auto top-up) are built and verified; the host's payment `/v1` routes are served too; the admin API for payments, entitlements, outbound events, the operational surface and the UI are not.** → [specs/001-metering-billing-core](specs/001-metering-billing-core/)
 
-Tasks: 145 of 188 done (specs/001-metering-billing-core/tasks.md) — counted by `scripts/check-spec-drift.sh`, which fails CI when this line and the task list disagree.
+Tasks: 147 of 190 done (specs/001-metering-billing-core/tasks.md) — counted by `scripts/check-spec-drift.sh`, which fails CI when this line and the task list disagree.
 
 Prepaid credits in pools, exact rational pricing, the admission gate with subject- and plan-sized
 ceilings, the single durable writer with a per-scope sequence watermark, cluster-safe hot-path
@@ -53,7 +53,7 @@ all in CI.
 **A service for the metering core.** `cmd/paymentd` serves it over gRPC and REST behind a service credential
 (mTLS or bearer), with an OpenAPI document and clients generated from it, and `cmd/payment-worker` is the sole
 durable writer; `make up` runs both beside Postgres and Redis, and the Playwright suite passes against the built
-image. It serves metering and the payment pipeline — no entitlements and no checkout route.
+image. It serves metering, the payment pipeline and the host's payment routes — no admin API for payments and no entitlements.
 
 **Payments, served.** `paymentd` mounts `POST /webhooks/{provider}/{account}` (signature only: no JWT, no CORS) and
 `payment-worker` fulfils what it accepts. A verified delivery is persisted to a Postgres inbox before it is acknowledged
@@ -61,9 +61,10 @@ and processed afterwards with leases and retries; a purchase mints credits throu
 are cumulative and take back exactly the credits owed; a chargeback and a won dispute are exact inverses; a failed payment
 opens a grace window; and a standing auto top-up instruction charges the saved method when a pool falls under its
 threshold, at most `max_per_day` times a day. PayPal verifies each delivery with an API call and parks it when PayPal
-cannot answer. What is **not** there: `/v1/plans`, `/v1/checkout`, `/v1/subscription*`, `/v1/portal`, `/v1/auto-recharge` and
-`/v1/fulfilment` (the use cases behind them exist and are tested, and nothing serves them); the admin API for provider
-accounts, plans and customers (they are rows you insert); and any contact with a real provider: the three adapters were
+cannot answer. A host sells through `/v1/plans`, `/v1/checkout`, `/v1/subscription*`, `/v1/portal`, `/v1/auto-recharge`,
+`/v1/payments` and `/v1/fulfilment` (a change is accepted, never reported as made; a checkout names a plan, never a price).
+What is **not** there: the admin API for provider accounts, plans and customers (they are rows you insert); and any contact
+with a real provider: the three adapters were
 written from the providers' documentation and their fixtures are not captures. A **sandbox rehearsal is owed before any
 real order** — see the gap table.
 
@@ -111,9 +112,10 @@ Tracked openly rather than discovered later.
 
 | Gap | Phase | Note |
 |---|---|---|
-| **No checkout, no entitlements** | 1 | `paymentd` and `payment-worker` serve the metering engine and the payment pipeline behind the webhook route; there are no payment `/v1` routes, entitlements, operational surface or UI yet (`entitlement/` and `events/` are stubs). `payment-worker` drains the Redis outbox only — the JetStream intent path exists in the engine and is refused by the binary — and holds one Postgres connection per shard it owns. The Go Redis adapter loads `hot_path.lua` unchanged, so the cluster-mode verification of the reference functions stays meaningful |
+| **No payment admin API, no entitlements** | 1 | `paymentd` and `payment-worker` serve the metering engine, the payment pipeline behind the webhook route and the host's payment `/v1` routes; there is no admin API for payments, no entitlements, operational surface or UI yet (`entitlement/` and `events/` are stubs). `payment-worker` drains the Redis outbox only — the JetStream intent path exists in the engine and is refused by the binary — and holds one Postgres connection per shard it owns. The Go Redis adapter loads `hot_path.lua` unchanged, so the cluster-mode verification of the reference functions stays meaningful |
 | Provider adapters never met a sandbox | 1 | Stripe, Polar and PayPal were written from documentation; their fixtures are built from it, not captured. Owed before a real order: PayPal's reversal resource shape, whether `total_refunded_amount` is on every refund, whether a wallet order auto-captures with `ORDER_COMPLETE_ON_PAYMENT_APPROVAL`; Polar's secret encoding (the adapter tries both). Polar and PayPal cannot charge a saved method, so auto top-up works on Stripe only; PayPal's `PAYMENT.SALE.REFUNDED` is ignored |
-| Payment `/v1` routes and the admin API | 1 | Checkout, catalogue, subscription change/cancel, portal, auto top-up and fulfilment are libraries with no route; provider accounts, plans, customers and auto top-up instructions are SQL rows. Until a customer exists in `billing_customers` a webhook about them is ignored |
+| Admin API for payments | 1 | Provider accounts, plans, the provider's prices and customers are SQL rows. Until a customer exists in `billing_customers` a webhook about them is ignored |
+| Saved payment method not captured automatically | 1 | A `setup` checkout saves a method at the provider, but nothing reads it back into the auto top-up instruction: the host passes `payment_method_ref` to `PUT /v1/auto-recharge` itself. Also: a provider's 4xx reaches a host as `500 internal` rather than a `502 provider_error` |
 | Post-paid invoicing | 2 | Designed, not built |
 | Coupons, discounts, trials, quantity subscriptions | 2 | Designed in 002; absent from 001 |
 | Invoice generation | 2 | Phase 1 collects payments; it issues no invoices |

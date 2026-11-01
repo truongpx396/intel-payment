@@ -124,8 +124,8 @@ compose stack sets 400 for the default 256). Replicas divide the shards, so each
 |---|---|---|---|
 | `PAYMENT_NEGATIVE_BALANCE_POLICY` | `allow_debt` · `clamp_to_zero` · `block_and_flag` | `clamp_to_zero` | What a refund past consumed credits does, per pool. A floor always books a `writeoff` row and never forgives debt that already existed |
 | `PAYMENT_CREDIT_EXPIRY` | `off` · `lots_fefo` | `off` | Whether grants expire. With `lots_fefo` each grant is a lot and the one that lapses soonest is spent first (lots that never lapse last). `lots_fifo`, the name this mode had before it drew by expiry, is refused at start-up |
-| `PAYMENT_PLAN_CHANGE_POLICY` | `at_period_end` · `immediate_prorate` · `immediate_no_prorate` | `at_period_end` | Mid-period upgrade/downgrade. Proration is the provider's math |
-| `PAYMENT_TAX_STRATEGY` | `provider_managed` · `external_hook` · `none` | `provider_managed` | **Who computes tax.** There is no compute-it-here mode |
+| `PAYMENT_PLAN_CHANGE_POLICY` | `at_period_end` · `immediate_prorate` · `immediate_no_prorate` | `at_period_end` | Mid-period upgrade/downgrade (`paymentd`). Proration is the provider's math |
+| `PAYMENT_TAX_STRATEGY` | `provider_managed` · `none` | `provider_managed` | **Who computes tax** (`paymentd`). There is no compute-it-here mode. `external_hook` is a real strategy of the library, but needs the host's own tax service, which the binary has no way to be given: it is refused at start rather than run with nobody computing tax |
 
 ### Payments
 
@@ -135,6 +135,14 @@ Read by `paymentd` (the webhook door) and `payment-worker` (everything after it)
 |---|---|---|
 | `PAYMENT_WEBHOOK_TOLERANCE` | `5m` | How far a signature's timestamp may be from **when the delivery arrived**. Positive, at most `1h`: nothing rejects every delivery, and a wider window makes a captured delivery replayable for that long. A parked delivery is judged as of its arrival, so an outage longer than this does not turn it into a replay |
 | `PAYMENT_WEBHOOK_TICK_INTERVAL` | `5s` | `payment-worker`: how often the webhook inbox is worked and parked deliveries are verified again. A customer who has paid waits at most this long for their credits. Positive, at most `1m` |
+
+### Selling
+
+Read by `paymentd`, which serves the host's `/v1` payment routes (plans, checkout, subscription, portal, auto-recharge, payments, fulfilment). Checked at start like the rest.
+
+| Variable | Default | Failure mode if wrong |
+|---|---|---|
+| `PAYMENT_CHECKOUT_RETURN_HOSTS` | *(empty)* | Comma-separated hosts (`host` or `host:port`, no scheme or path) a checkout's `success_url`/`cancel_url` and a portal's `return_url` may name; compared case-insensitively. A return URL is where a buyer is sent after paying, so a deployment that knows its hosts should list them. **Empty accepts any `https` host.** An entry that is a URL, has a path, or is empty stops the service at start |
 
 ### Dunning
 
@@ -187,7 +195,7 @@ variables live wherever your platform keeps secrets:
 |---|---|
 | `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` | Local HMAC verification |
 | `POLAR_ACCESS_TOKEN` / `POLAR_WEBHOOK_SECRET` | Local HMAC verification |
-| `PAYPAL_CLIENT_ID` / `_SECRET` / `_WEBHOOK_ID` | **Remote** verification — an API call per webhook; an outage parks deliveries |
+| `PAYPAL_CREDENTIALS` / `PAYPAL_WEBHOOK_ID` | `PAYPAL_CREDENTIALS` is `<client id>:<client secret>` in one value (an account row references one value); `PAYPAL_WEBHOOK_ID` is the webhook's id. **Remote** verification — an API call per webhook; an outage parks deliveries |
 
 ---
 
