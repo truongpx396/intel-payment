@@ -1,0 +1,129 @@
+{
+  "create_time": "2016-04-28T11:29:31Z",
+  "event_type": "BILLING.SUBSCRIPTION.CREATED",
+  "event_version": "1.0",
+  "id": "WH-19973937YW279670F-02S63370HL636500Y",
+  "links": [
+    {
+      "href": "https://api.sandbox.paypal.com/v1/notifications/webhooks-events/WH-19973937YW279670F-02S63370HL636500Y",
+      "method": "GET",
+      "rel": "self"
+    },
+    {
+      "href": "https://api.sandbox.paypal.com/v1/notifications/webhooks-events/WH-19973937YW279670F-02S63370HL636500Y/resend",
+      "method": "POST",
+      "rel": "resend"
+    }
+  ],
+  "resource": {
+    "agreement_details": {
+      "failed_payment_count": "0",
+      "final_payment_due_date": "2017-11-30T10:00:00Z",
+      "num_cycles_completed": "0",
+      "num_cycles_remaining": "5",
+      "outstanding_balance": {
+        "value": "0.00"
+      }
+    },
+    "description": "desc",
+    "id": "I-PE7JWXKGVN0R",
+    "links": [
+      {
+        "href": "https://api.sandbox.paypal.com/v1/payments/billing-agreements/I-PE7JWXKGVN0R",
+        "method": "GET",
+        "rel": "self"
+      }
+    ],
+    "payer": {
+      "payer_info": {
+        "email": "buyer@example.test",
+        "first_name": "Cool",
+        "last_name": "Buyer",
+        "payer_id": "XLHKRXRA4H7QY",
+        "shipping_address": {
+          "city": "San Jose",
+          "country_code": "US",
+          "line1": "3rd st",
+          "line2": "cool",
+          "postal_code": "95112",
+          "recipient_name": "Cool Buyer",
+          "state": "CA"
+        }
+      },
+      "payment_method": "paypal",
+      "status": "verified"
+    },
+    "plan": {
+      "curr_code": "USD",
+      "links": [],
+      "merchant_preferences": {
+        "auto_bill_amount": "YES",
+        "max_fail_attempts": "21",
+        "setup_fee": {
+          "value": "0.00"
+        }
+      },
+      "payment_definitions": [
+        {
+          "amount": {
+            "value": "5.00"
+          },
+          "charge_models": [
+            {
+              "amount": {
+                "value": "1.00"
+              },
+              "type": "TAX"
+            },
+            {
+              "amount": {
+                "value": "1.00"
+              },
+              "type": "SHIPPING"
+            }
+          ],
+          "cycles": "5",
+          "frequency": "Month",
+          "frequency_interval": "1",
+          "type": "TRIAL"
+        },
+        {
+          "amount": {
+            "value": "10.00"
+          },
+          "charge_models": [
+            {
+              "amount": {
+                "value": "2.00"
+              },
+              "type": "TAX"
+            },
+            {
+              "amount": {
+                "value": "1.00"
+              },
+              "type": "SHIPPING"
+            }
+          ],
+          "cycles": "15",
+          "frequency": "Month",
+          "frequency_interval": "1",
+          "type": "REGULAR"
+        }
+      ]
+    },
+    "shipping_address": {
+      "city": "San Jose",
+      "country_code": "US",
+      "line1": "3rd st",
+      "line2": "cool",
+      "postal_code": "95112",
+      "recipient_name": "Cool Buyer",
+      "state": "CA"
+    },
+    "start_date": "2016-04-30T07:00:00Z",
+    "state": "Pending"
+  },
+  "resource_type": "Agreement",
+  "summary": "A billing subscription was created"
+}

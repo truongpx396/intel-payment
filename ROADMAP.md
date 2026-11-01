@@ -32,9 +32,9 @@ else**, and saying so is more useful than pretending otherwise:
 
 ## Phase 1 — Metering, credits & payment collection
 
-**Status: in progress — the foundation, the metering core, the transports and the payment pipeline (webhook door, processor, Stripe/Polar/PayPal adapters, auto top-up) are built and verified; the host's payment `/v1` routes and the admin API for payments are served too; entitlements, outbound events, the operational surface and the UI are not.** → [specs/001-metering-billing-core](specs/001-metering-billing-core/)
+**Status: in progress — the foundation, the metering core, the transports and the payment pipeline (webhook door, processor, Stripe/Polar/PayPal adapters, auto top-up) are built and verified; the payment `/v1` routes, the admin API and a first sandbox rehearsal are done too; entitlements, outbound events, the operational surface and the UI are not.** → [specs/001-metering-billing-core](specs/001-metering-billing-core/)
 
-Tasks: 153 of 196 done (specs/001-metering-billing-core/tasks.md) — counted by `scripts/check-spec-drift.sh`, which fails CI when this line and the task list disagree.
+Tasks: 154 of 197 done (specs/001-metering-billing-core/tasks.md) — counted by `scripts/check-spec-drift.sh`, which fails CI when this line and the task list disagree.
 
 Prepaid credits in pools, exact rational pricing, the admission gate with subject- and plan-sized
 ceilings, the single durable writer with a per-scope sequence watermark, cluster-safe hot-path
@@ -62,11 +62,13 @@ are cumulative and take back exactly the credits owed; a chargeback and a won di
 opens a grace window; and a standing auto top-up instruction charges the saved method when a pool falls under its
 threshold, at most `max_per_day` times a day. PayPal verifies each delivery with an API call and parks it when PayPal
 cannot answer. A host sells through `/v1/plans`, `/v1/checkout`, `/v1/subscription*`, `/v1/portal`, `/v1/auto-recharge`,
-`/v1/payments` and `/v1/fulfilment` (a change is accepted, never reported as made; a checkout names a plan, never a price).
-An operator configures provider accounts, plans, the provider's prices and customers through `/v1/admin`, every change audited.
-What is **not** there: any contact with a real provider: the three adapters were
-written from the providers' documentation and their fixtures are not captures. A **sandbox rehearsal is owed before any
-real order** — see the gap table.
+`/v1/payments` and `/v1/fulfilment` (a change is accepted, never reported as made; a checkout names a plan, never a price), and
+an operator configures provider accounts, plans, the provider's prices and customers through `/v1/admin`, every change audited.
+The adapters have met their sandboxes once ([docs/sandbox.md](docs/sandbox.md)): Stripe and Polar's and PayPal's own, and PayPal's
+webhook simulator. That found two defects (an auto top-up that charged the card and granted nothing; a first checkout on a new
+Stripe account that failed), both fixed, and 25 real deliveries are now what the adapters are tested against. What is **not**
+there: a saved payment method captured automatically from a `setup` checkout, and the parts of the rehearsal a sandbox cannot reach
+(see the gap table).
 
 **How it is being built:** test-first, with the evidence checked — a failing tests-only commit ahead
 of every production change, fuzz targets for arithmetic, encodings and time, and mutation testing of
@@ -113,7 +115,7 @@ Tracked openly rather than discovered later.
 | Gap | Phase | Note |
 |---|---|---|
 | **No entitlements** | 1 | `paymentd` and `payment-worker` serve the metering engine, the payment pipeline behind the webhook route, the host's payment `/v1` routes and the admin API; there are no entitlements, operational surface or UI yet (`entitlement/` and `events/` are stubs). `payment-worker` drains the Redis outbox only — the JetStream intent path exists in the engine and is refused by the binary — and holds one Postgres connection per shard it owns. The Go Redis adapter loads `hot_path.lua` unchanged, so the cluster-mode verification of the reference functions stays meaningful |
-| Provider adapters never met a sandbox | 1 | Stripe, Polar and PayPal were written from documentation; their fixtures are built from it, not captured. Owed before a real order: PayPal's reversal resource shape, whether `total_refunded_amount` is on every refund, whether a wallet order auto-captures with `ORDER_COMPLETE_ON_PAYMENT_APPROVAL`; Polar's secret encoding (the adapter tries both). Polar and PayPal cannot charge a saved method, so auto top-up works on Stripe only; PayPal's `PAYMENT.SALE.REFUNDED` is ignored |
+| Provider adapters partly rehearsed | 1 | Rehearsed once against the Stripe and Polar sandboxes and PayPal's sandbox and webhook simulator ([docs/sandbox.md](docs/sandbox.md)). **Still owed before a real order:** PayPal with a buyer approving an order — the v2 capture, refund and reversal shapes, whether `total_refunded_amount` is on every refund, whether a wallet order auto-captures with `ORDER_COMPLETE_ON_PAYMENT_APPROVAL`; a paid Polar order, refund and renewal; PayPal subscriptions; Stripe test clocks (dunning and grace over real time); and a live-mode account's own settings. Polar and PayPal cannot charge a saved method, so auto top-up works on Stripe only; PayPal's `PAYMENT.SALE.REFUNDED` is ignored |
 | Saved payment method not captured automatically | 1 | A `setup` checkout saves a method at the provider, but nothing reads it back into the auto top-up instruction: the host passes `payment_method_ref` to `PUT /v1/auto-recharge` itself. Also: no admin API for entitlements (Phase 4), a provider's 4xx reaches a host as `500 internal` rather than a `502 provider_error`, and a webhook about a customer not yet linked (`PUT /v1/admin/customers`) is ignored |
 | Post-paid invoicing | 2 | Designed, not built |
 | Coupons, discounts, trials, quantity subscriptions | 2 | Designed in 002; absent from 001 |

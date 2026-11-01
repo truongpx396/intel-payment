@@ -792,12 +792,14 @@ catalogue does not sell comes back with no plan code. A plan change now is a sub
 proration (or none); a change at the period's end is a schedule that keeps the running phase, adds the new price
 after it and releases itself. A secret is read from its reference at each call and is scrubbed from every error.
 
-**What a sandbox taught** (a real Stripe sandbox, 2026-10): a new Stripe account has Managed Payments on, and a Checkout Session
-created at API 2024-06-20 is then refused with a 400 that has no code and no param, only a message that names it; the adapter
-retries **once**, under its own idempotency key (`<key>:no-managed-payments`), with `managed_payments[enabled]=false`, and any other
-400 is an error as before. An account's default currency is its country's (SGD for a Singapore account), so a price in another
-currency must say so. The event bodies the unit tests use are still built from the documentation: the rest of a sandbox rehearsal
-is still owed.
+**What a sandbox taught** (rehearsed against a real Stripe sandbox, 2026-10): the event bodies of the unit tests are still built
+from the documentation, but thirteen real deliveries are kept under `billing/contracts/stripefix/captured/` and the adapter is
+held to them. A new Stripe account has Managed Payments on, and a Checkout Session created at API 2024-06-20 is then refused with
+a 400 that has no code and no param, only a message that names it; the adapter retries **once**, under its own idempotency key
+(`<key>:no-managed-payments`), with `managed_payments[enabled]=false`, and any other 400 is an error as before. An account's default
+currency is its country's (SGD for a Singapore account), so a price in another currency must say so. Real partial refunds,
+disputes won and lost, subscription creation, cancellation, plan change, portal and a saved card's off-session charge were all
+exercised and agree with the above. **Not rehearsed:** a test clock's dunning and grace, and a live-mode account's own settings.
 
 ### The Polar adapter
 
@@ -835,7 +837,13 @@ first scope's customer); and a checkout cannot be made idempotent, so a double-c
 pages, which fulfil nothing until an order is paid. The checkout tells Polar the catalogue's price and currency as well
 as the product: Polar honours them for a product whose price is set by the caller and ignores them for a fixed one. An
 unresolvable secret is a misconfiguration (never an invalid signature), and an access token is scrubbed from every
-error. The event bodies the tests use are built from the documentation, not captured: a sandbox rehearsal is still owed.
+error.
+
+**What a sandbox taught** (2026-10): five real deliveries are kept under `billing/contracts/polarfix/captured/` and the adapter is
+held to them; the signature (the Standard Webhooks scheme, with the secret as the dashboard shows it), the order's shape and a
+free order's grant were all as written. Polar rejects reserved domains such as `example.com` as a customer's email. **Not
+rehearsed:** a paid order, a refund and a subscription renewal — a sandbox with no card on file cannot take a payment without
+a buyer at a browser.
 
 ### The PayPal adapter
 
@@ -889,9 +897,14 @@ cancelled by the buyer at PayPal, which arrives as `BILLING.SUBSCRIPTION.CANCELL
 total; it is ignored, not guessed, and an operator reverses those credits. A dispute names a transaction and not a
 customer, so a dispute over a sale this service did not make is retried until it is dead. **What the tests cannot show:** the
 fake PayPal signs with a private scheme, so they show that the adapter forwards a delivery faithfully and obeys the verdict,
-not that PayPal's cryptography holds; and the event bodies are built from the documentation, not captured — the shape of
-`PAYMENT.CAPTURE.REVERSED`, the presence of `total_refunded_amount` on every refund, and whether a wallet order is captured
-on approval are exactly what a sandbox rehearsal before the first real order must confirm. If a wallet order is not
+not that PayPal's cryptography holds. **What a sandbox taught** (2026-10): PayPal's real verify call vouches for the simulator's
+deliveries when the adapter forwards them as received, and an order is created and returned with its approval link; seven
+simulator deliveries are kept under `billing/contracts/paypalfix/captured/` and the adapter is held to them. The simulator is not
+a buyer: it sends some samples in the legacy v1 shape (its `PAYMENT.CAPTURE.REFUNDED` is a sale's refund, with no capture and no
+total, which the adapter refuses loudly rather than reading), and its disputes name transactions this service never recorded. So
+the shape of `PAYMENT.CAPTURE.REVERSED`, the presence of `total_refunded_amount` on every refund, and whether a wallet order is
+captured on approval are still what a rehearsal with a buyer approving an order in a browser must confirm before the first real
+order. If a wallet order is not
 captured on approval, nothing is charged and nothing is granted: the failure is safe, and visible as orders approved and never
 paid.
 
@@ -1069,7 +1082,7 @@ func ProcessorContract(t *testing.T, p ports.WebhookProcessor, fx Fixtures) {
 - [ ] **Tax strategy chosen** — `provider_managed` unless the host already owns tax.
 - [ ] **Plan-change, dunning and negative-balance policies chosen.**
 - [ ] **Auto top-up decided** — off, or enabled per scope with a threshold, a pack and a `max_per_day`.
-- [ ] **Sandbox rehearsal done** — purchase, renewal, failed payment, partial refunds, a dispute won and lost, a replayed webhook and a processor killed mid-event, all in test mode, before a real card.
+- [ ] **Sandbox rehearsal done** — purchase, renewal, failed payment, partial refunds, a dispute won and lost, a replayed webhook and a processor killed mid-event, all in test mode, before a real card. Done once for Stripe, Polar and PayPal's simulator, with what it did and did not cover in [docs/sandbox.md](../../../docs/sandbox.md); redo it for the account and the currency you will sell in.
 
 ## Non-goals (stays outside this layer, by design)
 
