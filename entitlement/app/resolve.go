@@ -21,9 +21,13 @@ type inputs struct {
 
 // resolution is what a scope is entitled to at an instant.
 type resolution struct {
-	scope  md.Scope
-	decls  map[domain.Key]domain.KeyDecl
-	grants map[domain.Key]domain.Grant
+	// at is the instant the store was read; until is the first moment after it that something this resolution applied stops
+	// being true — a grace window that ends, an override that expires — or the zero time when nothing does. A cache keeps the
+	// resolution no longer than that, because nothing announces either.
+	at, until time.Time
+	scope     md.Scope
+	decls     map[domain.Key]domain.KeyDecl
+	grants    map[domain.Key]domain.Grant
 	// plan is the plan that holds, or "" when the scope is on the free tier. Refusals name it.
 	plan string
 	// invalid counts the stored values skipped because their key cannot hold them, by source.
@@ -43,7 +47,7 @@ type candidate struct {
 // ranked — grants nothing and is counted, so the level below answers instead.
 func resolve(in inputs) *resolution {
 	r := &resolution{
-		scope: in.scope, decls: make(map[domain.Key]domain.KeyDecl, len(in.decls)), grants: map[domain.Key]domain.Grant{},
+		at: in.now, scope: in.scope, decls: make(map[domain.Key]domain.KeyDecl, len(in.decls)), grants: map[domain.Key]domain.Grant{},
 		invalid: map[domain.Source]int{},
 	}
 	for _, d := range in.decls {
@@ -59,7 +63,7 @@ func resolve(in inputs) *resolution {
 		r.plan = in.sub.PlanCode
 		var until *time.Time
 		if in.sub.Status == domain.PastDue {
-			until = in.sub.GraceUntil // held by grace: it ends when the window does
+			until = in.sub.GraceUntil // held by grace: it ends when the window does, and so does every grant the plan yields
 		}
 		levels[domain.FromSubscription] = r.collect(domain.FromSubscription, entitlementItems(in.plan, until, ""), in.now)
 	}
@@ -106,6 +110,9 @@ func (r *resolution) collect(src domain.Source, items []item, now time.Time) map
 		if it.expires != nil && src == domain.FromOverride && !now.Before(*it.expires) {
 			continue
 		}
+		if it.expires != nil {
+			r.bound(*it.expires)
+		}
 		d, declared := r.decls[it.key]
 		if !declared || d.Check(it.value) != nil {
 			r.invalid[src]++
@@ -131,10 +138,22 @@ func (r *resolution) collect(src domain.Source, items []item, now time.Time) map
 	return out
 }
 
-// sorted lists the grants ordered by key, so that a plan card is stable.
+// bound records a moment after which this resolution may no longer be true.
+func (r *resolution) bound(t time.Time) {
+	if r.until.IsZero() || t.Before(r.until) {
+		r.until = t
+	}
+}
+
+// sorted lists the grants ordered by key, so that a plan card is stable. The grants are copies: a caller that changes one
+// does not change what the cache holds for everyone else.
 func (r *resolution) sorted() []domain.Grant {
 	out := make([]domain.Grant, 0, len(r.grants))
 	for _, g := range r.grants {
+		if g.ExpiresAt != nil {
+			end := *g.ExpiresAt
+			g.ExpiresAt = &end
+		}
 		out = append(out, g)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
