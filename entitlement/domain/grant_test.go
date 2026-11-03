@@ -125,3 +125,33 @@ func TestGrantActiveAtItsExpiry(t *testing.T) {
 		}
 	}
 }
+
+// R102: what may be written into the overrides table is an override that says who wrote it and why. One rule, so the stores and the
+// use case that fronts them cannot disagree about it.
+func TestAnOverrideIsWrittenByAnActorWithAReason(t *testing.T) {
+	t.Parallel()
+	good := goodGrant()
+	good.Source, good.Reason = domain.FromOverride, "2026-Q3 enterprise pilot, approved by sales"
+	if err := good.ValidateOverride("alice"); err != nil {
+		t.Fatalf("an explained override by a named actor: %v", err)
+	}
+	mut := func(f func(*domain.Grant)) domain.Grant { g := good; f(&g); return g }
+	for name, c := range map[string]struct {
+		g     domain.Grant
+		actor string
+		want  error
+	}{
+		"no reason":               {mut(func(g *domain.Grant) { g.Reason = "" }), "alice", domain.ErrReasonRequired},
+		"a reason of only spaces": {mut(func(g *domain.Grant) { g.Reason = " \t" }), "alice", domain.ErrReasonRequired},
+		"no actor":                {good, "", md.ErrInvalid},
+		"an actor of only spaces": {good, "  ", md.ErrInvalid},
+		"a subscription grant":    {mut(func(g *domain.Grant) { g.Source = domain.FromSubscription }), "alice", md.ErrInvalid},
+		"a default grant":         {mut(func(g *domain.Grant) { g.Source = domain.FromDefault }), "alice", md.ErrInvalid},
+		"an unset value":          {mut(func(g *domain.Grant) { g.Value = domain.Value{} }), "alice", md.ErrInvalid},
+		"a scope with no kind":    {mut(func(g *domain.Grant) { g.Scope.Kind = "" }), "alice", md.ErrInvalid},
+	} {
+		if err := c.g.ValidateOverride(c.actor); !errors.Is(err, c.want) {
+			t.Errorf("%s: want %v, got %v", name, c.want, err)
+		}
+	}
+}

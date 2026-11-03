@@ -1,6 +1,7 @@
 package contracts
 
 import (
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ const (
 	CaseOverridesScoped   = "an override belongs to its scope alone"
 	CaseSubscriptionLive  = "a scope's subscription is its live one, grace window and all; a canceled one is not live"
 	CasePlansCatalogue    = "the plans on sale are listed in catalogue order with what each unlocks, and a plan off sale is not listed"
+	CaseOverrideNeedsWhy  = "an override that does not say who and why, or is not an override, is refused and stored nowhere (invariant 5)"
 	CasePlanOffSale       = "a plan taken off sale still entitles its subscribers, and an unknown plan entitles nothing without being an error"
 )
 
@@ -159,6 +161,35 @@ func StoreCases() []Case[StoreFactory] {
 			}
 			if got[1].Value != domain.UnlimitedQuota() || got[1].Reason != "raised again" || got[1].ExpiresAt != nil {
 				t.Fatalf("the second write did not replace the first: %+v", got[1])
+			}
+		}},
+		{CaseOverrideNeedsWhy, func(t testing.TB, mk StoreFactory) {
+			b := mk(t)
+			declareAll(t, b.Seed, realm)
+			s := scopeIn(realm, "o1")
+			subscription := overrideOf(s, "export", domain.FlagValue(true), "pilot", nil)
+			subscription.Source = domain.FromSubscription
+			for name, c := range map[string]struct {
+				g     domain.Grant
+				actor string
+			}{
+				"no reason":                    {overrideOf(s, "export", domain.FlagValue(true), "", nil), "alice"},
+				"a reason of only spaces":      {overrideOf(s, "export", domain.FlagValue(true), "  \t ", nil), "alice"},
+				"no actor":                     {overrideOf(s, "export", domain.FlagValue(true), "pilot", nil), ""},
+				"an actor of only spaces":      {overrideOf(s, "export", domain.FlagValue(true), "pilot", nil), "   "},
+				"a grant that is not override": {subscription, "alice"},
+				"an unset value":               {overrideOf(s, "export", domain.Value{}, "pilot", nil), "alice"},
+			} {
+				if err := b.Store.PutOverride(Ctx(), c.g, c.actor); !errors.Is(err, domain.ErrInvalid) {
+					t.Fatalf("%s: PutOverride = %v; want ErrInvalid", name, err)
+				}
+			}
+			if os, err := b.Store.Overrides(Ctx(), s); err != nil || len(os) != 0 {
+				t.Fatalf("a refused override was stored: %+v, %v", os, err)
+			}
+			// An explained one is accepted, so the refusals above are about what they say they are about.
+			if err := b.Store.PutOverride(Ctx(), overrideOf(s, "export", domain.FlagValue(true), "pilot", nil), "alice"); err != nil {
+				t.Fatal(err)
 			}
 		}},
 		{CaseOverridesScoped, func(t testing.TB, mk StoreFactory) {

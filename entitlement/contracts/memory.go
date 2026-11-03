@@ -16,17 +16,18 @@ import (
 // MemDefects are the deliberate faults the suites are shown to catch: each switches on one way a store could be wrong. They
 // exist so that "the suite has teeth" is a test result.
 type MemDefects struct {
-	IgnoreRealm      bool // reads ignore the realm: one product's plans, defaults and overrides reach another's scopes
-	IgnoreOverrides  bool // Overrides returns nothing
-	DropGrace        bool // Subscription forgets the grace window
-	ClampExpiry      bool // Overrides forgets when each expires
-	SortEnumOrder    bool // Keys returns each enum's order alphabetically instead of as declared
-	ListRetiredPlans bool // Plans lists plans that are off sale
-	AppendOverrides  bool // PutOverride adds a second row for a scope and key instead of replacing
-	ForgetRetired    bool // PlanEntitlements answers nothing for a plan that is off sale
-	LiveCanceled     bool // Subscription reports a canceled subscription as live
-	PromoteToActive  bool // Subscription reports every live subscription as active, whatever its state
-	MatchByID        bool // Overrides match a scope by its id alone, not its kind
+	IgnoreRealm       bool // reads ignore the realm: one product's plans, defaults and overrides reach another's scopes
+	IgnoreOverrides   bool // Overrides returns nothing
+	DropGrace         bool // Subscription forgets the grace window
+	ClampExpiry       bool // Overrides forgets when each expires
+	SortEnumOrder     bool // Keys returns each enum's order alphabetically instead of as declared
+	ListRetiredPlans  bool // Plans lists plans that are off sale
+	AppendOverrides   bool // PutOverride adds a second row for a scope and key instead of replacing
+	ForgetRetired     bool // PlanEntitlements answers nothing for a plan that is off sale
+	LiveCanceled      bool // Subscription reports a canceled subscription as live
+	PromoteToActive   bool // Subscription reports every live subscription as active, whatever its state
+	MatchByID         bool // Overrides match a scope by its id alone, not its kind
+	AcceptUnexplained bool // PutOverride stores an override with no reason, no actor, or no standing as an override
 }
 
 type memSub struct {
@@ -277,9 +278,14 @@ func (m *MemStore) Plans(_ context.Context, realm md.Realm) ([]domain.Offer, err
 }
 
 // PutOverride implements ports.EntitlementStore. An override is one row per scope and key: writing it again replaces it.
-func (m *MemStore) PutOverride(_ context.Context, g domain.Grant, _ string) error {
+func (m *MemStore) PutOverride(_ context.Context, g domain.Grant, actor string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if !m.Defects.AcceptUnexplained {
+		if err := g.ValidateOverride(actor); err != nil {
+			return err
+		}
+	}
 	tag := g.Scope.Tag()
 	if !m.Defects.AppendOverrides {
 		m.overrides[tag] = slices.DeleteFunc(slices.Clone(m.overrides[tag]), func(x domain.Grant) bool { return x.Key == g.Key })

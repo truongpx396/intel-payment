@@ -274,4 +274,49 @@ DO $$ BEGIN
   PERFORM pg_temp.ok('a grant''s lots are found by key without scanning the scope''s lot history');
 END $$;
 
+-- ------------------------------------------------ an override says who and why (entitlement invariant 5)
+-- The API refuses an unexplained override, and so must the database, or a write that bypasses the API is the one nobody can
+-- explain. The audit trigger records every write either way; here the row itself has to say who and why.
+DO $$
+BEGIN
+  BEGIN
+    INSERT INTO entitlement_overrides (realm, scope_kind, scope_id, feature_key, value_kind, value_bool, reason, actor)
+    VALUES ('verify', 'org', 'ovr-check', 'export', 'flag', true, '   ', 'sales-eng');
+    RAISE EXCEPTION 'FAIL: an override with a blank reason was stored';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN  -- whitespace is more than spaces
+    INSERT INTO entitlement_overrides (realm, scope_kind, scope_id, feature_key, value_kind, value_bool, reason, actor)
+    VALUES ('verify', 'org', 'ovr-check', 'export', 'flag', true, E' \t\n', 'sales-eng');
+    RAISE EXCEPTION 'FAIL: an override whose reason is only a tab and a newline was stored';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO entitlement_overrides (realm, scope_kind, scope_id, feature_key, value_kind, value_bool, reason, actor)
+    VALUES ('verify', 'org', 'ovr-check', 'export', 'flag', true, 'pilot', '');
+    RAISE EXCEPTION 'FAIL: an override with a blank actor was stored';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  PERFORM pg_temp.ok('an override with a blank reason or a blank actor is refused by the database itself');
+
+  -- -1 is unlimited and legal; anything below it is not a quota.
+  INSERT INTO entitlement_overrides (realm, scope_kind, scope_id, feature_key, value_kind, value_int, reason, actor)
+  VALUES ('verify', 'org', 'ovr-check', 'seats', 'quota', -1, 'negotiated at renewal', 'sales-eng');
+  BEGIN
+    UPDATE entitlement_overrides SET value_int = -2 WHERE scope_id = 'ovr-check' AND feature_key = 'seats';
+    RAISE EXCEPTION 'FAIL: a quota below -1 was stored';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  PERFORM pg_temp.ok('a quota of -1 (unlimited) is stored, and one below it is not');
+
+  -- The write above was audited by the trigger with the row's own reason and the database role as the actor.
+  PERFORM 1 FROM audit_log WHERE subject_kind = 'entitlement_overrides' AND realm = 'verify' AND action = 'config.insert'
+     AND after->>'reason' = 'negotiated at renewal' AND actor LIKE 'db:%';
+  IF NOT FOUND THEN RAISE EXCEPTION 'FAIL: a direct override write left no audit row saying why'; END IF;
+  DELETE FROM entitlement_overrides WHERE scope_id = 'ovr-check';
+  PERFORM 1 FROM audit_log WHERE subject_kind = 'entitlement_overrides' AND realm = 'verify' AND action = 'config.delete';
+  IF NOT FOUND THEN RAISE EXCEPTION 'FAIL: deleting an override left no audit row'; END IF;
+  PERFORM pg_temp.ok('an override written or removed by direct SQL is audited by the database, with the role as its actor');
+END $$;
+
 DO $$ BEGIN RAISE NOTICE 'baseline assertions passed'; END $$;
