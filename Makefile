@@ -5,7 +5,7 @@ COMPOSE := docker compose -f deploy/docker-compose.yml $(if $(wildcard .env),--e
 MODULE  := github.com/truongpx396/intel-payment
 
 .DEFAULT_GOAL := help
-.PHONY: help build test test-integration fuzz mutation mutation-diff verify-red-green verify-tdd-gates verify-equivalence verify-clients lint arch-lint verify-portability \
+.PHONY: help build test test-integration fuzz mutation mutation-diff verify-red-green verify-tdd-gates verify-equivalence verify-clients lint arch-lint check-plan-branches verify-portability \
         verify-boundary verify-schema verify-hot-path verify-deploy e2e e2e-install up up-jetstream down down-volumes logs \
         migrate seed proto proto-tools proto-check fmt vuln secrets ci clean
 
@@ -52,12 +52,15 @@ fmt: ## Format
 	gofmt -l -w . && go mod tidy
 
 ## ---- the boundary ---------------------------------------------------------
-lint: arch-lint ## golangci-lint (incl. depguard) + architecture graph
+lint: arch-lint check-plan-branches ## golangci-lint (incl. depguard) + architecture graph + no branch on a plan
 	golangci-lint config verify
 	golangci-lint run ./...
 
 arch-lint: ## Enforce the hexagonal dependency graph
 	go-arch-lint check --project-path .
+
+check-plan-branches: ## Fail on `if plan == "pro"` in production Go: entitlements are data (entitlement invariant 3)
+	scripts/check-no-plan-branches.sh
 
 verify-portability: ## Assert metering/ stands alone (SC-006)
 	@echo "==> metering/ must not depend on billing/, entitlement/, events/ or cmd/"
