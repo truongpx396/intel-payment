@@ -257,7 +257,7 @@ func TestConfigStoreDropsEverythingWhenTheListenerReconnects(t *testing.T) {
 	exec(t, p, `ALTER TABLE limits DISABLE TRIGGER limits_audit`)
 	exec(t, p, `UPDATE limits SET max = 13 WHERE realm = 't1' AND name = 'user_daily'`)
 	before := c.Invalidations()
-	exec(t, p, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE 'LISTEN intelpay_config%' AND pid <> pg_backend_pid()`)
+	exec(t, p, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE 'LISTEN intelpay_config%' AND pid <> pg_backend_pid() AND datname = current_database()`)
 	eventually(t, 10*time.Second, "the listener to reconnect and drop the cache", func() bool {
 		ls, err := c.Limits(ctx, "t1")
 		return err == nil && ls[1].Max == 13 && c.Invalidations() > before
@@ -403,7 +403,7 @@ func TestConfigStoreDropsWatchesWhenTheListenerReconnects(t *testing.T) {
 	exec(t, p, `ALTER TABLE balance_watches DISABLE TRIGGER balance_watches_audit`)
 	exec(t, p, `INSERT INTO balance_watches (realm, scope_kind, scope_id, pool, key, threshold) VALUES ('t1','workspace','w1','general','auto_recharge',1000)`)
 	before := c.Invalidations()
-	exec(t, p, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE 'LISTEN intelpay_config%' AND pid <> pg_backend_pid()`)
+	exec(t, p, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE 'LISTEN intelpay_config%' AND pid <> pg_backend_pid() AND datname = current_database()`)
 	eventually(t, 10*time.Second, "the listener to reconnect and drop the watches", func() bool {
 		got, err := c.Watches(ctx, ws("t1", "w1"))
 		return err == nil && len(got) == 1 && c.Invalidations() > before
