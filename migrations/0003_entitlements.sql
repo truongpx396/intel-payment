@@ -69,4 +69,38 @@ CREATE TABLE entitlement_overrides (
     CONSTRAINT entitlement_overrides_actor_not_blank  CHECK (actor ~ '\S')
 );
 
+-- A limit whose size comes from an entitlement is sized by a NUMBER (D30). Naming a flag or an enum would be discovered by the
+-- first customer's Admit, as a 503 quota_unavailable — or, under fail_open, as a scope with no ceiling at all. So it is refused
+-- when it is configured, here, where it holds for the admin API and for a write that bypasses it. A key that is not declared yet is
+-- accepted: keys can be declared in any order, and until then nothing grants it and the limit's own max applies.
+CREATE FUNCTION limits_max_entitlement_is_quota() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM entitlement_keys k
+               WHERE k.realm = NEW.realm AND k.key = NEW.max_entitlement AND k.kind <> 'quota') THEN
+        RAISE EXCEPTION 'limit % is sized by entitlement %, which is not a quota', NEW.name, NEW.max_entitlement
+            USING ERRCODE = 'check_violation', CONSTRAINT = 'limits_max_entitlement_is_quota';
+    END IF;
+    RETURN NEW;
+END $$;
+
+CREATE TRIGGER limits_max_entitlement_is_quota
+    BEFORE INSERT OR UPDATE OF max_entitlement, realm ON limits
+    FOR EACH ROW WHEN (NEW.max_entitlement IS NOT NULL)
+    EXECUTE FUNCTION limits_max_entitlement_is_quota();
+
+-- … and the key a limit is sized by cannot be turned into something that is not a number underneath it.
+CREATE FUNCTION entitlement_keys_quota_in_use() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM limits l WHERE l.realm = NEW.realm AND l.max_entitlement = NEW.key) THEN
+        RAISE EXCEPTION 'entitlement key % sizes a limit, so it stays a quota', NEW.key
+            USING ERRCODE = 'check_violation', CONSTRAINT = 'entitlement_keys_quota_in_use';
+    END IF;
+    RETURN NEW;
+END $$;
+
+CREATE TRIGGER entitlement_keys_quota_in_use
+    BEFORE UPDATE OF kind ON entitlement_keys
+    FOR EACH ROW WHEN (OLD.kind = 'quota' AND NEW.kind <> 'quota')
+    EXECUTE FUNCTION entitlement_keys_quota_in_use();
+
 COMMIT;
