@@ -212,7 +212,7 @@ validation.
 | `credit_pools` | pools beyond `general`, their priority and eligible resources | rarely |
 | `plans` / `plan_prices` / `plan_provider_prices` | the catalogue, per currency, per provider account; the pool each plan grants into | on a launch |
 | `entitlement_keys` / `plan_entitlements` / `realm_defaults` | declared capabilities; what plans and the free tier unlock — including ceiling sizes | on a packaging change |
-| `entitlement_overrides` | per-scope exceptions, including a per-customer ceiling | per deal — `reason` and `actor` are `NOT NULL` |
+| `entitlement_overrides` | per-scope exceptions, including a per-customer ceiling | per deal — `reason` and `actor` are `NOT NULL` and not blank, and every write is audited by the database |
 | `provider_accounts` | which provider accounts serve which realms, by secret reference | per account |
 | `event_endpoints` | where hosts receive signed events | per integration |
 | `auto_recharge` / `balance_watches` | per-scope top-up and low-balance notices | per customer |

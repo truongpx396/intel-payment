@@ -142,7 +142,7 @@ Per scope: `enabled`, `pool`, `threshold`, `plan_code` (a one-time pack), `curre
 The realm's declared capabilities: `key`, `kind flag|quota|enum`, `enum_order` (required for enums). An undeclared key is denied.
 
 ### `plan_entitlements` · `realm_defaults` · `entitlement_overrides`
-Values per plan, the free tier, and audited per-scope exceptions (`reason` and `actor` `NOT NULL`). `value_int = -1` is **unlimited**, distinct from `NULL` ("unset"). A quota here can size a metering limit through `limits.max_entitlement`.
+Values per plan, the free tier, and audited per-scope exceptions (`reason` and `actor` `NOT NULL` and not blank — a table constraint, so a write that bypasses the API cannot be unexplained either). `value_int = -1` is **unlimited**, distinct from `NULL` ("unset"). A quota here can size a metering limit through `limits.max_entitlement`.
 
 ---
 
