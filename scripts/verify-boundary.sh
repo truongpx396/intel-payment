@@ -13,12 +13,14 @@ cleanup() { for f in "${planted[@]:-}"; do [ -n "$f" ] && rm -f "$f"; done; }
 trap cleanup EXIT
 
 fail=0
-# expect_reject <label> <tool: arch|lint> <file> <pkg dir> <go source>
+# expect_reject <label> <tool: arch|lint|scan> <file> <pkg dir> <go source>
 expect_reject() {
   local label=$1 tool=$2 file=$3 pkg=$4 src=$5
   printf '%s\n' "$src" > "$file"; planted+=("$file")
   if [ "$tool" = arch ]; then
     go-arch-lint check --project-path . >/dev/null 2>&1; rc=$?
+  elif [ "$tool" = scan ]; then
+    scripts/check-no-plan-branches.sh >/dev/null 2>&1; rc=$?
   else
     golangci-lint run "./$pkg/..." >/dev/null 2>&1; rc=$?
   fi
@@ -30,6 +32,7 @@ expect_reject() {
 echo "== the clean tree passes"
 go-arch-lint check --project-path . >/dev/null 2>&1 && echo "  ok    go-arch-lint" || { echo "  FAIL  go-arch-lint on the clean tree"; fail=1; }
 golangci-lint run ./... >/dev/null 2>&1 && echo "  ok    golangci-lint" || { echo "  FAIL  golangci-lint on the clean tree"; fail=1; }
+scripts/check-no-plan-branches.sh >/dev/null 2>&1 && echo "  ok    no branch on a plan" || { echo "  FAIL  the plan-branch scan on the clean tree"; fail=1; }
 
 echo "== each rule rejects its violation"
 expect_reject "arch: domain imports nothing (domain -> ports)" arch \
@@ -155,5 +158,51 @@ expect_reject "depguard 9: the books know no provider (postgres -> stripe)" lint
   "package postgres
 import \"$mod/billing/adapters/driven/stripe\"
 var _ = stripe.New"
+
+# Entitlements are data, never a branch on which plan it is (entitlement invariant 3): the scan must fire wherever production
+# Go would make the habit, in the engine and in the layers.
+expect_reject "scan: no branch on a plan's identity (billing/app: plan == \"pro\")" scan \
+  billing/app/zz_violation.go billing/app \
+  "package app
+func zzIsPro(plan string) bool { return plan == \"pro\" }"
+expect_reject "scan: no switch on a plan's code (entitlement/app)" scan \
+  entitlement/app/zz_violation.go entitlement/app \
+  "package app
+func zzSeats(planCode string) int {
+	switch planCode {
+	case \"free\":
+		return 3
+	}
+	return 0
+}"
+
+expect_reject "arch: the entitlement domain imports only metering's domain (entitlement/domain -> entitlement/ports)" arch \
+  entitlement/domain/zz_violation.go entitlement/domain \
+  "package domain
+import _ \"$mod/entitlement/ports\""
+expect_reject "arch: entitlement ports never reach the use cases (entitlement/ports -> entitlement/app)" arch \
+  entitlement/ports/zz_violation.go entitlement/ports \
+  "package ports
+import _ \"$mod/entitlement/app\""
+expect_reject "arch: an entitlement adapter implements ports, it does not call the use cases (postgres -> entitlement/app)" arch \
+  entitlement/adapters/driven/postgres/zz_violation.go entitlement/adapters/driven/postgres \
+  "package postgres
+import _ \"$mod/entitlement/app\""
+expect_reject "arch: entitlement never reaches the payment layer (entitlement/app -> billing/domain)" arch \
+  entitlement/app/zz_violation.go entitlement/app \
+  "package app
+import _ \"$mod/billing/domain\""
+expect_reject "depguard 10: no infra in the entitlement core (entitlement/app -> pgx)" lint \
+  entitlement/app/zz_violation.go entitlement/app \
+  "package app
+import _ \"github.com/jackc/pgx/v5\""
+expect_reject "depguard 10: no transport in the entitlement core (entitlement/ports -> net/http)" lint \
+  entitlement/ports/zz_violation.go entitlement/ports \
+  "package ports
+import _ \"net/http\""
+expect_reject "depguard 11: the entitlement domain imports only metering's domain (entitlement/domain -> metering/ports)" lint \
+  entitlement/domain/zz_violation.go entitlement/domain \
+  "package domain
+import _ \"$mod/metering/ports\""
 
 [ "$fail" -eq 0 ] && echo "boundary verified" || { echo "boundary NOT verified"; exit 1; }

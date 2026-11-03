@@ -64,6 +64,51 @@ linters:
           allow:
             - $gostd
             - github.com/truongpx396/intel-payment/metering/domain
+        # The entitlement core is as portable as the engine: no database, cache, broker or transport in the layers that decide.
+        entitlement-core-pure:
+          list-mode: lax
+          files:
+            - '**/entitlement/domain/**'
+            - '**/entitlement/ports/**'
+            - '**/entitlement/app/**'
+          deny:
+            - pkg: github.com/redis/go-redis
+              desc: no infra in the entitlement core; use the EntitlementStore port
+            - pkg: github.com/jackc/pgx
+              desc: no infra in the entitlement core; use the EntitlementStore port
+            - pkg: github.com/nats-io
+              desc: no broker in the entitlement core; use metering's Bus port
+            - pkg: google.golang.org/grpc
+              desc: no transport in the entitlement core
+            - pkg: net/http
+              desc: no transport in the entitlement core
+        # The domain is vocabulary and arithmetic: the standard library and metering's domain, nothing else.
+        entitlement-domain-is-pure:
+          list-mode: strict
+          files:
+            - '**/entitlement/domain/**'
+            - '!$test'
+          allow:
+            - $gostd
+            - github.com/truongpx396/intel-payment/metering/domain
+        # The two layers share a schema, not a package: the payment layer's subscription rule is restated in the entitlement domain
+        # and a parity test holds the two together.
+        entitlement-is-not-billing:
+          list-mode: lax
+          files:
+            - '**/entitlement/**'
+            - '!$test'
+          deny:
+            - pkg: github.com/truongpx396/intel-payment/billing
+              desc: entitlement reaches the payment layer through the database it shares, never through its code
+        entitlement-adapters-implement-ports:
+          list-mode: lax
+          files:
+            - '**/entitlement/adapters/**'
+            - '!$test'
+          deny:
+            - pkg: github.com/truongpx396/intel-payment/entitlement/app
+              desc: an adapter implements ports; it does not call the use cases
         metering-core-pure:
           list-mode: lax
           files:

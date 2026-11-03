@@ -28,7 +28,14 @@ components:
   billing-driving:   { in: billing/adapters/driving/** }  # the webhook door
   # Conformance suites: importable by an adapter's own tests, given constructors — they import no adapter.
   billing-contracts: { in: billing/contracts/** }   # the suites, the in-memory world, and each provider's fixtures
-  entitlement:      { in: entitlement/** }
+  # The entitlement layer is laid out as the engine and the fiat layer are: domain -> ports -> app -> adapters, one direction.
+  entitlement:           { in: entitlement }                       # the root package: documentation only
+  entitlement-domain:    { in: entitlement/domain }
+  entitlement-ports:     { in: entitlement/ports }
+  entitlement-app:       { in: entitlement/app }
+  entitlement-driven:    { in: entitlement/adapters/driven/** }    # postgres
+  # Conformance suites: importable by an adapter's own tests, given constructors — they import no adapter.
+  entitlement-contracts: { in: entitlement/contracts }
   events:           { in: events/** }
   api:              { in: api/** }
   migrate:          { in: migrate }
@@ -67,12 +74,21 @@ deps:
   billing-driven:    { mayDependOn: [ billing-domain, billing-ports, metering-domain, metering-ports, billing-driven ] }
   # A door speaks HTTP for a port: it reaches the use cases only through billing's ports, and is mounted by cmd.
   billing-driving:   { mayDependOn: [ billing-ports, billing-domain, billing-driving ] }
-  entitlement:      { mayDependOn: [ metering-domain, metering-ports, api ] }   # also implements metering's QuotaSource
+  # The entitlement layer reaches metering through its ports (it provides the QuotaSource metering asks for) and the payment layer
+  # not at all: the two share a schema, never a package.
+  entitlement:           { mayDependOn: [ metering-domain, metering-ports ] }
+  entitlement-domain:    { mayDependOn: [ metering-domain ] }
+  entitlement-ports:     { mayDependOn: [ entitlement-domain, metering-domain, metering-ports ] }
+  entitlement-app:       { mayDependOn: [ entitlement-domain, entitlement-ports, metering-domain, metering-ports ] }
+  entitlement-contracts: { mayDependOn: [ entitlement-domain, entitlement-ports, metering-domain, metering-ports ] }
+  # An adapter implements entitlement's ports; that it does not call the use cases is a depguard rule (.golangci.yml).
+  entitlement-driven:    { mayDependOn: [ entitlement-domain, entitlement-ports, metering-domain, metering-ports, entitlement-driven ] }
   events:           { mayDependOn: [ metering-domain, api ] }                  # outbound delivery to hosts
   # cmd/** includes cmd/internal, the helpers the binaries share (the environment reader, the store wiring), so a
   # binary depends on its own component.
   cmd:              { mayDependOn: [ cmd, metering-domain, metering-ports, metering-config,
                                      metering-app, metering-driven, metering-driving,
                                      billing-domain, billing-ports, billing-app, billing-driven, billing-driving,
-                                     entitlement, events, api,
+                                     entitlement, entitlement-domain, entitlement-ports, entitlement-app, entitlement-driven,
+                                     events, api,
                                      migrate, migrations ] }
