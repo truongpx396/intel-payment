@@ -319,4 +319,28 @@ BEGIN
   PERFORM pg_temp.ok('an override written or removed by direct SQL is audited by the database, with the role as its actor');
 END $$;
 
+-- ------------------------------------------------ a limit is sized by a number (entitlement/metering D30)
+-- A limit that names a flag or an enum as its size would be discovered by the first customer's Admit, as a 503 — or, under
+-- fail_open, as a scope with no ceiling at all. So it is refused when it is configured, by the database, for every path.
+DO $$
+BEGIN
+  INSERT INTO entitlement_keys (realm, key, kind) VALUES ('verify', 'qk_quota', 'quota'), ('verify', 'qk_flag', 'flag');
+  INSERT INTO limits (realm, name, unit, max, max_entitlement, window_kind, deny_code)
+  VALUES ('verify', 'qk_ok', 'credit', 10, 'qk_quota', 'daily', 'limit_reached');
+  BEGIN
+    INSERT INTO limits (realm, name, unit, max, max_entitlement, window_kind, deny_code)
+    VALUES ('verify', 'qk_bad', 'credit', 10, 'qk_flag', 'daily', 'limit_reached');
+    RAISE EXCEPTION 'FAIL: a limit sized by a flag was stored';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    UPDATE entitlement_keys SET kind = 'flag' WHERE realm = 'verify' AND key = 'qk_quota';
+    RAISE EXCEPTION 'FAIL: a quota key a limit is sized by was turned into a flag';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  PERFORM pg_temp.ok('a limit sized by a flag or an enum is refused when configured; so is turning its quota key into one');
+  DELETE FROM limits WHERE realm = 'verify' AND name = 'qk_ok';
+  DELETE FROM entitlement_keys WHERE realm = 'verify' AND key IN ('qk_quota', 'qk_flag');
+END $$;
+
 DO $$ BEGIN RAISE NOTICE 'baseline assertions passed'; END $$;

@@ -217,15 +217,26 @@ metering's `QuotaSource` port, wired in `cmd/`:
 ```go
 // metering/ports — implemented by entitlement, never imported by metering's core.
 type QuotaSource interface {
-	// Quota returns the scope's effective value for a quota key: ok=false when no grant applies
-	// (the limit row's own max is used), -1 for unlimited (the ceiling is dropped).
-	Quota(ctx context.Context, s domain.Scope, key string) (value int64, ok bool, err error)
+	// Quota returns the scope's effective quota for a key: a size, or -1 for unlimited (the ceiling is dropped).
+	// domain.ErrQuotaNotGranted means nothing grants it, and the limit row's own max is used. Any other error means the quota
+	// could not be resolved.
+	Quota(ctx context.Context, s domain.Scope, key string) (int64, error)
 }
 ```
 
-An error resolving a quota is not "no ceiling": `Admit` applies `AdmitFailPolicy` (metering
-invariant 17). The resolution is cached with the entitlement cache and invalidated by the same
-`billing.entitlement.<tag>` events, so an upgrade raises the ceiling immediately.
+(The first draft of this port returned `(value, ok, err)`. The shipped port folds `ok=false` into `ErrQuotaNotGranted`, so that "nothing grants it" and "could not be resolved" cannot be confused at the call site — the one confusion that would turn an outage into an uncapped scope.)
+
+`app.NewQuotaSource(entitler)` is the adapter, wired in `cmd/`. It answers from the **same resolution the `Entitler` enforces** — precedence, grace, expiry, the cache and its announcements — so an upgrade raises the ceiling on the next `Admit`, not after a TTL:
+
+| The entitler says | The adapter returns | `Admit` does |
+|---|---|---|
+| a size `n` | `n` | enforces `n` |
+| unlimited | `-1` | drops the ceiling (an unlimited plan is a grant, not an absence) |
+| nothing grants the key | `ErrQuotaNotGranted` | falls back to the limit row's own `max` |
+| an error (the store is down) | the error, untouched | applies `AdmitFailPolicy` — **never** "unlimited" (metering invariant 17) |
+| the key is a flag or an enum | the error (`ErrInvalid`), untouched | applies `AdmitFailPolicy` |
+
+**A non-numeric quota key is refused when it is configured, not when it is spent.** A limit that names a flag or an enum as its size would otherwise be discovered by the first customer to hit `Admit`, as a `503 quota_unavailable` — or, under `fail_open`, as an uncapped scope. So the database refuses it, which holds for the admin API and for a write that bypasses it: a `limits` row whose `max_entitlement` names a key the realm *declares* as anything but a quota is `check_violation` (`limits_max_entitlement_is_quota`, `400` at the API), and a quota key that a limit names cannot be re-declared as a flag or an enum (`entitlement_keys_quota_in_use`). A key not declared yet is accepted — declare keys in any order; until then nothing grants it and the limit's own `max` applies.
 
 ---
 
