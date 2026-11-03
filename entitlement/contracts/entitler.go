@@ -159,6 +159,7 @@ func EntitlerCases() []Case[WorldFactory] {
 			// that says no.
 			w.override(t, "sso", domain.FlagValue(false), "suspended by finance", nil)
 			for _, method := range []string{"Keys", "Defaults", "Subscription", "PlanEntitlements", "Overrides"} {
+				w.changed("outage-probe") // an implementation that caches starts each probe cold: a warm entry is a bounded stale answer, not an outage
 				w.Faults.BreakOnly(errBoom, method)
 				if ok, err := w.Entitler.Allowed(Ctx(), w.Scope, "sso"); err == nil || ok || !errors.Is(err, domain.ErrUnavailable) {
 					t.Fatalf("with only %s failing, Allowed = %v, %v; want an error and no permit (invariant 2)", method, ok, err)
@@ -172,6 +173,7 @@ func EntitlerCases() []Case[WorldFactory] {
 			// The catalogue is only where a refusal looks for a way out: when it cannot be read the refusal stands, without a path.
 			w.Seed.PutPlan(t, realm, "team", 2, quotaEnt("seats", 5))
 			w.Seed.Subscribe(t, w.Scope, "team", domain.Active, nil)
+			w.changed("subscription")
 			w.Faults.BreakOnly(errBoom, "Plans")
 			if d, err := w.Entitler.Consume(Ctx(), w.Scope, "seats", 5, 1); err != nil || d.Allowed || d.Reason == "" || d.UpgradePath != "" {
 				t.Fatalf("with only Plans failing, a seat past the limit = %+v, %v; want a refusal that says why and names no plan", d, err)

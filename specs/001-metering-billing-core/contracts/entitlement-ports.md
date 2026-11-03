@@ -249,6 +249,29 @@ Three more rules, found by writing the suite:
 
 ---
 
+## The cache
+
+One entry per scope holds the whole resolution (the declared keys, the free tier, the plan's entitlements and the overrides as they were read at one instant), so every method — `Allowed`, `Quota`, `Choice`, `Consume`, `Resolve` and the metering `QuotaSource` — answers from the same picture. `Deps.CacheTTL` of zero means no cache.
+
+**An entry is valid until the earliest of three things:** its TTL; the end of the grace window it was resolved under (the subscription's grants say so in `ExpiresAt`); and the expiry of any override it applied. The last two matter because **nothing announces them** — no tick expires an override, and a lost `grace_expired` message must not extend a plan the customer stopped paying for. An entry never outlives a boundary it knew about, at the nanosecond.
+
+**It is evicted at once by exactly two announcements, and by nothing else:**
+
+| Subject | Evicts | Published by |
+|---|---|---|
+| `<prefix>.entitlement.<token>` — `{realm, scope:{kind,id}, reason}`, `reason` = `subscription` · `grace_expired` · `override` | the one scope the token names | the webhook processor (a subscription change; the sweep that ends a grace window); `Overrides.Put` (an override write) |
+| `<prefix>.config.<realm>` — `{table, realm}` | every scope of the realm; `(global)` (a table that belongs to no realm) evicts everything | the **config relay**: the database's audit trigger `NOTIFY`s on every configuration write, and `ConfigRelay` forwards it, so a change made by SQL reaches every process as surely as one made through the API |
+
+A payment, a low balance, a warning, another deployment's prefix, a subject with too many tokens or a token that is not a scope's — none evicts, and none is an error (a message the handler does not own is acknowledged, never redelivered for ever). The subject is the address: a body that cannot be read on the right subject still evicts, because the safe direction is fresh.
+
+**What a lost announcement costs is the TTL, and no more.** The bus is at-least-once and a replica can be down while one is published; the TTL is the bound that makes that a bounded staleness and not a permanent one. An entry that raced an announcement — a load that began before a change and finished after its announcement — is **not kept**: each eviction advances an epoch, and a load that spans one is returned to its caller (the request raced the change) and never stored. Concurrent misses for one scope are one read, not one each. Errors are never cached.
+
+**A warm entry is served through a store outage until its TTL.** That is what bounded staleness means, and the alternative — every request failing the moment the store blinks — is the outage invariant 2 exists to avoid being worse than. Past the TTL the outage is an error, never a permit.
+
+**Every replica must see every announcement**, so each runs its `Watch` under a group of its own (`entitlement-cache-<instance>`), not one shared group — a shared group would hand each message to one replica. The name must be **stable across restarts**: a bus stream is only trimmed up to what every group has acknowledged, so a group that is abandoned (a replica retired for good) holds the stream open until it is deleted. Retiring a replica includes retiring its group ([docs/operations.md](../../../docs/operations.md)).
+
+---
+
 ## Invariants
 
 1. **Unknown key ⇒ denied.** A key the realm never declared is `false` / `!ok`, never a permissive default. Typos must fail closed, and they will happen.
@@ -259,7 +282,7 @@ Three more rules, found by writing the suite:
 6. **`-1` means unlimited, and is handled explicitly.** Never compared numerically, never coerced to a large number, never confused with "unset".
 7. **A refusal is actionable.** Every denied `Decision` carries a human-readable `Reason` and, when one exists, an `UpgradePath`.
 8. **The UI reads the same resolution the server enforces.** `Resolve` is the single source for both. A plan card assembled from a separate source will eventually promise something the server refuses.
-9. **Cache is bounded and invalidated on change.** Entitlements are read on nearly every request, so they are cached with a short TTL — and a subscription change, an override write or a grace expiry invalidates the scope's entry immediately. A customer who just upgraded must not wait out a TTL to use what they paid for.
+9. **Cache is bounded and invalidated on change.** Entitlements are read on nearly every request, so they are cached with a short TTL — and a subscription change, an override write or a grace expiry invalidates the scope's entry immediately. A customer who just upgraded must not wait out a TTL to use what they paid for. See [The cache](#the-cache) for what that costs and what it guarantees.
 10. **Realm isolation.** Plans, defaults and overrides never cross a realm (metering invariant 11).
 
 ---
@@ -302,6 +325,8 @@ Part of the contract: a host writes alerts against these names before it reads t
 |---|---|---|
 | `entitlement_decisions_total` | counter (`realm`, `outcome`) | `Allowed` and `Consume` by outcome: `allowed`, `denied`, or `error` — the store could not answer and the host denied. A rising `error` rate is an outage of the gate |
 | `entitlement_invalid_total` | counter (`realm`, `source`) | a stored grant skipped because its key cannot hold it (undeclared key, wrong kind, unranked enum member). Never granted; it is a data bug and worth a look |
+| `entitlement_cache_total` | counter (`result`) | resolutions served from the cache (`hit`) or read from the store (`miss`). A hit rate that falls with no deploy is a cache being evicted faster than it fills |
+| `entitlement_cache_invalidations_total` | counter (`source`) | announcements applied: one `scope`, or a whole `realm`. A rate of zero over a day with subscription changes means the replica's `Watch` is not receiving |
 
 ---
 
