@@ -229,6 +229,9 @@ func (s *Store) Plans(ctx context.Context, realm md.Realm) ([]domain.Offer, erro
 // PutOverride implements ports.EntitlementStore. One override per scope and key: writing it again replaces it. The actor and
 // the reason reach the audit trigger through the transaction's settings, so the audit row says who and why.
 func (s *Store) PutOverride(ctx context.Context, g domain.Grant, actor string) error {
+	if err := g.ValidateOverride(actor); err != nil {
+		return err
+	}
 	sc := g.Scope.Normalized()
 	c := colsOf(g.Value)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
