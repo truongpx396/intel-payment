@@ -183,9 +183,13 @@ func TestTwoGrantsForOneKeyAtOneLevelAreMergedNeverRanked(t *testing.T) {
 		{Scope: scope, Key: "seats", Value: domain.QuotaValue(9), Source: domain.FromOverride, Reason: "the bigger deal", ExpiresAt: exp},
 		{Scope: scope, Key: "seats", Value: domain.QuotaValue(5), Source: domain.FromOverride, Reason: "the smaller deal"},
 	}
-	g := resolve(in).grants["seats"]
-	if g.Value != domain.QuotaValue(9) || g.Reason != "the bigger deal" || g.ExpiresAt == nil || !g.ExpiresAt.Equal(*exp) {
-		t.Errorf("merged override = %+v; want the bigger deal's value, reason and expiry", g)
+	// Whichever order the store lists them in.
+	for name, list := range map[string][]domain.Grant{"the winner listed first": in.overrides, "the winner listed last": {in.overrides[1], in.overrides[0]}} {
+		in.overrides = list
+		g := resolve(in).grants["seats"]
+		if g.Value != domain.QuotaValue(9) || g.Reason != "the bigger deal" || g.ExpiresAt == nil || !g.ExpiresAt.Equal(*exp) {
+			t.Errorf("merged override with %s = %+v; want the bigger deal's value, reason and expiry", name, g)
+		}
 	}
 
 	// One of two that its key cannot hold is skipped, and the other stands.
