@@ -28,6 +28,8 @@ tags:
     description: Granting, moving and reading credits.
   - name: payments
     description: Selling, and managing what was sold. Credits are never granted here — only a verified payment grants them.
+  - name: entitlements
+    description: What a plan unlocks besides credits — features, ceilings and tiers — resolved once, so the page and the server agree.
   - name: admin
     description: Configuration as data, every write attributed to a person and a reason.
   - name: platform
@@ -324,6 +326,70 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "500": { $ref: "#/components/responses/Internal" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/entitlements:
+    get:
+      operationId: listEntitlements
+      tags: [entitlements]
+      x-served-by: entitlement
+      summary: Every effective grant of a scope, with where it came from.
+      description: |
+        The scope's resolved entitlements, ordered by key — one call, so a plan card cannot assemble a different picture than the
+        server enforces. Each grant says its `source` (`default`, `subscription` or `override`), an override says why, and a grant
+        held only by a failed payment's grace window says when that ends in `expires_at`. On a quota, `-1` is **unlimited**.
+      x-privilege: record
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: scope_kind, in: query, required: true, schema: { type: string } }
+        - { name: scope_id, in: query, required: true, schema: { type: string } }
+        - { name: scope_realm, in: query, required: false, schema: { type: string }, description: "Needed only when the credential spans several realms; it is the credential's to confirm, never to assert." }
+      responses:
+        "200":
+          description: The grants, possibly none.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EntitlementGrantList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/entitlements/check:
+    post:
+      operationId: checkEntitlements
+      tags: [entitlements]
+      x-served-by: entitlement
+      summary: Ask about several capabilities at once.
+      description: |
+        A batch of questions, answered from **one resolution**: every key it was given, in the order it was given. A key the realm
+        never declared is **denied inside the batch** and is not an error, so a page with one typo still renders the rest. A refusal
+        carries a `reason` written for a person and, when a plan further up the catalogue would permit it, its code in
+        `upgrade_path`. With a `current` count a quota is measured exactly as the host would before creating the next one (`delta`
+        defaults to one more); without one it is only asked whether it is granted, and how large. The host owns its counts — nothing
+        is stored here. A batch that cannot be answered (the entitlements are unavailable) is refused whole: **`503`, never some of
+        it permitted.**
+      x-privilege: record
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EntitlementCheckRequest" }
+      responses:
+        "200":
+          description: One decision per question, in order.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EntitlementDecisionList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413": { $ref: "#/components/responses/BadRequest" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
         "504": { $ref: "#/components/responses/Timeout" }
   /v1/checkout:
     post:
@@ -1322,6 +1388,67 @@ components:
             - { type: boolean }
             - { type: integer, format: int64 }
             - { type: string }
+    EntitlementValue:
+      description: |
+        What a scope holds for a key, as the plain JSON value of its kind: a flag is a boolean, a quota an integer (**`-1` is
+        unlimited**), an enum a string. `null` when nothing grants the key.
+      nullable: true
+      oneOf:
+        - { type: boolean }
+        - { type: integer, format: int64 }
+        - { type: string }
+    EntitlementGrant:
+      type: object
+      required: [key, kind, value, source, reason]
+      properties:
+        key: { type: string }
+        kind: { type: string, enum: [flag, quota, enum] }
+        value: { $ref: "#/components/schemas/EntitlementValue" }
+        source: { type: string, enum: [default, subscription, override], description: "Where the grant came from: the answer to 'why can this customer use this?'." }
+        expires_at: { type: string, format: date-time, description: "Present when the grant ends: an override given an end, or a plan held only by a failed payment's grace window. Absent: as long as its source lives." }
+        reason: { type: string, description: "An override's: who approved it and why. Empty otherwise." }
+    EntitlementGrantList:
+      type: object
+      required: [data]
+      properties:
+        data: { type: array, items: { $ref: "#/components/schemas/EntitlementGrant" } }
+    EntitlementQuery:
+      type: object
+      required: [key]
+      properties:
+        key: { type: string, minLength: 1, maxLength: 128 }
+        current: { type: integer, format: int64, minimum: 0, description: "The host's own count of what it has now. With none, a quota is asked only whether it is granted, and how large." }
+        delta: { type: integer, format: int64, minimum: 0, description: "How many more, measured against `current`; one more when left out. Meaningful only with `current`." }
+    EntitlementCheckRequest:
+      type: object
+      required: [scope, checks]
+      properties:
+        scope:
+          type: object
+          required: [kind, id]
+          properties:
+            kind: { type: string }
+            id: { type: string }
+            realm: { type: string, description: "Needed only when the credential spans several realms; it is the credential's to confirm, never to assert." }
+        checks: { type: array, minItems: 1, maxItems: 100, items: { $ref: "#/components/schemas/EntitlementQuery" } }
+    EntitlementDecision:
+      type: object
+      required: [key, kind, allowed, value, reason, upgrade_path]
+      properties:
+        key: { type: string }
+        kind: { type: string, enum: ["", flag, quota, enum], description: "Empty for a key the realm never declared." }
+        allowed: { type: boolean }
+        value: { $ref: "#/components/schemas/EntitlementValue" }
+        limit: { type: integer, format: int64, description: "A quota measured against a count, or asked about: its ceiling. `-1` is unlimited." }
+        current: { type: integer, format: int64 }
+        remaining: { type: integer, format: int64, description: "The room left once `delta` is taken (a refusal: the room it found, never below zero). `-1` is unlimited." }
+        reason: { type: string, description: "When refused: written for a person, e.g. 'Your \"team\" plan includes 25 seats; you have 25 and asked for 1 more.' Empty when allowed." }
+        upgrade_path: { type: string, description: "When refused and a plan further up the catalogue would permit it: its code. Empty otherwise." }
+    EntitlementDecisionList:
+      type: object
+      required: [data]
+      properties:
+        data: { type: array, items: { $ref: "#/components/schemas/EntitlementDecision" } }
     Plan:
       type: object
       required: [code, name, kind, credit_allotment, pool, sort_order, prices]

@@ -34,6 +34,7 @@ components:
   entitlement-ports:     { in: entitlement/ports }
   entitlement-app:       { in: entitlement/app }
   entitlement-driven:    { in: entitlement/adapters/driven/** }    # postgres
+  entitlement-driving:   { in: entitlement/adapters/driving/** }   # the REST and gRPC doors, and the wire they share
   # Conformance suites: importable by an adapter's own tests, given constructors — they import no adapter.
   entitlement-contracts: { in: entitlement/contracts }
   events:           { in: events/** }
@@ -83,12 +84,16 @@ deps:
   entitlement-contracts: { mayDependOn: [ entitlement-domain, entitlement-ports, metering-domain, metering-ports ] }
   # An adapter implements entitlement's ports; that it does not call the use cases is a depguard rule (.golangci.yml).
   entitlement-driven:    { mayDependOn: [ entitlement-domain, entitlement-ports, metering-domain, metering-ports, entitlement-driven ] }
+  # A door speaks a transport for a port: it reaches the use cases only through entitlement's ports, learns whose realm a call is for
+  # through a Caller the binary implements (so it imports no authenticator), and is mounted by cmd. That the REST and gRPC doors share
+  # `entitlementwire` and nothing else of each other is a depguard rule (.golangci.yml).
+  entitlement-driving:   { mayDependOn: [ entitlement-domain, entitlement-ports, metering-domain, api, entitlement-driving ] }
   events:           { mayDependOn: [ metering-domain, api ] }                  # outbound delivery to hosts
   # cmd/** includes cmd/internal, the helpers the binaries share (the environment reader, the store wiring), so a
   # binary depends on its own component.
   cmd:              { mayDependOn: [ cmd, metering-domain, metering-ports, metering-config,
                                      metering-app, metering-driven, metering-driving,
                                      billing-domain, billing-ports, billing-app, billing-driven, billing-driving,
-                                     entitlement, entitlement-domain, entitlement-ports, entitlement-app, entitlement-driven,
+                                     entitlement, entitlement-domain, entitlement-ports, entitlement-app, entitlement-driven, entitlement-driving,
                                      events, api,
                                      migrate, migrations ] }

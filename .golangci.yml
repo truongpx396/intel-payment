@@ -101,6 +101,20 @@ linters:
           deny:
             - pkg: github.com/truongpx396/intel-payment/billing
               desc: entitlement reaches the payment layer through the database it shares, never through its code
+        # The REST and gRPC doors share the wire (conversion, the failure table) and nothing else: a door that reached into the other
+        # would be a second path to the answer that skips what the first one checks.
+        entitlement-rest-is-rest:
+          list-mode: lax
+          files: [ '**/entitlement/adapters/driving/entitlementhttp/**', '!$test' ]
+          deny:
+            - { pkg: github.com/truongpx396/intel-payment/entitlement/adapters/driving/entitlementgrpc, desc: "the doors share entitlementwire, nothing else" }
+            - { pkg: github.com/truongpx396/intel-payment/metering/adapters/driving, desc: "a door learns the realm through a Caller, and imports no authenticator" }
+        entitlement-grpc-is-grpc:
+          list-mode: lax
+          files: [ '**/entitlement/adapters/driving/entitlementgrpc/**', '!$test' ]
+          deny:
+            - { pkg: github.com/truongpx396/intel-payment/entitlement/adapters/driving/entitlementhttp, desc: "the doors share entitlementwire, nothing else" }
+            - { pkg: github.com/truongpx396/intel-payment/metering/adapters/driving, desc: "a door learns the realm through a Caller, and imports no authenticator" }
         entitlement-adapters-implement-ports:
           list-mode: lax
           files:

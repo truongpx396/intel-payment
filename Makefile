@@ -142,14 +142,14 @@ proto-tools: ## Install the pinned protobuf generators (buf itself: https://buf.
 	go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
 	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GO_GRPC_VERSION)
 
-proto: ## Regenerate api/meteringv1 from api/proto
+proto: ## Regenerate api/meteringv1 and api/entitlementv1 from api/proto
 	buf generate
 
 # A released wire shape never changes in place (rest-api.md § Versioning): lint, then compare with main.
 # `buf breaking` has nothing to compare against until main carries a proto, so it is skipped there and says so.
 proto-check: proto ## The generated code is current, lints, and breaks nothing on main
 	buf lint
-	@test -z "$$(git status --porcelain -- api/meteringv1)" || { git status --short -- api/meteringv1; echo "FAIL: api/meteringv1 is stale — run 'make proto' and commit it"; exit 1; }
+	@test -z "$$(git status --porcelain -- api/meteringv1 api/entitlementv1)" || { git status --short -- api/meteringv1 api/entitlementv1; echo "FAIL: api/meteringv1 or api/entitlementv1 is stale — run 'make proto' and commit it"; exit 1; }
 	@if git cat-file -e origin/main:api/proto/metering/v1/metering.proto 2>/dev/null; then \
 	  buf breaking --against '.git#ref=origin/main'; \
 	else echo "buf breaking: origin/main carries no proto yet — nothing to compare against"; fi
