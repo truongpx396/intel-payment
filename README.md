@@ -19,8 +19,8 @@ across rate cards over three disjoint unit spaces, so that is a test result rath
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
 > **Status, stated honestly.** The **metering core** and the **payment pipeline** are built, verified in CI and served by
-> two binaries, `paymentd` and `payment-worker`. **Entitlements, outbound events, the operational surface and the credits
-> UI are designed, not built** (`entitlement/` and `events/` are stubs), and **post-paid invoicing**
+> two binaries, `paymentd` and `payment-worker`. **Entitlements are partly built** (the domain, an `Entitler` that resolves `override > subscription > default`, and its PostgreSQL store; no binary serves them yet), and **outbound events, the operational surface and the credits
+> UI are designed, not built** (`events/` is a stub), and **post-paid invoicing**
 > ([Phase 2](specs/002-postpaid-invoicing/)) is designed, not built. The provider adapters have met their sandboxes
 > once ([docs/sandbox.md](docs/sandbox.md)): not a buyer approving a PayPal order, a paid Polar order, or a live account.
 > Sub-millisecond admission is the design target; nothing has been load tested. The task count and the gap list are in
@@ -87,7 +87,7 @@ across rate cards over three disjoint unit spaces, so that is a test result rath
 
 **Designed, not built**
 
-- 🎫 **Entitlements**: flags, quotas and enums as data, with `override > subscription > default` precedence and provenance. The schema is in; the service is not.
+- 🎫 **Entitlements**: flags, quotas and enums as data, with `override > subscription > default` precedence and provenance. So far: the domain, an `Entitler` that resolves `override > subscription > default`, and its PostgreSQL store. No binary serves it yet.
 - 📣 **Outbound events**: signed, retried webhooks and a cursor feed, so hosts never touch internals.
 - 🖼️ **A credits UI**: balances per pool, ceilings, spend, ledger and plans.
 - 🧾 **Post-paid invoicing**: rating, tiered schedules, commitments, immutable invoices and credit notes ([Phase 2](specs/002-postpaid-invoicing/)).
@@ -606,7 +606,8 @@ billing/               the payment layer; depends on metering's ports only
   adapters/driven/     postgres, stripe, polar, paypal
   adapters/driving/    webhookhttp (the door), paymenthttp (/v1 payments and /v1/admin)
   contracts/           the provider conformance suites and the captured sandbox deliveries
-entitlement/ events/   designed; doc.go stubs
+entitlement/           what a plan unlocks: domain, ports, app, adapters/driven/postgres, contracts; not served yet
+events/                designed; a doc.go stub
 cmd/                   paymentd, payment-worker, payment-migrate; internal/{envcfg,payments,wiring}
 api/                   proto/ (buf), meteringv1/ (generated Go), openapi/v1.yaml
 migrations/ migrate/   0001–0005, forward-only, and the migrator that applies them
@@ -628,7 +629,7 @@ design-system/         the credits screen design (the UI itself is not built)
 
 **❌ Not built** (the phases and reasoning are in [ROADMAP.md](ROADMAP.md)):
 
-- **Entitlements.** `entitlement/` is a stub; the schema (migration `0003`) is in, and there is no admin API for them.
+- **Entitlements.** `entitlement/` is built as far as the domain, an `Entitler` that resolves `override > subscription > default`, and its PostgreSQL store, and nothing serves it; the schema (migration `0003`) is in, and there is no admin API for them.
 - **Outbound events.** Signed webhooks and a cursor feed (`events/` is a stub).
 - **The operational surface and the credits UI.**
 - **Post-paid invoicing** ([Phase 2](specs/002-postpaid-invoicing/)), including coupons, discounts, trials, quantity subscriptions and invoice generation. Phase 1 collects payments; it issues no invoices.
