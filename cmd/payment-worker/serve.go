@@ -58,13 +58,6 @@ func runWorker(ctx context.Context, s settings, log *slog.Logger, getenv func(st
 	if err != nil {
 		return err
 	}
-	// The config relay: the database tells this process when configuration changes, and this process tells every replica's cache.
-	// One is enough for a deployment, and a worker is the one process that is always running.
-	relay, err := entitlements.StartRelay(ctx, st.Pool, bus, cfg.SubjectPrefix, log)
-	if err != nil {
-		return err
-	}
-	defer relay.Close()
 	host, _ := os.Hostname()
 	stream, err := redisstreams.NewStream(st.Redis, redisstreams.IntentOptions{Consumer: fmt.Sprintf("worker-%s-%d", host, os.Getpid()), Clock: system.Clock{}})
 	if err != nil {
@@ -114,6 +107,11 @@ func runWorker(ctx context.Context, s settings, log *slog.Logger, getenv func(st
 	// subscription is a worker that is not topping anyone up, which must be seen as a failure and not as a quiet process.
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
+
+	// The config relay: the database tells this process when configuration changes, and this process tells every replica's cache.
+	// One is enough for a deployment, and a worker is the one process that is always running. It is a hint, so it never stops the
+	// worker (it is logged and retried), and it is started after the payment loops so that what cannot be done there is reported first.
+	relayDone := make(chan struct{})
 	paid := make(chan error, 1)
 	go func() {
 		err := pay.Run(runCtx)
@@ -123,9 +121,15 @@ func runWorker(ctx context.Context, s settings, log *slog.Logger, getenv func(st
 		paid <- err
 	}()
 
+	go func() {
+		defer close(relayDone)
+		entitlements.RunRelay(runCtx, st.Pool, bus, cfg.SubjectPrefix, log, entitlements.RelayRetry{})
+	}()
+
 	r := &runner{s: s, log: log, books: st.Books, writer: writer, replayer: replayer, expirer: expirer}
 	err = r.run(runCtx)
 	stop()
+	<-relayDone
 	if perr := <-paid; perr != nil && err == nil {
 		err = perr
 	}

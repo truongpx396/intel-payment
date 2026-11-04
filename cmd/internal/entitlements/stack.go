@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -115,15 +116,42 @@ func (s *Stack) GRPC(log *slog.Logger) (*entitlementgrpc.Server, error) {
 	return entitlementgrpc.New(entitlementgrpc.Config{Entitler: s.Entitler, Checker: s.Entitler, Caller: CredentialCaller{}, Logger: log})
 }
 
-// StartRelay runs the config relay: it forwards the database's configuration notifications onto the bus as
-// <prefix>.config.<realm>, which every replica's cache listens for. A relay that cannot start is an error at start — a worker that
-// is not relaying leaves every cache to its TTL — and one that later fails to publish is logged and carries on.
-func StartRelay(ctx context.Context, pool *pgxpool.Pool, bus mports.Bus, prefix string, log *slog.Logger) (*pgadapter.ConfigRelay, error) {
-	r, err := pgadapter.NewConfigRelay(ctx, pool, bus, prefix, pgadapter.RelayOptions{
-		OnError: func(err error) { log.Error("config relay", "error", err.Error()) },
-	})
-	if err != nil {
-		return nil, fmt.Errorf("entitlements: the config relay cannot start, so no replica would hear of a configuration change before its cache TTL passed: %w", err)
+// RelayRetry is how a relay that cannot start is retried: the first wait, and the longest. Zero values are 1s and 30s.
+type RelayRetry struct{ Initial, Max time.Duration }
+
+// RunRelay keeps the config relay running until ctx is done: it forwards the database's configuration notifications onto the bus as
+// <prefix>.config.<realm>, which every replica's cache listens for.
+//
+// The relay is a freshness hint — a change it cannot announce reaches caches at their TTL — and it runs in the sole durable writer,
+// so it never stops that process: a relay that cannot start is logged as an ERROR that says what it costs, and is tried again with a
+// backoff until it can. A worker that crash-looped over a hint would delay booking money, and one that failed on the hint first
+// would hide the failure that matters.
+func RunRelay(ctx context.Context, pool *pgxpool.Pool, bus mports.Bus, prefix string, log *slog.Logger, retry RelayRetry) {
+	wait, longest := retry.Initial, retry.Max
+	if wait <= 0 {
+		wait = time.Second
 	}
-	return r, nil
+	if longest <= 0 {
+		longest = 30 * time.Second
+	}
+	for ctx.Err() == nil {
+		r, err := pgadapter.NewConfigRelay(ctx, pool, bus, prefix, pgadapter.RelayOptions{
+			OnError: func(err error) { log.Error("config relay", "error", err.Error()) },
+		})
+		if err == nil {
+			<-ctx.Done()
+			r.Close()
+			return
+		}
+		log.Error("config relay cannot start: a configuration change reaches every replica's cache only when its TTL passes, until it can",
+			"error", err.Error(), "retry_in", wait.String())
+		t := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return
+		case <-t.C:
+		}
+		wait = min(wait*2, longest)
+	}
 }
