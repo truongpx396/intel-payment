@@ -82,3 +82,19 @@ func (g Grant) Validate() error {
 func (g Grant) ActiveAt(now time.Time) bool {
 	return g.ExpiresAt == nil || now.Before(*g.ExpiresAt)
 }
+
+// ValidateOverride reports whether g may be written to the overrides table by actor (invariant 5): a valid grant that is an
+// override, with a reason that says something, written by a named actor. An unexplained override is indistinguishable from a bug,
+// and is usually discovered during a revenue investigation.
+func (g Grant) ValidateOverride(actor string) error {
+	if err := g.Validate(); err != nil {
+		return err
+	}
+	if g.Source != FromOverride {
+		return fmt.Errorf("%w: only an override is written here, this grant is from %q", ErrInvalid, string(g.Source))
+	}
+	if strings.TrimSpace(actor) == "" {
+		return fmt.Errorf("%w: an override says who wrote it", ErrInvalid)
+	}
+	return nil
+}

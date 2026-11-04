@@ -45,8 +45,8 @@ CREATE TABLE realm_defaults (
 );
 
 -- Deliberate per-scope exceptions — including a per-customer metering ceiling, since a limit with
--- max_entitlement resolves through here first. `reason` and `actor` are NOT NULL, and the audit
--- trigger in 0004 records every write in the same transaction.
+-- max_entitlement resolves through here first. `reason` and `actor` are NOT NULL and not blank, and the
+-- audit trigger in 0004 records every write in the same transaction.
 CREATE TABLE entitlement_overrides (
     id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     realm       TEXT        NOT NULL DEFAULT 'default',
@@ -61,7 +61,12 @@ CREATE TABLE entitlement_overrides (
     reason      TEXT        NOT NULL,
     actor       TEXT        NOT NULL,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (realm, scope_kind, scope_id, feature_key)
+    UNIQUE (realm, scope_kind, scope_id, feature_key),
+    -- An unexplained override is indistinguishable from a bug (entitlement invariant 5). The API refuses one; so does the table,
+    -- or the write that bypasses the API is the one nobody can explain. NOT NULL alone admits '' and '   ', and btrim trims only
+    -- spaces: "has a character that is not whitespace" is what the API's TrimSpace means.
+    CONSTRAINT entitlement_overrides_reason_not_blank CHECK (reason ~ '\S'),
+    CONSTRAINT entitlement_overrides_actor_not_blank  CHECK (actor ~ '\S')
 );
 
 COMMIT;

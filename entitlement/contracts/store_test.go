@@ -39,6 +39,7 @@ func TestStoreContractRejectsEveryBrokenStoreByName(t *testing.T) {
 		{"adds an override instead of replacing it", func(d *contracts.MemDefects) { d.AppendOverrides = true }, []string{contracts.CaseOverrideRoundTrip}},
 		{"forgets an override's expiry", func(d *contracts.MemDefects) { d.ClampExpiry = true }, []string{contracts.CaseOverrideRoundTrip}},
 		{"returns no overrides", func(d *contracts.MemDefects) { d.IgnoreOverrides = true }, []string{contracts.CaseOverrideRoundTrip}},
+		{"stores an override that says neither who nor why", func(d *contracts.MemDefects) { d.AcceptUnexplained = true }, []string{contracts.CaseOverrideNeedsWhy}},
 		{"matches an override by id alone", func(d *contracts.MemDefects) { d.MatchByID = true }, []string{contracts.CaseOverridesScoped}},
 		{"reports a canceled subscription as live", func(d *contracts.MemDefects) { d.LiveCanceled = true }, []string{contracts.CaseSubscriptionLive}},
 		{"forgets the grace window", func(d *contracts.MemDefects) { d.DropGrace = true }, []string{contracts.CaseSubscriptionLive}},
