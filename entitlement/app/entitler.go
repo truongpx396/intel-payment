@@ -164,8 +164,10 @@ func (e *Entitler) lookup(result string) {
 	e.count(mports.Labels{"result": result}, ports.MetricCacheLookups, 1)
 }
 
-func (e *Entitler) decided(s md.Scope, outcome string) {
-	e.count(mports.Labels{"realm": string(s.Normalized().Realm), "outcome": outcome}, ports.MetricDecisions, 1)
+func (e *Entitler) decided(s md.Scope, outcome string) { e.countDecisions(s, outcome, 1) }
+
+func labelsFor(s md.Scope, outcome string) mports.Labels {
+	return mports.Labels{"realm": string(s.Normalized().Realm), "outcome": outcome}
 }
 
 // check insists that k, if the realm declares it, is a key of the kind asked about. An undeclared key is not an error: nothing
@@ -252,13 +254,27 @@ func (e *Entitler) Consume(ctx context.Context, s md.Scope, k domain.Key, curren
 	}
 	if _, declared := r.decls[k]; !declared {
 		e.decided(s, "denied")
-		return domain.Decision{Current: current, Reason: fmt.Sprintf("%q is not a capability this product offers.", string(k))}, nil
+		return domain.Decision{Current: current, Reason: notACapability(k)}, nil
 	}
+	d, err := e.measure(ctx, r, &catalogue{}, k, current, delta)
+	if err != nil {
+		return domain.Decision{}, err
+	}
+	if d.Allowed {
+		e.decided(s, "allowed")
+	} else {
+		e.decided(s, "denied")
+	}
+	return d, nil
+}
+
+// measure judges current+delta against the scope's quota for a key the realm declares as one. Consume and Check both ask it, so
+// they cannot disagree about a quota.
+func (e *Entitler) measure(ctx context.Context, r *resolution, cat *catalogue, k domain.Key, current, delta int64) (domain.Decision, error) {
 	g, ok := r.grants[k]
 	if !ok {
-		e.decided(s, "denied")
-		d := domain.Decision{Current: current, Reason: fmt.Sprintf("Your plan does not include %s.", words(k))}
-		d.UpgradePath = e.upgradePath(ctx, r, k, current, delta)
+		d := domain.Decision{Current: current, Reason: notIncluded(r, nil, k)}
+		d.UpgradePath = wayOut(cat.offers(ctx, e, r.scope.Realm), r.plan, k, fitsAQuota)
 		return d, nil
 	}
 	d, err := g.Value.Admits(current, delta)
@@ -266,35 +282,90 @@ func (e *Entitler) Consume(ctx context.Context, s md.Scope, k domain.Key, curren
 		return domain.Decision{}, err
 	}
 	if d.Allowed {
-		e.decided(s, "allowed")
 		return d, nil
 	}
-	e.decided(s, "denied")
 	d.Reason = refusal(g, r.plan, k, current, delta)
 	if g.Source != domain.FromOverride { // an override outranks every plan: upgrading would not lift it
-		d.UpgradePath = e.upgradePath(ctx, r, k, current, delta)
+		need := current
+		fits := func(v domain.Value) bool {
+			a, err := v.Admits(need, delta)
+			return err == nil && a.Allowed
+		}
+		d.UpgradePath = wayOut(cat.offers(ctx, e, r.scope.Realm), r.plan, k, fits)
 	}
 	return d, nil
 }
 
-// upgradePath is the first plan in the catalogue whose quota for k fits the request. A
-// store that cannot say leaves the refusal without a path: the refusal itself stands.
-func (e *Entitler) upgradePath(ctx context.Context, r *resolution, k domain.Key, current, delta int64) string {
-	offers, err := e.d.Store.Plans(ctx, r.scope.Realm)
-	if err != nil {
-		return ""
+// catalogue reads the realm's plans at most once for a call, and only when a refusal wants a way out. A store that cannot say
+// leaves the refusal without one: the refusal itself stands.
+type catalogue struct {
+	read bool
+	list []domain.Offer
+}
+
+func (c *catalogue) offers(ctx context.Context, e *Entitler, realm md.Realm) []domain.Offer {
+	if !c.read {
+		c.read = true
+		c.list, _ = e.d.Store.Plans(ctx, realm)
 	}
-	for _, o := range offers { // the plan the scope holds is not skipped: it just refused this, so it cannot fit it
-		for _, ent := range o.Entitlements {
-			if ent.Key != k || ent.Value.Kind != domain.Quota {
-				continue
+	return c.list
+}
+
+// wayOut is the first plan FURTHER UP the catalogue than the one held whose entitlement for k satisfies fits: a way out is a plan
+// to move to, not a cheaper one to fall back to. When the plan held is no longer sold there is no position to measure from, and
+// every plan on sale is a candidate.
+func wayOut(offers []domain.Offer, held string, k domain.Key, fits func(domain.Value) bool) string {
+	start := 0
+	if held != "" {
+		for i, o := range offers {
+			if o.PlanCode == held {
+				start = i + 1
+				break
 			}
-			if d, err := ent.Value.Admits(current, delta); err == nil && d.Allowed {
+		}
+	}
+	for _, o := range offers[start:] {
+		for _, ent := range o.Entitlements {
+			if ent.Key == k && fits(ent.Value) {
 				return o.PlanCode
 			}
 		}
 	}
 	return ""
+}
+
+func fitsAQuota(v domain.Value) bool {
+	d, err := v.Admits(0, 1)
+	return err == nil && d.Allowed
+}
+
+func fitsAFlag(v domain.Value) bool { return v.Kind == domain.Flag && v.Bool }
+
+func fitsAnEnum(v domain.Value) bool { return v.Kind == domain.Enum }
+
+func notACapability(k domain.Key) string {
+	return fmt.Sprintf("%q is not a capability this product offers.", string(k))
+}
+
+// notIncluded says why a key the realm declares is not granted: where the "no" comes from, if anywhere.
+func notIncluded(r *resolution, g *domain.Grant, k domain.Key) string {
+	what := words(k)
+	switch {
+	case g != nil && g.Source == domain.FromOverride:
+		return fmt.Sprintf("%s is switched off for your account.", capitalised(what))
+	case g != nil && g.Source == domain.FromDefault:
+		return fmt.Sprintf("The free tier does not include %s.", what)
+	case r.plan != "":
+		return fmt.Sprintf("Your %q plan does not include %s.", r.plan, what)
+	}
+	return fmt.Sprintf("Your plan does not include %s.", what)
+}
+
+func capitalised(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 // refusal explains a refused quota in words a person can act on (invariant 7): what they have, what they asked for, and

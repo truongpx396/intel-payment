@@ -13,6 +13,7 @@ import (
 	"time"
 
 	billingports "github.com/truongpx396/intel-payment/billing/ports"
+	"github.com/truongpx396/intel-payment/cmd/internal/entitlements"
 	"github.com/truongpx396/intel-payment/cmd/internal/envcfg"
 	"github.com/truongpx396/intel-payment/cmd/internal/payments"
 	"github.com/truongpx396/intel-payment/cmd/internal/wiring"
@@ -57,6 +58,13 @@ func runWorker(ctx context.Context, s settings, log *slog.Logger, getenv func(st
 	if err != nil {
 		return err
 	}
+	// The config relay: the database tells this process when configuration changes, and this process tells every replica's cache.
+	// One is enough for a deployment, and a worker is the one process that is always running.
+	relay, err := entitlements.StartRelay(ctx, st.Pool, bus, cfg.SubjectPrefix, log)
+	if err != nil {
+		return err
+	}
+	defer relay.Close()
 	host, _ := os.Hostname()
 	stream, err := redisstreams.NewStream(st.Redis, redisstreams.IntentOptions{Consumer: fmt.Sprintf("worker-%s-%d", host, os.Getpid()), Clock: system.Clock{}})
 	if err != nil {
