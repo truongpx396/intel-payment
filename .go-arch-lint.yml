@@ -63,8 +63,9 @@ deps:
   # api is generated wire code. Its Register…Server takes the transport as an interface and calls it, which
   # the dependency-injection check reads as api → metering-driving. That is the only edge api may have in
   # this graph; that api IMPORTS nothing of this module is a depguard rule (api-is-a-leaf, .golangci.yml),
-  # because the graph alone would now allow `import driving` from api.
-  api:              { mayDependOn: [ metering-driving ] }
+  # because the graph alone would now allow `import driving` from api. The entitlement service is the same case: its generated
+  # Register…Server takes entitlementgrpc.Server as an interface, so api → entitlement-driving is the second, and last, such edge.
+  api:              { mayDependOn: [ metering-driving, entitlement-driving ] }
   billing:           { mayDependOn: [ metering-domain, metering-ports ] }
   billing-domain:    { mayDependOn: [ metering-domain ] }
   billing-ports:     { mayDependOn: [ billing-domain, metering-domain, metering-ports ] }
