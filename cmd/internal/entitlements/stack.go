@@ -39,6 +39,7 @@ type Stack struct {
 	Quotas   mports.QuotaSource
 
 	watcher *entapp.Watcher
+	log     *slog.Logger
 }
 
 // GroupFor names a replica's subscription to the announcements that evict its cache. Every replica needs a group of its own, since
@@ -52,7 +53,7 @@ func Open(ctx context.Context, c Common) (*Stack, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Stack{Entitler: e, Quotas: entapp.NewQuotaSource(e)}
+	s := &Stack{Entitler: e, Quotas: entapp.NewQuotaSource(e), log: c.Log}
 	if c.Settings.CacheTTL <= 0 {
 		c.Log.Info("entitlements are not cached: every check reads the database", "PAYMENT_ENTITLEMENT_CACHE_TTL", c.Settings.CacheTTL.String())
 		return s, nil
@@ -74,10 +75,26 @@ func Open(ctx context.Context, c Common) (*Stack, error) {
 	return s, nil
 }
 
-// Close ends the subscription.
+// closeWait is how long Close waits for the subscription to stop. Closing a Redis Streams subscription waits for its loop, which can be
+// inside a Redis call that a stalled Redis does not answer, and a stop is bounded (PAYMENT_SHUTDOWN_TIMEOUT): a freshness hint does not
+// get to extend it. A second is far more than a healthy loop needs to finish the eviction in flight.
+const closeWait = time.Second
+
+// Close ends the subscription. It waits for it to stop, up to closeWait; past that it says so and returns, and the subscription is
+// left to the process's exit.
 func (s *Stack) Close() {
-	if s.watcher != nil {
-		_ = s.watcher.Close()
+	if s.watcher == nil {
+		return
+	}
+	done := make(chan struct{})
+	go func() { _ = s.watcher.Close(); close(done) }()
+	t := time.NewTimer(closeWait)
+	defer t.Stop()
+	select {
+	case <-done:
+	case <-t.C:
+		s.log.Warn("the entitlement cache's subscription did not stop in time (a Redis call that is not answering?), so this process stops without it; "+
+			"nothing is lost, since a change it would have announced reaches a cache when its TTL passes", "waited", closeWait.String())
 	}
 }
 
