@@ -206,7 +206,10 @@ func TestPaymentdThatCannotDrainInTimeStopsAnywayAndARetryIsNotBookedTwice(t *te
 	if code == 0 {
 		t.Errorf("paymentd reported a clean stop though a record was still in flight; logs:\n%s", d.logs.String())
 	}
-	if took := time.Since(start); took > 8*time.Second {
+	// The bound is the drain (1 s) plus what the closers may add, which is small: the process was seen to take 4.5 s here, until the
+	// Redis it had paused came back, when the entitlement cache's subscription was waited for. A stop that lasts that long lets a
+	// record that was cut execute after all, which is what the retry below would then replay.
+	if took := time.Since(start); took > 4*time.Second {
 		t.Errorf("took %v to stop with a 1 s bound", took)
 	}
 	if out := d.logs.String(); !strings.Contains(out, "in flight") {
