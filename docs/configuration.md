@@ -149,7 +149,16 @@ Read by `paymentd`, which serves the host's `/v1` payment routes (plans, checkou
 | Variable | Default | Notes |
 |---|---|---|
 | `PAYMENT_DUNNING_GRACE_DAYS` | `7` | `payment-worker`: entitlements hold this long after a failed payment. A whole number of days, 1–365; `0` would silently become the default, so it is refused |
-| `PAYMENT_DUNNING_SUSPEND_AFTER_DAYS` | `14` | Suspension after grace. **Not read yet** — entitlements are Phase 4 |
+| `PAYMENT_DUNNING_SUSPEND_AFTER_DAYS` | `14` | Suspension after grace. **Not read**: entitlements lapse when the grace window ends, and no suspension stage after it is built |
+
+### Entitlements
+
+What a plan unlocks — keys, the plans' entitlements, the free tier, overrides — is data behind the database, not configuration. Two settings remain:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PAYMENT_ENTITLEMENT_CACHE_TTL` | `30s` | `paymentd`: how long a resolution is kept. It is what a **lost announcement costs** — a change is normally visible at once, evicted by `<prefix>.entitlement.<tag>` and `<prefix>.config.<realm>` — so it is bounded: at most `10m`. An entry never outlives the grace window or the override expiry it was built from, whatever this is. `0s` turns the cache off and every check reads the database |
+| `PAYMENT_INSTANCE_ID` | the hostname | `paymentd`: this replica's name, which names its bus subscription `entitlement-cache-<id>`. **Every replica needs its own, and it must be stable across restarts** — a shared name would hand each announcement to one replica, and a bus stream is only trimmed up to what every group has acknowledged. 1–63 letters, digits, `.`, `_` or `-`, starting with a letter or digit. A hostname that changes on every restart (a container id) leaves a group behind each time; set this ([operations](operations.md#retiring-a-paymentd-replica)) |
 
 ### Retention
 

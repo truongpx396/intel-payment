@@ -14,7 +14,11 @@ payment pipeline is built and served with them: `paymentd` mounts `POST /webhook
 and the auto top-up subscription (`cmd/internal/payments`). The host's payment routes (`/v1/plans`, `/v1/checkout`,
 `/v1/subscription*`, `/v1/portal`, `/v1/auto-recharge`, `/v1/payments`, `/v1/fulfilment`) and the admin API (`/v1/admin`: provider
 accounts, plans, the provider's prices, customers) are served by `paymentd` (`billing/adapters/driving/paymenthttp`).
-`entitlement/` and `events/` are still `doc.go` stubs, and there is no UI. The provider adapters have met their sandboxes once
+The entitlements are built and served too: `GET /v1/entitlements`, `POST /v1/entitlements/check` and gRPC `entitlement.v1`
+(`entitlement/adapters/driving`, mounted by `cmd/internal/entitlements`), the same resolution sizing any limit that names a
+`max_entitlement`, and `payment-worker` running the config relay that evicts every replica's cache. There is no admin API for
+entitlements yet (keys, plans' entitlements, the free tier and overrides are SQL rows, audited by the database). `events/` is
+still a `doc.go` stub, and there is no UI. The provider adapters have met their sandboxes once
 ([docs/sandbox.md](docs/sandbox.md)), not a buyer approving a PayPal order, a paid Polar order or a live account. Do not write code,
 docs or comments that imply more or less than that.
 
@@ -24,7 +28,8 @@ docs or comments that imply more or less than that.
 |---|---|
 | `metering/` | The engine, standalone and portable. `domain` → `ports` → `app` → `adapters/{driven,driving}`; `contracts/` holds the conformance suites |
 | `billing/` | The payment layer: `domain` → `ports` → `app` → `adapters/{driven (postgres, stripe, polar, paypal), driving (webhookhttp, paymenthttp)}`, and its `contracts/`. It depends on metering's *ports* only |
-| `entitlement/` `events/` `api/` | Designed; `entitlement/` and `events/` are still `doc.go` stubs. They may depend on metering's *ports* only |
+| `entitlement/` | What a plan unlocks: `domain` → `ports` → `app` → `adapters/{driven (postgres), driving (entitlementhttp, entitlementgrpc, entitlementwire)}`, and its `contracts/`. It depends on metering's *ports* only and never imports `billing` (the two share a schema, and a parity test holds the subscription rule equal). No `if plan == "pro"` anywhere: `scripts/check-no-plan-branches.sh` fails the build |
+| `events/` `api/` | `events/` is designed and still a `doc.go` stub; `api/` is the wire contract (protobuf, generated Go, OpenAPI). `events/` may depend on metering's *ports* only |
 | `migrations/` `migrate/` `cmd/payment-migrate` | Forward-only schema and its migrator |
 | `specs/001-metering-billing-core/` | `spec`, `plan`, `tasks`, `design-decisions`, and the normative `contracts/` |
 | `specs/002-postpaid-invoicing/` | Phase 2 — designed, not built; its schema is a draft that never ships from `migrations/` |

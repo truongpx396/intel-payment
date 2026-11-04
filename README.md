@@ -18,9 +18,9 @@ across rate cards over three disjoint unit spaces, so that is a test result rath
 [![Tests](https://img.shields.io/badge/Tests-test--first%20%C2%B7%20fuzz%20%C2%B7%20mutation-2ea44f)](#-testing)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-> **Status, stated honestly.** The **metering core** and the **payment pipeline** are built, verified in CI and served by
-> two binaries, `paymentd` and `payment-worker`. **Entitlements, outbound events, the operational surface and the credits
-> UI are designed, not built** (`entitlement/` and `events/` are stubs), and **post-paid invoicing**
+> **Status, stated honestly.** The **metering core**, the **payment pipeline** and the **entitlements** are built, verified
+> in CI and served by two binaries, `paymentd` and `payment-worker`. **Outbound events, the operational surface and the
+> credits UI are designed, not built** (`events/` is a stub), and **post-paid invoicing**
 > ([Phase 2](specs/002-postpaid-invoicing/)) is designed, not built. The provider adapters have met their sandboxes
 > once ([docs/sandbox.md](docs/sandbox.md)): not a buyer approving a PayPal order, a paid Polar order, or a live account.
 > Sub-millisecond admission is the design target; nothing has been load tested. The task count and the gap list are in
@@ -82,12 +82,12 @@ across rate cards over three disjoint unit spaces, so that is a test result rath
 - 🧯 **Recovery that is a procedure.** A Redis restart, failover or loss freezes the affected shards, drains them and rebuilds them from the books; usage during an outage is journaled, never dropped.
 - 💳 **Payments that cannot lose or double a grant.** Webhooks are verified on the raw body and persisted *before* they are acknowledged, then processed with leases and retries.
 - 📝 **Configuration you can trust.** An admin API for rate cards, ceilings, pools, plans, provider prices, provider accounts and customers; the database itself audits every change, even a direct SQL write.
+- 🎫 **Entitlements as data.** Flags, quotas and enums resolved with `override > subscription > default`, a grace window that lapses at the nanosecond, and provenance for every grant; `-1` is unlimited and is never compared as a number. A refusal says why in words and names the plan that would permit it. Served over REST and gRPC as a batch `Check`, cached with a bound and evicted the moment a subscription, an override or the configuration changes; the same resolution sizes any ceiling a plan sizes (`max_entitlement`).
 - 📦 **Library or container.** The same ports embedded in-process or behind gRPC and REST; a `Meter` behind gRPC is shown to be the same value as the engine, by a suite that is itself shown to reject five broken transports.
 - 🧱 **A boundary you cannot cross by accident.** `go-arch-lint` and `depguard` make the portability guarantee a CI gate, and `check-spec-drift` does the same for the contracts.
 
 **Designed, not built**
 
-- 🎫 **Entitlements**: flags, quotas and enums as data, with `override > subscription > default` precedence and provenance. The schema is in; the service is not.
 - 📣 **Outbound events**: signed, retried webhooks and a cursor feed, so hosts never touch internals.
 - 🖼️ **A credits UI**: balances per pool, ceilings, spend, ledger and plans.
 - 🧾 **Post-paid invoicing**: rating, tiered schedules, commitments, immutable invoices and credit notes ([Phase 2](specs/002-postpaid-invoicing/)).
@@ -120,12 +120,14 @@ flowchart TB
         Metering["/v1 metering<br/>admit, record, grant, transfer,<br/>balance, ledger, credits"]
         PayRoutes["/v1 payments<br/>plans, checkout, subscription, portal,<br/>auto-recharge, payments, fulfilment"]
         Admin["/v1/admin<br/>every change audited"]
+        Entitlements["/v1 entitlements + entitlement.v1<br/>batch check, resolve"]
         Door["POST /webhooks/{provider}/{account}<br/>verify the raw body, persist, then 200"]
     end
 
     subgraph worker_sg["payment-worker (the sole durable writer)"]
         Writer["Writer<br/>books every intent"]
         Reconcile["Reconcile and recovery<br/>compare at the sequence watermark"]
+        Relay["Config relay<br/>a configuration change reaches every cache"]
         Processor["Webhook processor<br/>leases, retries, parked-delivery retry"]
         AutoTopUp["Auto top-up<br/>(Stripe only)"]
     end
@@ -152,18 +154,20 @@ flowchart TB
     AutoTopUp -->|"credit the pool"| Redis
 
     subgraph planned_sg["Designed, not built"]
-        Entitlement["entitlement/<br/>flags, quotas, enums"]
         Events["events/<br/>signed outbound webhooks, cursor feed"]
         UI["credits-ui"]
         Invoicing["Post-paid invoicing<br/>(Phase 2)"]
     end
 
-    Entitlement -.->|"QuotaSource: not wired into paymentd"| Metering
+    Host -->|"gRPC or REST: check, resolve"| Entitlements
+    Entitlements -->|"cached, evicted by announcements"| Postgres
+    Entitlements -->|"QuotaSource: sizes a limit by the plan"| Metering
+    Postgres -->|"config relay: LISTEN to the bus"| Relay
     Events -.-> host_sg
     UI -.-> Metering
 
     classDef planned stroke-dasharray: 5 5,color:#888
-    class Entitlement,Events,UI,Invoicing planned
+    class Events,UI,Invoicing planned
 ```
 
 - 🧱 **Ports and adapters.** `metering/` and `billing/` are each `domain` → `ports` → `app` → `adapters/{driven,driving}`. `billing/` depends on metering's *ports* only; `metering/` never imports `billing`, `entitlement`, `events` or `cmd` (`make verify-portability`). `os.Getenv` is called only in `cmd/`, and there is no `time.Now` in the core.
@@ -221,14 +225,13 @@ curl -s localhost:8080/readyz   # {"status":"ready","migrations":"head","shards"
 make seed                       # a promo pool, a rate card, three ceilings, two plans, a free tier, a test Stripe account
 ```
 
-**3. Size the per-member ceiling.** The seed sizes `user_daily` from the plan's entitlement, and `paymentd` has no
-entitlement source yet, so on a seeded realm `/v1/admit` answers `503 quota_unavailable`. Until entitlements exist, give
-the ceiling a fixed size (it applies to the next `admit`):
+**3. See what sizes the per-member ceiling.** There is nothing to configure: the seed sizes `user_daily` from the plan's
+entitlement `daily_user_credits` (10 000 000 on the free tier, 50 000 000 on `pro_monthly`), and `paymentd` resolves it
+through the same entitlements it serves. To see the picture the server enforces for a scope:
 
 ```bash
-curl -s localhost:8080/v1/admin/limits/user_daily -X PUT -H "Authorization: Bearer $PAYMENT_ADMIN_TOKEN" \
-  -d '{"actor":"quickstart","reason":"fixed size until entitlements exist","subject_kind":"user","unit":"credit",
-       "max":10000000,"window":"daily","tz":"UTC","warn_at":0.8,"deny_code":"limit_reached"}'
+curl -s "localhost:8080/v1/entitlements?scope_kind=organization&scope_id=org_1" -H "Authorization: Bearer $PAYMENT_TOKEN"
+# → {"data":[{"key":"daily_user_credits","kind":"quota","value":10000000,"source":"default","reason":""}, …]}
 ```
 
 **4. Meter something.**
@@ -274,10 +277,9 @@ make verify-hot-path     # the reference Redis Functions on Redis 7 in cluster m
 make verify-schema       # migrations, seed and behavioural assertions on an empty Postgres (Docker)
 ```
 
-### 🚨 Four things that bite on a first run
+### 🚨 Three things that bite on a first run
 
 - 🔑 **An empty `PAYMENT_SERVICE_TOKENS` accepts no caller.** Every call is a `401 unauthenticated` until step 1 is done.
-- 🎫 **A seeded realm answers `/v1/admit` with `503 quota_unavailable`** until step 3. `paymentd` has no entitlement source, and the seed sizes `user_daily` from one.
 - 🕰️ **`occurred_at` must be recent.** An event older than the usage window is refused as `422 stale_event`, so a copy-pasted fixed date stops working within three days.
 - ✍️ **Admin writes need `actor` and `reason`** in the body; without them the call is `400 invalid_request`.
 
@@ -412,7 +414,7 @@ admin API, so launching a price, a ceiling, a pool or a plan needs no deploy; **
 | `CreditExpiry` | `off` · `lots_fefo` | `off` | Whether grants expire; the lot that lapses soonest is spent first |
 | `PlanChangePolicy` | `at_period_end` · `immediate_prorate` · `immediate_no_prorate` | `at_period_end` | Mid-period upgrades |
 | `TaxStrategy` | `provider_managed` · `none` (`external_hook` when embedded as a library) | `provider_managed` | **Who** computes tax. The binary refuses `external_hook`: it cannot be given your tax service |
-| Dunning | grace days · suspend-after | `7` · `14` | How long a failed payment keeps access. Grace is enforced by `payment-worker`; suspend-after is read by nothing until entitlements exist |
+| Dunning | grace days · suspend-after | `7` · `14` | How long a failed payment keeps access. Grace is enforced by the entitlements, which lapse at the instant it ends; suspend-after is read by nothing (no suspension stage is built) |
 
 Full reference: [docs/configuration.md](docs/configuration.md). The design's sizing:
 [scale envelope](specs/001-metering-billing-core/plan.md#scale-envelope).
@@ -606,9 +608,14 @@ billing/               the payment layer; depends on metering's ports only
   adapters/driven/     postgres, stripe, polar, paypal
   adapters/driving/    webhookhttp (the door), paymenthttp (/v1 payments and /v1/admin)
   contracts/           the provider conformance suites and the captured sandbox deliveries
-entitlement/ events/   designed; doc.go stubs
-cmd/                   paymentd, payment-worker, payment-migrate; internal/{envcfg,payments,wiring}
-api/                   proto/ (buf), meteringv1/ (generated Go), openapi/v1.yaml
+entitlement/           what a plan unlocks; depends on metering's ports only (never the payment layer)
+  domain/ ports/ app/  the closed Value union (-1 = unlimited), precedence, the cache, the batch Check, the QuotaSource adapter
+  adapters/driven/     postgres
+  adapters/driving/    entitlementhttp, entitlementgrpc, and the entitlementwire they share
+  contracts/           the Entitler and store conformance suites and the in-memory store
+events/                designed; doc.go stub
+cmd/                   paymentd, payment-worker, payment-migrate; internal/{entitlements,envcfg,payments,wiring}
+api/                   proto/ (buf), meteringv1/ and entitlementv1/ (generated Go), openapi/v1.yaml
 migrations/ migrate/   0001–0005, forward-only, and the migrator that applies them
 specs/                 001-metering-billing-core (spec, plan, tasks, decisions, contracts/) and 002-postpaid-invoicing (draft)
 integration/           Testcontainers stack tests: writer, recovery, transports, payment routes
@@ -628,7 +635,7 @@ design-system/         the credits screen design (the UI itself is not built)
 
 **❌ Not built** (the phases and reasoning are in [ROADMAP.md](ROADMAP.md)):
 
-- **Entitlements.** `entitlement/` is a stub; the schema (migration `0003`) is in, and there is no admin API for them.
+- **An admin API for entitlements.** Keys, plan entitlements, the free tier and overrides are SQL rows today — each write audited by the database, and an override refused without a reason and an actor, whichever way it is written. `Overrides.Put` exists as a use case (it validates, writes and announces) and nothing serves it yet.
 - **Outbound events.** Signed webhooks and a cursor feed (`events/` is a stub).
 - **The operational surface and the credits UI.**
 - **Post-paid invoicing** ([Phase 2](specs/002-postpaid-invoicing/)), including coupons, discounts, trials, quantity subscriptions and invoice generation. Phase 1 collects payments; it issues no invoices.
@@ -640,13 +647,13 @@ design-system/         the credits screen design (the UI itself is not built)
 
 **⚠️ Known gaps:**
 
-- **No entitlement source is wired into `paymentd`.** A ceiling sized by a plan (`max_entitlement`) cannot be resolved, so a freshly seeded realm answers `/v1/admit` with `503 quota_unavailable` until the ceiling is given a fixed size ([Quickstart](#-quickstart), step 3).
+- **Every `paymentd` replica needs a bus group of its own, and a retired one must be deleted.** The entitlement cache is evicted by announcements, which each replica must receive; it subscribes as `entitlement-cache-<PAYMENT_INSTANCE_ID>` (the hostname if unset). The name must be stable across restarts, and a bus stream is only trimmed up to what every group has acknowledged, so a group left behind by a replica retired for good holds the stream open until it is deleted ([docs/operations.md](docs/operations.md)).
 - **The provider adapters have met their sandboxes once.** Still owed before a real order: PayPal with a buyer approving an order; a paid Polar order, refund and renewal; PayPal subscriptions; Stripe test clocks; and a live-mode account's own settings. PayPal's `PAYMENT.SALE.REFUNDED` is ignored.
 - **Auto top-up works on Stripe only**; Polar and PayPal cannot charge a saved method.
 - **A provider's `4xx` reaches a host as `500 internal`** rather than `502 provider_error`, and a webhook about a customer not yet linked (`PUT /v1/admin/customers`) is ignored.
 - **Not load tested, not security reviewed, runbook not exercised.** The scale envelope states targets, the security checklists have not been executed, and [docs/operations.md](docs/operations.md) is written from reasoning.
 - **A GDPR erasure story** is designed nowhere yet. The billing tables hold `billing_email` and `actor_id`, and ledger rows must survive an erasure request for audit, so the answer is pseudonymization rather than deletion.
-- **Dunning's `suspend-after` is read by nothing** until entitlements exist.
+- **Dunning's `suspend-after` is read by nothing.** Entitlements lapse when the grace window ends; no suspension stage after it is built.
 - **One Postgres connection per shard** per `payment-worker`, so a worker at 256 shards needs about 272.
 
 * * *
@@ -657,7 +664,7 @@ design-system/         the credits screen design (the UI itself is not built)
 |---|---|
 | Every call is `401 unauthenticated` | `PAYMENT_SERVICE_TOKENS` is empty (it accepts no caller), or the digest in it is not the SHA-256 of the token you send. Redo [Quickstart](#-quickstart) step 1 |
 | `403 forbidden`: the credential holds `record`, the call needs `grant` (or `admin`) | Use the token that carries that privilege; there is one per privilege on purpose |
-| `503 quota_unavailable` from `/v1/admit` | A seeded ceiling is sized by an entitlement and none is wired. Quickstart step 3 gives it a fixed size |
+| `503 quota_unavailable` from `/v1/admit` | A ceiling is sized by an entitlement that could not be resolved: the database the entitlements are read from is unreachable (`entitlement_decisions_total{outcome="error"}` rises). It is never treated as unlimited |
 | `402 payment_required` from `/v1/admit` | The scope has no credit. Grant some, or complete a purchase |
 | `422 stale_event` from `/v1/record` | `occurred_at` is older than the usage window (71h by default). Use the time the work happened, which must be recent |
 | `400 invalid_request: actor is required` on an admin write | Admin writes take `actor` and `reason` in the body |

@@ -32,9 +32,9 @@ else**, and saying so is more useful than pretending otherwise:
 
 ## Phase 1 — Metering, credits & payment collection
 
-**Status: in progress — the foundation, the metering core, the transports and the payment pipeline (webhook door, processor, Stripe/Polar/PayPal adapters, auto top-up) are built and verified; the payment `/v1` routes, the admin API and a first sandbox rehearsal are done too; entitlements, outbound events, the operational surface and the UI are not.** → [specs/001-metering-billing-core](specs/001-metering-billing-core/)
+**Status: in progress — the foundation, the metering core, the transports and the payment pipeline (webhook door, processor, Stripe/Polar/PayPal adapters, auto top-up) are built and verified; the payment `/v1` routes, the admin API and a first sandbox rehearsal are done too, and so are the entitlements (REST, gRPC, the cache and the plan-sized ceilings); outbound events, the operational surface and the UI are not.** → [specs/001-metering-billing-core](specs/001-metering-billing-core/)
 
-Tasks: 154 of 197 done (specs/001-metering-billing-core/tasks.md) — counted by `scripts/check-spec-drift.sh`, which fails CI when this line and the task list disagree.
+Tasks: 166 of 197 done (specs/001-metering-billing-core/tasks.md) — counted by `scripts/check-spec-drift.sh`, which fails CI when this line and the task list disagree.
 
 Prepaid credits in pools, exact rational pricing, the admission gate with subject- and plan-sized
 ceilings, the single durable writer with a per-scope sequence watermark, cluster-safe hot-path
@@ -53,7 +53,7 @@ all in CI.
 **A service for the metering core.** `cmd/paymentd` serves it over gRPC and REST behind a service credential
 (mTLS or bearer), with an OpenAPI document and clients generated from it, and `cmd/payment-worker` is the sole
 durable writer; `make up` runs both beside Postgres and Redis, and the Playwright suite passes against the built
-image. It serves metering and payments — no entitlements.
+image. It serves metering, payments and entitlements.
 
 **Payments, served.** `paymentd` mounts `POST /webhooks/{provider}/{account}` (signature only: no JWT, no CORS) and
 `payment-worker` fulfils what it accepts. A verified delivery is persisted to a Postgres inbox before it is acknowledged
@@ -114,9 +114,11 @@ Tracked openly rather than discovered later.
 
 | Gap | Phase | Note |
 |---|---|---|
-| **No entitlements** | 1 | `paymentd` and `payment-worker` serve the metering engine, the payment pipeline behind the webhook route, the host's payment `/v1` routes and the admin API; there are no entitlements, operational surface or UI yet (`entitlement/` and `events/` are stubs). `payment-worker` drains the Redis outbox only — the JetStream intent path exists in the engine and is refused by the binary — and holds one Postgres connection per shard it owns. The Go Redis adapter loads `hot_path.lua` unchanged, so the cluster-mode verification of the reference functions stays meaningful |
+| **No outbound events, operational surface or UI** | 1 | `paymentd` and `payment-worker` serve the metering engine, the payment pipeline behind the webhook route, the host's payment `/v1` routes, the admin API and the entitlements; there is no outbound-event delivery, operational surface (ticks, DLQ, admin operations, `usage_daily`) or UI yet (`events/` is a stub). `payment-worker` drains the Redis outbox only — the JetStream intent path exists in the engine and is refused by the binary — and holds one Postgres connection per shard it owns. The Go Redis adapter loads `hot_path.lua` unchanged, so the cluster-mode verification of the reference functions stays meaningful |
+| No admin API for entitlements | 1 | Keys, plans' entitlements, the free tier and overrides are SQL rows today. Each write is audited by the database and an override is refused without a reason and an actor, however it is written; `Overrides.Put` exists as a use case and nothing serves it. `/v1/admin/entitlement-keys` and `/v1/admin/entitlements/override` ([rest-api.md](specs/001-metering-billing-core/contracts/rest-api.md)) are designed, not built |
+| An abandoned cache group stops the bus trimming | 1 | Each `paymentd` replica subscribes to the announcements that evict its entitlement cache under a group of its own (`entitlement-cache-<PAYMENT_INSTANCE_ID>`, the hostname if unset). A bus stream is only trimmed up to what every group has acknowledged, so a group left by a replica retired for good holds it open until it is deleted ([docs/operations.md](docs/operations.md)). Nothing deletes one automatically |
 | Provider adapters partly rehearsed | 1 | Rehearsed once against the Stripe and Polar sandboxes and PayPal's sandbox and webhook simulator ([docs/sandbox.md](docs/sandbox.md)). **Still owed before a real order:** PayPal with a buyer approving an order — the v2 capture, refund and reversal shapes, whether `total_refunded_amount` is on every refund, whether a wallet order auto-captures with `ORDER_COMPLETE_ON_PAYMENT_APPROVAL`; a paid Polar order, refund and renewal; PayPal subscriptions; Stripe test clocks (dunning and grace over real time); and a live-mode account's own settings. Polar and PayPal cannot charge a saved method, so auto top-up works on Stripe only; PayPal's `PAYMENT.SALE.REFUNDED` is ignored |
-| Saved payment method not captured automatically | 1 | A `setup` checkout saves a method at the provider, but nothing reads it back into the auto top-up instruction: the host passes `payment_method_ref` to `PUT /v1/auto-recharge` itself. Also: no admin API for entitlements (Phase 4), a provider's 4xx reaches a host as `500 internal` rather than a `502 provider_error`, and a webhook about a customer not yet linked (`PUT /v1/admin/customers`) is ignored |
+| Saved payment method not captured automatically | 1 | A `setup` checkout saves a method at the provider, but nothing reads it back into the auto top-up instruction: the host passes `payment_method_ref` to `PUT /v1/auto-recharge` itself. Also: a provider's 4xx reaches a host as `500 internal` rather than a `502 provider_error`, and a webhook about a customer not yet linked (`PUT /v1/admin/customers`) is ignored |
 | Post-paid invoicing | 2 | Designed, not built |
 | Coupons, discounts, trials, quantity subscriptions | 2 | Designed in 002; absent from 001 |
 | Invoice generation | 2 | Phase 1 collects payments; it issues no invoices |
