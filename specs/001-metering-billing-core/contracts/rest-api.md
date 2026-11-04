@@ -53,8 +53,28 @@ Errors added by these routes (additive within `/v1`): `404 unknown_account` (the
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/v1/entitlements` | Every effective grant with provenance |
-| POST | `/v1/entitlements/check` | Batch: `{scope, checks:[{key, current?, delta?}]}` → per-key `Decision` |
+| GET | `/v1/entitlements` | Every effective grant with provenance: `?scope_kind=&scope_id=[&scope_realm=]` → `{data:[{key, kind, value, source, expires_at?, reason}]}`, ordered by key |
+| POST | `/v1/entitlements/check` | Batch: `{scope, checks:[{key, current?, delta?}]}` → `{data:[{key, kind, allowed, value, limit?, current?, remaining?, reason, upgrade_path}]}`, one per check, in order |
+
+Served by `paymentd` behind the credential with the `record` privilege (`entitlement/adapters/driving/entitlementhttp`; the
+operations are marked `x-served-by: entitlement` in the OpenAPI document). The REST bodies render the same messages as the gRPC
+service ([`api/proto/entitlement/v1`](../../../api/proto/entitlement/v1/entitlement.proto)), with one difference that is
+deliberate: 64-bit integers are JSON **numbers**, not the strings proto3 JSON would make of them, because `-1` on a quota is
+**unlimited** and `"-1"` is not.
+
+- **A batch is answered from one resolution**, every key in the order given. A key the realm never declared is **denied inside
+  the batch** (`allowed: false`, `kind: ""`, a `reason` that names it) and is not an error. A refusal's `reason` is written for
+  a person and `upgrade_path` names the plan *further up the catalogue* that would permit it, empty when none would (and always
+  empty when the refusal is an override's — no plan outranks one).
+- `current` is the host's own count (the host owns its counts); with none, a quota is only asked whether it is granted and how
+  large (`limit`), and `current`/`remaining` are **absent**, not zero. `delta` defaults to one more and needs a `current`. `-1` in
+  `value`, `limit` and `remaining` is unlimited.
+- 1 to 100 checks, a key of 1 to 128 bytes, no negative count; anything else refuses the **whole** batch with `400 invalid_request`.
+- The realm is the credential's: a scope naming none gets the credential's only realm; a credential spanning several must be
+  told which (`400`); a realm outside it is `403 realm_mismatch`. A call no credential reached is `401`.
+- **A batch that cannot be answered is refused whole: `503 unavailable`, with fixed text and no decisions** — never some keys
+  permitted. The cause goes to the operator's log and not to the caller. Anything the door does not name is `500 internal`.
+- Every answer is `Cache-Control: no-store`.
 
 ## Events
 
@@ -137,6 +157,7 @@ One shape everywhere:
 | 499 | `cancelled` | the caller went away; the engine saw it go |
 | 500 | `internal` | anything the table does not name. The message is fixed text; the error is in the operator's log |
 | 503 | `hot_store_unavailable` | `Admit` under `fail_closed` with the shard unavailable; any `Grant` or `Transfer` while the hot tier is (`Record` defers instead). A cold shard, a frozen shard, a full outbox and a cold account are all this to a REST caller |
+| 503 | `unavailable` | the entitlements could not be resolved (`/v1/entitlements`, `/v1/entitlements/check`). Fixed text; never "entitled" and never "not entitled" |
 | 503 | `quota_unavailable` | a limit sized by an entitlement that could not be resolved. Never treated as "unlimited" |
 | 504 | `deadline_exceeded` | the caller's deadline passed |
 

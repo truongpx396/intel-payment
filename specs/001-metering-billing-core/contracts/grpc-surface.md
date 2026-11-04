@@ -19,7 +19,7 @@ snapshots, configuration and operations.
 |---|---|---|
 | `metering.v1.Metering` | `Admit`, `Record`, `GetBalance`, `Grant`, `Transfer` | `Grant` and `Transfer` are **privileged** and separated at the RPC level, so a compromised spend producer can debit but never mint or move credits |
 | `billing.v1.Billing` | `ListPlans`, `CreateCheckout`, `GetSubscription`, `ChangePlan`, `Cancel`, `GetPortal`, `GetAutoRecharge`, `PutAutoRecharge`, `ListPayments`, `GetFulfilment` | No webhook RPC: providers speak HTTP, and the raw body must survive verification untouched |
-| `entitlement.v1.Entitlement` | `Check`, `Resolve` | `Check` is batched — a page render asks about several capabilities at once |
+| `entitlement.v1.Entitlement` | `Check`, `Resolve` | `Check` is batched — a page render asks about several capabilities at once — and an unknown key is denied inside the batch, not an error. Served by `paymentd` on the same listener and behind the same credential as `metering.v1`, with `record`; the realm is the credential's. `INVALID_ARGUMENT` for a batch that is not a question, `PERMISSION_DENIED` for a realm outside the credential, `UNAVAILABLE` (fixed text, no decisions) when the entitlements could not be resolved; each carries an `ErrorInfo` whose `reason` is the REST error code. [`entitlement.proto`](../../../api/proto/entitlement/v1/entitlement.proto) |
 | `events.v1.Events` | `List` | The event feed ([outbound-events.md](./outbound-events.md)) for gRPC-native hosts |
 
 Configuration and operations are REST-only (`/v1/admin/*`): they are low-frequency, human-driven
