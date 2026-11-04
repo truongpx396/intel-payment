@@ -149,7 +149,16 @@ Read by `paymentd`, which serves the host's `/v1` payment routes (plans, checkou
 | Variable | Default | Notes |
 |---|---|---|
 | `PAYMENT_DUNNING_GRACE_DAYS` | `7` | `payment-worker`: entitlements hold this long after a failed payment. A whole number of days, 1–365; `0` would silently become the default, so it is refused |
-| `PAYMENT_DUNNING_SUSPEND_AFTER_DAYS` | `14` | Suspension after grace. **Not read yet** — entitlements are Phase 4 |
+| `PAYMENT_DUNNING_SUSPEND_AFTER_DAYS` | `14` | Suspension after grace. **Not read**: entitlements lapse when the grace window ends, and no suspension stage after it is built |
+
+### Entitlements
+
+What a plan unlocks — keys, the plans' entitlements, the free tier, overrides — is data behind the database, not configuration. Two settings remain:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PAYMENT_ENTITLEMENT_CACHE_TTL` | `30s` | `paymentd`: how long a resolution is kept. It is what a **lost announcement costs** — a change is normally visible at once, evicted by `<prefix>.entitlement.<tag>` and `<prefix>.config.<realm>` — so it is bounded: at most `10m`. An entry never outlives the grace window or the override expiry it was built from, whatever this is. `0s` turns the cache off and every check reads the database |
+| `PAYMENT_INSTANCE_ID` | the hostname | `paymentd`: this replica's name, which names its bus subscription `entitlement-cache-<id>`. **Every replica needs its own, and it must be stable across restarts** — a shared name would hand each announcement to one replica, and a bus stream is only trimmed up to what every group has acknowledged. 1–63 letters, digits, `.`, `_` or `-`, starting with a letter or digit. A hostname that changes on every restart (a container id) leaves a group behind each time; set this ([operations](operations.md#retiring-a-paymentd-replica)) |
 
 ### Retention
 
@@ -172,7 +181,7 @@ Read by `paymentd`, which serves the host's `/v1` payment routes (plans, checkou
 | `PAYMENT_TLS_CERT_FILE` / `PAYMENT_TLS_KEY_FILE` | — | PEM files. With both, REST and gRPC serve TLS; one without the other stops the service at start-up. Required by `mtls` |
 | `PAYMENT_TLS_CLIENT_CA_FILE` | — | `mtls` only: the private CA a caller's certificate must chain to. A certificate is requested of every caller and verified when offered, so a probe with none can still reach `/healthz` and `/readyz`; `/v1/*` then refuses the call as `401` |
 | `PAYMENT_LEGACY_429_FOR_LIMITS` | `false` | Restores `429` instead of `409` for spent windows, for a host mid-migration |
-| `PAYMENT_SHUTDOWN_TIMEOUT` | `30s` | How long a stop waits for the calls in flight. On `SIGTERM` both listeners stop taking new calls at once, then what was taken is answered (a `Record` settles or is journalled); past this bound the rest is cut, the exit code is 1, and the log says calls were in flight — their callers retry with the same `Idempotency-Key`, which is booked once. Must be positive. Set it above the longest deploy-time call (`PAYMENT_RECORD_TIMEOUT` is the usual bound) and below the orchestrator's kill grace period |
+| `PAYMENT_SHUTDOWN_TIMEOUT` | `30s` | How long a stop waits for the calls in flight. On `SIGTERM` both listeners stop taking new calls at once, then what was taken is answered (a `Record` settles or is journalled); past this bound the rest is cut, the exit code is 1, and the log says calls were in flight — their callers retry with the same `Idempotency-Key`, which is booked once. A stop can take up to one second longer than this: the entitlement cache's subscription is given that long to stop, then abandoned with a warning. Must be positive. Set it above the longest deploy-time call (`PAYMENT_RECORD_TIMEOUT` is the usual bound) and below the orchestrator's kill grace period |
 | `PAYMENT_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error`. Logs are JSON on stderr; `listening` reports the address each transport bound |
 
 An address is `host:port`, or `unix:/path` for a unix socket. `paymentd` reads all of this at start, checks the

@@ -27,8 +27,9 @@ journals to Postgres and answers `202`, which a service pulled out of rotation c
 **Stopping.** `paymentd` on `SIGTERM` closes its listeners at once and answers the calls it already took (a
 `Record` settles or is journalled) up to `PAYMENT_SHUTDOWN_TIMEOUT`; past that it cuts the rest, exits 1 and says so,
 and the caller retries with the same `Idempotency-Key`, which is booked once. `payment-worker` finishes the batch in
-hand, then releases each shard by name, so a replica takes them over within `PAYMENT_OWNERSHIP_RETRY`. Set the
-orchestrator's kill grace period above `PAYMENT_SHUTDOWN_TIMEOUT`. A worker that is killed instead of stopped loses
+hand, then releases each shard by name, so a replica takes them over within `PAYMENT_OWNERSHIP_RETRY`. It then closes the entitlement cache's bus subscription, waiting up to one more second: a subscription stuck behind a Redis that is not
+answering is logged (`did not stop in time`) and left to the exit, so a stalled Redis cannot hold a stop longer than that. Set the
+orchestrator's kill grace period above `PAYMENT_SHUTDOWN_TIMEOUT` plus a second. A worker that is killed instead of stopped loses
 its locks with its connections; whatever it had been handed and not acknowledged is claimed by the next worker after
 `PAYMENT_BUS_ACK_WAIT`, and booked once.
 
@@ -223,6 +224,68 @@ so the service keeps accepting usage, but the hot path has effectively become `j
 2. Is a consumer stalled? Un-acked entries are **never** trimmed. Fix the drainer first.
 3. **Do not `XTRIM` by hand.** Un-acked entries are money intents; the only correct order is drain, then trim.
 4. If memory is genuinely critical, raise `maxmemory` — never change the eviction policy.
+
+A stream that will not trim although every worker is healthy has a group nobody reads: see
+[Retiring a paymentd replica](#retiring-a-paymentd-replica).
+
+## Alert: entitlement checks failing
+
+`entitlement_decisions_total{outcome="error"}` is rising: the entitlements could not be resolved, so hosts are being
+told to deny (`503 unavailable`, never "entitled" and never "not entitled") and any limit sized by a plan answers
+`503 quota_unavailable` (or is uncapped under `AdmitFail=fail_open` — `metering_admit_fail_open_total` says so).
+
+1. **It is the database `paymentd` reads entitlements from.** Check Postgres reachability and the pool first; the cause is in
+   `paymentd`'s log (`entitlements could not be resolved`), and the response deliberately names none of it.
+2. A warm cache entry is served through the outage until `PAYMENT_ENTITLEMENT_CACHE_TTL` (default 30 s); a rising error
+   rate begins after that. It is not a sign the cache is broken.
+3. Nothing to repair in the entitlements themselves: when the database is back, the next check succeeds.
+
+## Alert: entitlement values its key cannot hold
+
+`entitlement_invalid_total` is non-zero: a stored grant was **skipped** (never granted) because its key cannot hold it — a
+key the realm never declared, a value of the wrong kind, or an enum member the key never ranked. The `source` label says
+whether it was a `default`, a `subscription` plan row or an `override`.
+
+1. Find it: `SELECT * FROM plan_entitlements e JOIN plans p ON p.id = e.plan_id WHERE e.feature_key NOT IN (SELECT key FROM entitlement_keys WHERE realm = p.realm);`
+   (and the same over `realm_defaults` and `entitlement_overrides`).
+2. Declare the key, or fix the row. The level below answered in the meantime — a customer may be on the free tier's value —
+   so this is a customer-visible fault, not just untidiness.
+
+## Alert: a replica's entitlement cache is not hearing announcements
+
+`entitlement_cache_invalidations_total` is flat at zero over a day that had subscription changes, or a customer reports that
+a plan change took minutes to apply. A lost announcement costs the cache TTL and no more, so nothing is *wrong* — but the
+replica is serving up to `PAYMENT_ENTITLEMENT_CACHE_TTL` behind.
+
+1. Is the replica's group alive? `redis-cli XINFO GROUPS <prefix>:events` lists `entitlement-cache-<id>|<prefix>.entitlement.>`
+   and `…|<prefix>.config.>` for each replica, with `lag` and `pending`.
+2. Are *configuration* changes reaching the bus? That is `payment-worker`'s config relay. It never stops the worker — it is a
+   freshness hint and the worker books money — so one that cannot start is logged as an `ERROR` (`config relay cannot start:
+   a configuration change reaches every replica's cache only when its TTL passes`) and retried every 1–30 s; a publication it
+   could not make is logged as `config relay`. Grep the worker's log for both. Without the relay only subscription changes and
+   override writes evict a cache; a change made by SQL waits for the TTL.
+3. Two replicas with the same `PAYMENT_INSTANCE_ID` share a group and **each hears half the announcements**. Give each its own.
+
+## Retiring a paymentd replica
+
+Each replica subscribes to the entitlement announcements under a group of its own, `entitlement-cache-<PAYMENT_INSTANCE_ID>`
+(the hostname when unset), so that every replica hears every announcement. The name must be stable across restarts.
+
+A bus stream is only trimmed up to what **every** group has acknowledged. A replica retired for good leaves its two groups
+behind, never acknowledging again, and the stream stops trimming — the symptom is
+[stream length approaching the cap](#alert-stream-length-approaching-the-cap) with healthy workers. Nothing deletes a group
+automatically. After scaling a replica away for good:
+
+```bash
+redis-cli XINFO GROUPS billing:events | grep entitlement-cache-          # find its groups
+redis-cli XGROUP DESTROY billing:events 'entitlement-cache-<id>|billing.entitlement.>'
+redis-cli XGROUP DESTROY billing:events 'entitlement-cache-<id>|billing.config.>'
+```
+
+A replica that restarts under the same id reuses its groups and loses nothing. One that restarts under a **new** name (a
+container id as the hostname) abandons a pair each time: set `PAYMENT_INSTANCE_ID` to something stable, such as the pod name
+of a StatefulSet. A brand-new group reads the stream from its beginning, which only evicts an empty cache and costs nothing.
+Under JetStream the same applies to the durable consumers named for the group.
 
 ## Alert: rows in a DEFAULT partition
 
