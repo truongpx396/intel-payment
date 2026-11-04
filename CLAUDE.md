@@ -14,7 +14,7 @@ payment pipeline is built and served with them: `paymentd` mounts `POST /webhook
 and the auto top-up subscription (`cmd/internal/payments`). The host's payment routes (`/v1/plans`, `/v1/checkout`,
 `/v1/subscription*`, `/v1/portal`, `/v1/auto-recharge`, `/v1/payments`, `/v1/fulfilment`) and the admin API (`/v1/admin`: provider
 accounts, plans, the provider's prices, customers) are served by `paymentd` (`billing/adapters/driving/paymenthttp`).
-`entitlement/` and `events/` are still `doc.go` stubs, and there is no UI. The provider adapters have met their sandboxes once
+`entitlement/` is built as far as the domain, an `Entitler` that resolves `override > subscription > default`, and its PostgreSQL store and no binary serves it yet; `events/` is still a `doc.go` stub, and there is no UI. The provider adapters have met their sandboxes once
 ([docs/sandbox.md](docs/sandbox.md)), not a buyer approving a PayPal order, a paid Polar order or a live account. Do not write code,
 docs or comments that imply more or less than that.
 
@@ -24,7 +24,7 @@ docs or comments that imply more or less than that.
 |---|---|
 | `metering/` | The engine, standalone and portable. `domain` → `ports` → `app` → `adapters/{driven,driving}`; `contracts/` holds the conformance suites |
 | `billing/` | The payment layer: `domain` → `ports` → `app` → `adapters/{driven (postgres, stripe, polar, paypal), driving (webhookhttp, paymenthttp)}`, and its `contracts/`. It depends on metering's *ports* only |
-| `entitlement/` `events/` `api/` | Designed; `entitlement/` and `events/` are still `doc.go` stubs. They may depend on metering's *ports* only |
+| `entitlement/` `events/` `api/` | Designed; `entitlement/` is built as far as the domain, an `Entitler` that resolves `override > subscription > default`, and its PostgreSQL store and not yet served, `events/` is still a `doc.go` stub. They may depend on metering's *ports* only |
 | `migrations/` `migrate/` `cmd/payment-migrate` | Forward-only schema and its migrator |
 | `specs/001-metering-billing-core/` | `spec`, `plan`, `tasks`, `design-decisions`, and the normative `contracts/` |
 | `specs/002-postpaid-invoicing/` | Phase 2 — designed, not built; its schema is a draft that never ships from `migrations/` |

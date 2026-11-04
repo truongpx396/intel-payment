@@ -31,6 +31,8 @@ GRANT SOURCES                         └─────────────
 
 One seam a host swaps: the **`EntitlementStore`**. Everything else is evaluation, and evaluation is deliberately dull — a capability check that is clever is a capability check nobody can predict.
 
+**Layout.** `entitlement/domain` (the vocabulary and the arithmetic) → `entitlement/ports` → `entitlement/app` (resolution, the `Entitler`) → `entitlement/adapters/driven/postgres`, one direction, enforced by `go-arch-lint` and `depguard` as the engine's and the payment layer's are. `entitlement/contracts` holds the conformance suites and the in-memory store they first run on. The layer reaches metering through its *ports* and the payment layer **not at all**: the two share a database schema, never a package, so the payment layer's rule for which subscriptions entitle a scope (`Sub.HoldsEntitlements`) is restated in `entitlement/domain` (`Subscription.Holds`) and a parity test holds the two together.
+
 ---
 
 ## Domain types
@@ -86,7 +88,51 @@ type Grant struct {
 	ExpiresAt *time.Time // nil = as long as its source lives
 	Reason    string     // required for FromOverride: who approved it and why
 }
+
+// KeyDecl declares a capability to a realm: its kind and, for an enum, its ranking from lowest to highest.
+type KeyDecl struct {
+	Key       Key
+	Kind      Kind
+	EnumOrder []string // lowest to highest; enums only
+}
+
+// Subscription is the part of a scope's paid plan that decides what it is entitled to.
+type Subscription struct {
+	PlanCode   string
+	Status     SubStatus // trialing | active | past_due | paused | canceled | incomplete
+	GraceUntil *time.Time
+}
+
+// Offer is a plan a realm sells, with what it unlocks: where a refusal looks for the plan that would permit what was asked.
+type Offer struct {
+	PlanCode     string
+	Entitlements []Entitlement
+}
+
+type Decision struct {
+	Allowed   bool
+	Limit     int64  // -1 = unlimited
+	Current   int64
+	// Remaining is the room left once the requested delta is taken; a refusal leaves the room it found, never below zero.
+	// -1 when unlimited.
+	Remaining int64
+	// Reason is set when refused, and is written for a HUMAN: "Your "team" plan includes 25 seats; you have 25 and asked for 1
+	// more." An entitlement refusal the user cannot act on is an outage to them.
+	Reason string
+	// UpgradePath is the plan code that would permit it, when one exists. This is what makes a refusal a sales moment rather
+	// than a dead end.
+	UpgradePath string
+}
 ```
+
+The pure rules live in the domain, where they can be held to properties (`entitlement/domain`, fuzzed against `math/big`):
+
+- `Value.Admits(current, delta)` decides `current + delta <= limit` as `delta <= limit - current`, so a sum no `int64` can hold is **refused, never wrapped**. Unlimited admits any count. A count already over the limit (the plan shrank under it) is refused even for a delta of zero. A negative count, or a value that is not a quota, is `ErrInvalid`.
+- `KeyDecl.Merge(a, b)` joins two values for one key at one level: a flag ORs, a quota takes the maximum with **unlimited above every number**, an enum takes the highest-ranked member of the declared order. An unset side contributes nothing — it is not zero and it is not unlimited. The join is commutative, associative and idempotent.
+- `KeyDecl.Check(v)` — a value is only meaningful against its declaration: the kind must match and an enum member must be ranked.
+- `Subscription.Holds(now)` — `active` and `trialing` hold; `past_due` holds until the instant `GraceUntil` and not after; everything else holds nothing.
+
+Errors: `ErrInvalid` is the engine's (a malformed key, value or grant; asking a key the wrong kind of question; an override with no reason — `ErrReasonRequired` — are all the caller's mistake, 400). `ErrUnavailable` is an entitlement that could not be resolved (the store did not answer): never "not entitled" and never "entitled", 503, with the cause wrapped for the operator.
 
 ---
 
@@ -123,44 +169,41 @@ type Entitler interface {
 	Resolve(ctx context.Context, s domain.Scope) ([]domain.Grant, error)
 }
 
-type Decision struct {
-	Allowed   bool
-	Limit     int64  // -1 = unlimited
-	Current   int64
-	Remaining int64  // -1 when unlimited
-	// Reason is set when refused, and is written for a HUMAN: "Team plan includes 25 seats;
-	// you have 25." An entitlement refusal the user cannot act on is an outage to them.
-	Reason string
-	// UpgradePath is the plan code that would permit it, when one exists. This is what makes
-	// a refusal a sales moment rather than a dead end.
-	UpgradePath string
-}
+// Decision is entitlement/domain.Decision, above.
 ```
+
+**Failing closed, on every method.** A key the realm never declared is `false` / `!ok` with **no error** (invariant 1); a store that cannot answer is an error wrapping `ErrUnavailable` and never a permit (invariant 2); asking a key the wrong kind of question — `Allowed` of a quota, `Quota` of a flag — is `ErrInvalid`, never a guess. `Consume` of a key nothing grants is a *refusal* that says why and, when a plan would grant it, names that plan.
+
+**The `UpgradePath`** is the first plan in the catalogue (`Plans`, in catalogue order) other than the one the scope holds whose quota for the key would permit the request — unlimited, or large enough for `current + delta`. A refusal whose limit comes from an **override** names none: an override outranks every plan, so upgrading would not lift it.
 
 ## Port: `EntitlementStore`
 
 ```go
 type EntitlementStore interface {
-	// PlanEntitlements are the benefits attached to a plan — data, versioned with the plan.
-	PlanEntitlements(ctx context.Context, realm domain.Realm, planCode string) ([]domain.Entitlement, error)
-	// Overrides are per-scope exceptions (a sales deal, a trial extension, a comp account).
-	Overrides(ctx context.Context, s domain.Scope) ([]domain.Grant, error)
+	// Keys are the realm's declared capabilities, with each enum's ranking exactly as declared (lowest to highest).
+	Keys(ctx context.Context, realm domain.Realm) ([]domain.KeyDecl, error)
 	// Defaults are the realm's free tier: what a scope with no subscription gets.
 	Defaults(ctx context.Context, realm domain.Realm) ([]domain.Entitlement, error)
-	// PutOverride writes an exception. It REQUIRES a reason and an actor; the database's audit
-	// trigger records it in the same transaction (metering invariant 18) — an unexplained override
-	// is indistinguishable from a bug, and is usually discovered during a revenue investigation.
+	// PlanEntitlements are the benefits attached to a plan — data, versioned with the plan. A plan taken off sale still
+	// answers for its subscribers; an unknown code has none, and is not an error.
+	PlanEntitlements(ctx context.Context, realm domain.Realm, planCode string) ([]domain.Entitlement, error)
+	// Overrides are per-scope exceptions (a sales deal, a trial extension, a comp account), expired ones included: whether an
+	// override still applies is decided at the instant of the question, from the clock the Entitler was given.
+	Overrides(ctx context.Context, s domain.Scope) ([]domain.Grant, error)
+	// Subscription is the scope's LIVE subscription (trialing, active, past_due or paused), if it has one; a canceled or
+	// incomplete one is not live. Whether a live one entitles anything is Subscription.Holds, decided at the instant of the
+	// question.
+	Subscription(ctx context.Context, s domain.Scope) (domain.Subscription, bool, error)
+	// Plans are the subscription plans the realm sells, in catalogue order (sort_order, then code), with what each unlocks.
+	Plans(ctx context.Context, realm domain.Realm) ([]domain.Offer, error)
+	// PutOverride writes an exception. The database's audit trigger records who, what, why and when in the same transaction
+	// (metering invariant 18) — an unexplained override is indistinguishable from a bug, and is usually discovered during a
+	// revenue investigation.
 	PutOverride(ctx context.Context, g domain.Grant, actor string) error
-	// Keys are the realm's declared capabilities (entitlement_keys), with each enum's ranking.
-	Keys(ctx context.Context, realm domain.Realm) ([]KeyDecl, error)
-}
-
-type KeyDecl struct {
-	Key       domain.Key
-	Kind      domain.Kind
-	EnumOrder []string // lowest to highest; enums only
 }
 ```
+
+`Subscription` and `Plans` were missing from the first draft of this port: without them an `Entitler` could not know a scope's plan, whether a grace window had closed, or which plan a refusal should point at. Every read is by realm or by scope and never crosses a realm (invariant 10). The PostgreSQL store reads the payment layer's `subscriptions` and `plans` tables and imports none of its code.
 
 ## Adapter: metering's `QuotaSource` — plan-sized ceilings
 
@@ -196,7 +239,13 @@ override  >  subscription  >  default
 2. **Subscription** next. `past_due` within `GraceUntil` still counts (payments invariant 13); past the grace window it does not.
 3. **Default** last — the free tier.
 
-Within one level, for the same key: a **flag** ORs (any grant enabling it wins), a **quota** takes the **maximum**, and an **enum** takes the highest-ranked member of the host-declared order. Stated explicitly because "two grants for one key" is not hypothetical — it is what a migration between plans looks like for as long as it runs.
+Within one level, for the same key: a **flag** ORs (any grant enabling it wins), a **quota** takes the **maximum**, and an **enum** takes the highest-ranked member of the host-declared order. Stated explicitly because "two grants for one key" is not hypothetical — it is what a migration between plans looks like for as long as it runs. (The shipped schema allows one row per key per level, so a store that honours it never produces two; the rule is what makes any other store deterministic.)
+
+Three more rules, found by writing the suite:
+
+4. **A value its key cannot hold grants nothing.** A stored entitlement for a key the realm never declared, of the wrong kind for its key, or naming an enum member the key never ranked, is skipped — and counted on `entitlement_invalid_total` — so the level below answers. It is never read as permission, and never an error that takes the whole scope down.
+5. **An override ends at its expiry instant**, and nothing announces it: no tick expires an override. An implementation that caches must bound an entry by the earliest expiry it holds.
+6. **A grant held by grace says so.** While a `past_due` subscription holds, its grants report `ExpiresAt = GraceUntil`, so a plan card can say when the plan lapses.
 
 ---
 
@@ -204,7 +253,7 @@ Within one level, for the same key: a **flag** ORs (any grant enabling it wins),
 
 1. **Unknown key ⇒ denied.** A key the realm never declared is `false` / `!ok`, never a permissive default. Typos must fail closed, and they will happen.
 2. **Fail closed on an error.** If the store is unreachable, `Allowed` returns an error and the host denies. There is no `FailOpen` knob here, unlike `Admit`: unmetered *usage* is a bounded, recoverable cost, while an un-gated *capability* can expose another tenant's data. The two failures are not comparable, so they do not share a policy.
-3. **Entitlements are data, never plan-code branches.** No `if plan == "pro"` anywhere — in this repo or in a host. A new plan is rows, not a release.
+3. **Entitlements are data, never plan-code branches.** No `if plan == "pro"` anywhere — in this repo or in a host. A new plan is rows, not a release. `scripts/check-no-plan-branches.sh` fails the build on a comparison of a plan's identity with a string literal, a `switch` on one, or a string-matching helper given one, in production Go; it is shown to reject planted violations by `scripts/verify-boundary.sh`, and a host should run it over its own tree.
 4. **`Consume` never stores usage.** The host owns its own counts. A second count is a second truth.
 5. **Overrides are audited.** Every override write records who, what, why and when, in the same transaction as the override itself — written by the database's audit trigger, so it holds even for a write that bypasses the API.
 6. **`-1` means unlimited, and is handled explicitly.** Never compared numerically, never coerced to a large number, never confused with "unset".
@@ -215,72 +264,44 @@ Within one level, for the same key: a **flag** ORs (any grant enabling it wins),
 
 ---
 
-## Contract-test skeleton
+## Conformance suites
 
-```go
-func EntitlerContract(t *testing.T, e ports.Entitler, fx Fixtures) {
-	ctx := context.Background()
+The skeleton that stood here is now `entitlement/contracts`: two suites that run unchanged against every implementation, each given a constructor and importing no adapter. Each case builds a **fresh world**, so the cases run in parallel and none depends on another's side effects. Each suite is shown to reject deliberately broken implementations **by name** (`Probe`), so "the suite has teeth" is a test result.
 
-	t.Run("unknown key is denied", func(t *testing.T) {
-		ok, err := e.Allowed(ctx, fx.Scope, "no_such_capability")
-		mustNoErr(t, err)
-		if ok { t.Fatal("an undeclared key must fail closed") }
-	})
-	t.Run("store outage denies, never permits", func(t *testing.T) {
-		fx.Store.BreakWith(errors.New("connection refused"))
-		if _, err := e.Allowed(ctx, fx.Scope, "sso"); err == nil {
-			t.Fatal("must surface the error so the host denies (invariant 2)")
-		}
-	})
-	t.Run("override beats subscription", func(t *testing.T) {
-		fx.GivenPlan("free", flag("sso", false))
-		fx.GivenOverride("sso", true, "2026-Q3 enterprise pilot, approved by sales")
-		ok, _ := e.Allowed(ctx, fx.Scope, "sso")
-		if !ok { t.Fatal("a negotiated override must survive the plan") }
-	})
-	t.Run("past_due inside grace keeps entitlements", func(t *testing.T) {
-		fx.GivenSubscription("pro", domain.PastDue, graceUntil(fx.Clock.Now().Add(72*time.Hour)))
-		ok, _ := e.Allowed(ctx, fx.Scope, "sso")
-		if !ok { t.Fatal("a transient decline must not revoke inside the grace window") }
-	})
-	t.Run("past grace falls back to the default tier", func(t *testing.T) {
-		fx.GivenSubscription("pro", domain.PastDue, graceUntil(fx.Clock.Now().Add(-1*time.Hour)))
-		ok, _ := e.Allowed(ctx, fx.Scope, "sso")
-		if ok { t.Fatal("entitlements must lapse once the grace window closes") }
-	})
-	t.Run("quota refusal is actionable", func(t *testing.T) {
-		fx.GivenPlan("team", quota("seats", 25))
-		d, err := e.Consume(ctx, fx.Scope, "seats", 25, 1)
-		mustNoErr(t, err)
-		if d.Allowed { t.Fatal("26th seat on a 25-seat plan must be refused") }
-		if d.Reason == "" { t.Fatal("a refusal with no reason is an unexplained failure (invariant 7)") }
-		if d.UpgradePath == "" { t.Fatal("a refusal with an available upgrade must name it") }
-	})
-	t.Run("unlimited is -1 and is not a number", func(t *testing.T) {
-		fx.GivenPlan("enterprise", quota("seats", -1))
-		d, _ := e.Consume(ctx, fx.Scope, "seats", 1_000_000, 1)
-		if !d.Allowed || d.Remaining != -1 { t.Fatalf("unlimited mishandled: %+v", d) }
-	})
-	t.Run("upgrade is visible immediately, not after a TTL", func(t *testing.T) {
-		fx.GivenPlan("free", flag("sso", false))
-		_, _ = e.Allowed(ctx, fx.Scope, "sso") // warm the cache
-		fx.UpgradeTo("pro")                    // must invalidate
-		ok, _ := e.Allowed(ctx, fx.Scope, "sso")
-		if !ok { t.Fatal("a customer who just paid must not wait out a cache TTL (invariant 9)") }
-	})
-	t.Run("Resolve reports provenance for every grant", func(t *testing.T) {
-		for _, g := range mustResolve(t, e, fx.Scope) {
-			if g.Source == "" { t.Fatalf("grant %q has no source — unanswerable in support", g.Key) }
-			if g.Source == domain.FromOverride && g.Reason == "" { t.Fatal("an override must say why") }
-		}
-	})
-	t.Run("realms do not leak", func(t *testing.T) {
-		fx.GivenPlanInRealm("other", "pro", flag("sso", true))
-		ok, _ := e.Allowed(ctx, fx.Scope, "sso") // fx.Scope is in realm "t1"
-		if ok { t.Fatal("another realm's plan granted a capability here") }
-	})
-}
-```
+**`EntitlerContract(t, mk WorldFactory)`** — the behaviour a host depends on. A `World` holds the `Entitler`, the store beneath it (and a `Breakable` wrapper to take it down), a `Seeder`, a fake clock, a scope in realm `t1`, and `Announce`, which does what the payment layer does after a change — publishes `billing.entitlement.<tag>`.
+
+| Case | Pins |
+|---|---|
+| an undeclared key is denied on every method, and denying it is not an error | invariant 1 |
+| a store outage is an error on every method and never a permit | invariant 2 |
+| an override beats the subscription, whichever way it points | precedence |
+| `past_due` inside the grace window keeps what the plan unlocks | payments invariant 13 |
+| when the grace window closes the scope falls back to the free tier, at that instant | the boundary, to the nanosecond |
+| a canceled, incomplete or paused subscription holds nothing | |
+| a scope with no subscription gets the free tier and nothing else | |
+| a refused quota names why in words a person can act on, and the plan that would permit it | invariant 7 |
+| unlimited is `-1` and is not a number | invariant 6 |
+| an upgrade, an override and a lapse are visible at once, not after a TTL | invariant 9 |
+| `Resolve` reports where every grant came from, and is what the checks enforce | invariants 5, 8 |
+| realms do not leak | invariant 10 |
+| an override ends at its expiry instant, with nobody announcing it | |
+| asking a key the wrong kind of question is an error, never a guess | |
+| a stored value its key cannot hold grants nothing and the lower level answers | |
+
+**`StoreContract(t, mk StoreFactory)`** — what an `EntitlementStore` keeps true whatever it is built on: a realm's keys come back as declared, each enum's order as it was declared and not the alphabet's; keys, defaults, plans and overrides never cross a realm; an override is read back whole and writing it again replaces it (one per scope and key); an override belongs to its scope alone; a scope's subscription is its live one with its grace window, and a canceled one is not live; the plans on sale are listed in catalogue order with what each unlocks and a plan off sale is not listed; a plan taken off sale still entitles its subscribers.
+
+Both run over the in-memory store (`entitlement/contracts`) and over PostgreSQL 16 (`entitlement/adapters/driven/postgres`, integration).
+
+---
+
+## Observability
+
+Part of the contract: a host writes alerts against these names before it reads the code. `ports.MetricCatalog` is held equal to this table by a test, and both processes declare every metric from the first scrape.
+
+| Metric | Kind | Meaning |
+|---|---|---|
+| `entitlement_decisions_total` | counter (`realm`, `outcome`) | `Allowed` and `Consume` by outcome: `allowed`, `denied`, or `error` — the store could not answer and the host denied. A rising `error` rate is an outage of the gate |
+| `entitlement_invalid_total` | counter (`realm`, `source`) | a stored grant skipped because its key cannot hold it (undeclared key, wrong kind, unranked enum member). Never granted; it is a data bug and worth a look |
 
 ---
 

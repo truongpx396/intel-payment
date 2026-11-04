@@ -46,6 +46,9 @@ jobs:
           go-arch-lint check --project-path .
 
       # The gates must FAIL when crossed: plant a violation per rule and expect rejection.
+      - name: No branch on a plan's identity
+        run: scripts/check-no-plan-branches.sh
+
       - name: Boundary gates reject violations
         run: scripts/verify-boundary.sh
 
