@@ -19,7 +19,7 @@ across rate cards over three disjoint unit spaces, so that is a test result rath
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
 > **Status, stated honestly.** The **metering core** and the **payment pipeline** are built, verified in CI and served by
-> two binaries, `paymentd` and `payment-worker`. **Entitlements are partly built** (the domain, an `Entitler` over its PostgreSQL store, override writes that must say who and why, and a cache the bus evicts; no binary serves them yet), and **outbound events, the operational surface and the credits
+> two binaries, `paymentd` and `payment-worker`. **Entitlements are partly built** (the domain, an `Entitler` over its PostgreSQL store, override writes that must say who and why, a cache the bus evicts, and the `QuotaSource` adapter that sizes a limit by plan; no binary serves them yet), and **outbound events, the operational surface and the credits
 > UI are designed, not built** (`events/` is a stub), and **post-paid invoicing**
 > ([Phase 2](specs/002-postpaid-invoicing/)) is designed, not built. The provider adapters have met their sandboxes
 > once ([docs/sandbox.md](docs/sandbox.md)): not a buyer approving a PayPal order, a paid Polar order, or a live account.
@@ -87,7 +87,7 @@ across rate cards over three disjoint unit spaces, so that is a test result rath
 
 **Designed, not built**
 
-- 🎫 **Entitlements**: flags, quotas and enums as data, with `override > subscription > default` precedence and provenance. So far: the domain, an `Entitler` over its PostgreSQL store, override writes that must say who and why, and a cache the bus evicts. No binary serves it yet.
+- 🎫 **Entitlements**: flags, quotas and enums as data, with `override > subscription > default` precedence and provenance. So far: the domain, an `Entitler` over its PostgreSQL store, override writes that must say who and why, a cache the bus evicts, and the `QuotaSource` adapter that sizes a limit by plan. No binary serves it yet.
 - 📣 **Outbound events**: signed, retried webhooks and a cursor feed, so hosts never touch internals.
 - 🖼️ **A credits UI**: balances per pool, ceilings, spend, ledger and plans.
 - 🧾 **Post-paid invoicing**: rating, tiered schedules, commitments, immutable invoices and credit notes ([Phase 2](specs/002-postpaid-invoicing/)).
@@ -629,7 +629,7 @@ design-system/         the credits screen design (the UI itself is not built)
 
 **❌ Not built** (the phases and reasoning are in [ROADMAP.md](ROADMAP.md)):
 
-- **Entitlements.** `entitlement/` is built as far as the domain, an `Entitler` over its PostgreSQL store, override writes that must say who and why, and a cache the bus evicts, and nothing serves it; the schema (migration `0003`) is in, and there is no admin API for them.
+- **Entitlements.** `entitlement/` is built as far as the domain, an `Entitler` over its PostgreSQL store, override writes that must say who and why, a cache the bus evicts, and the `QuotaSource` adapter that sizes a limit by plan, and nothing serves it; the schema (migration `0003`) is in, and there is no admin API for them.
 - **Outbound events.** Signed webhooks and a cursor feed (`events/` is a stub).
 - **The operational surface and the credits UI.**
 - **Post-paid invoicing** ([Phase 2](specs/002-postpaid-invoicing/)), including coupons, discounts, trials, quantity subscriptions and invoice generation. Phase 1 collects payments; it issues no invoices.
