@@ -1,0 +1,93 @@
+// The wire contract of the entitlement layer: what a plan unlocks besides credits, over gRPC.
+//
+// Normative text: specs/001-metering-billing-core/contracts/entitlement-ports.md and grpc-surface.md. The same judgement is
+// served over REST (GET /v1/entitlements and POST /v1/entitlements/check): the REST bodies are this contract's JSON, field for
+// field, and a test holds the two to byte-identical decisions for the same input.
+//
+// -1 on a quota is UNLIMITED. It is a value, not an absence: an absent limit means the question did not measure one.
+//
+// Versioning: additive within v1; a breaking change is a new package (rest-api.md § Versioning).
+syntax = "proto3";
+
+package entitlement.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/truongpx396/intel-payment/api/entitlementv1;entitlementv1";
+
+service Entitlement {
+  // Check answers a batch of questions from one resolution: every key it was given, in the order it was given. A key the realm
+  // never declared is denied inside the batch and is not an error. INVALID_ARGUMENT for a batch that is not a question (none,
+  // more than 100, an empty key, a negative count); UNAVAILABLE when the entitlements could not be resolved — the whole batch,
+  // never some of it.
+  rpc Check(CheckRequest) returns (CheckResponse);
+  // Resolve returns every effective grant with its provenance, ordered by key: the picture a plan card shows and the server
+  // enforces.
+  rpc Resolve(ResolveRequest) returns (ResolveResponse);
+}
+
+// Scope is the billing subject within a realm. Opaque to the service.
+message Scope {
+  string realm = 1; // authenticated, never asserted: outside the credential's realm set it is PERMISSION_DENIED
+  string kind = 2;
+  string id = 3;
+}
+
+// Value is what a scope holds for a key. A flag is a boolean, a quota an integer (-1 is unlimited), an enum a member.
+message Value {
+  oneof kind {
+    bool flag = 1;
+    int64 quota = 2;
+    string enum = 3;
+  }
+}
+
+// Query is one question of a batch.
+message Query {
+  string key = 1;
+  // The host's own count of what it has now. With none, a quota is asked only whether it is granted, and how large.
+  optional int64 current = 2;
+  // How many more, measured against current. One more when left out; meaningful only with current.
+  optional int64 delta = 3;
+}
+
+message CheckRequest {
+  Scope scope = 1;
+  repeated Query checks = 2;
+}
+
+// Decision is the answer to one question.
+message Decision {
+  string key = 1;
+  string kind = 2; // flag | quota | enum; empty for a key the realm never declared
+  bool allowed = 3;
+  Value value = 4; // what the scope holds; absent when nothing grants the key
+  // The quota measured against a count; absent when it was not measured. -1 is unlimited.
+  optional int64 limit = 5;
+  optional int64 current = 6;
+  optional int64 remaining = 7;
+  string reason = 8; // when refused: written for a person. Empty when allowed
+  string upgrade_path = 9; // when refused and a plan further up the catalogue would permit it: its code
+}
+
+message CheckResponse {
+  repeated Decision decisions = 1;
+}
+
+message ResolveRequest {
+  Scope scope = 1;
+}
+
+// Grant is one effective entitlement and where it came from.
+message Grant {
+  string key = 1;
+  string kind = 2;
+  Value value = 3;
+  string source = 4; // default | subscription | override
+  optional google.protobuf.Timestamp expires_at = 5; // absent: as long as its source lives
+  string reason = 6; // an override's: who approved it and why
+}
+
+message ResolveResponse {
+  repeated Grant grants = 1;
+}

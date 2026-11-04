@@ -110,7 +110,7 @@ meter, err := app.New(metering.Config{
     Balance:   redisstore.New(rdb), Books: pgstore.New(db), Journal: pgstore.NewJournal(db),
     Limits:    pgstore.NewLimitStore(db), Pools: pgstore.NewPoolStore(db),
     RateCards: pgstore.NewRateCardStore(db), Bus: redisstreams.New(rdb),
-    Quotas:    entitlementadapter.QuotaSource(entitler),
+    Quotas:    entitlementapp.NewQuotaSource(entitler),
 })
 ```
 

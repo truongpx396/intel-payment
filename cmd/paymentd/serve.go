@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -20,9 +21,11 @@ import (
 	"github.com/truongpx396/intel-payment/billing/adapters/driving/webhookhttp"
 	billingapp "github.com/truongpx396/intel-payment/billing/app"
 	billingports "github.com/truongpx396/intel-payment/billing/ports"
+	"github.com/truongpx396/intel-payment/cmd/internal/entitlements"
 	"github.com/truongpx396/intel-payment/cmd/internal/envcfg"
 	"github.com/truongpx396/intel-payment/cmd/internal/payments"
 	"github.com/truongpx396/intel-payment/cmd/internal/wiring"
+	entports "github.com/truongpx396/intel-payment/entitlement/ports"
 	"github.com/truongpx396/intel-payment/metering"
 	pgarchive "github.com/truongpx396/intel-payment/metering/adapters/driven/archive/postgres"
 	otelmetrics "github.com/truongpx396/intel-payment/metering/adapters/driven/otel"
@@ -156,14 +159,23 @@ func wire(ctx context.Context, s settings, log *slog.Logger, getenv func(string)
 	}
 	svc.closers = append(svc.closers, closeBus)
 
-	metrics, metricsHandler, err := otelmetrics.NewPrometheus(otelmetrics.WithDefs(billingports.MetricCatalog...))
+	metrics, metricsHandler, err := otelmetrics.NewPrometheus(otelmetrics.WithDefs(slices.Concat(billingports.MetricCatalog, entports.MetricCatalog)...))
 	if err != nil {
 		return nil, err
 	}
+	// Entitlements: what a plan unlocks, and — through the same resolution — how large a limit that names one is. Without a source
+	// a limit sized by a plan would answer every Admit with a 503 quota_unavailable.
+	ent, err := entitlements.Open(ctx, entitlements.Common{
+		Pool: st.Pool, Clock: system.Clock{}, Metrics: metrics, Bus: bus, Log: log, Settings: s.Entitlements, SubjectPrefix: cfg.SubjectPrefix,
+	})
+	if err != nil {
+		return nil, err
+	}
+	svc.closers = append(svc.closers, ent.Close)
 	pricers := wiring.Pricers(cfg.MaxOperationAmount)
 	deps := app.Deps{
 		Pricers: pricers, Balance: st.Hot, Books: st.Books, Limits: st.Config, Pools: st.Config, RateCards: st.Config, Journal: st.Journal, Bus: bus,
-		Usage: st.Hot, Ledger: st.Books, Clock: system.Clock{}, IDs: &system.IDs{}, Metrics: metrics,
+		Quotas: ent.Quotas, Usage: st.Hot, Ledger: st.Books, Clock: system.Clock{}, IDs: &system.IDs{}, Metrics: metrics,
 	}
 	if cfg.LedgerGranularity == metering.GranularityRollup {
 		deps.Archive = pgarchive.New(st.Pool)
@@ -207,11 +219,20 @@ func wire(ctx context.Context, s settings, log *slog.Logger, getenv func(string)
 		return nil, err
 	}
 
+	entRoutes, err := ent.REST(log)
+	if err != nil {
+		return nil, err
+	}
+	entRPC, err := ent.GRPC(log)
+	if err != nil {
+		return nil, err
+	}
+
 	handler, err := resthandler.New(resthandler.Config{
 		Meter: engine, Balance: engine, Credits: engine, Ledger: st.Books, Transfers: st.Books, Admin: admin,
 		Auth: s.Authenticator, Clock: system.Clock{}, Logger: log, Legacy429ForLimits: s.Legacy429,
 		Ready: readiness{db: st.DB, ms: st.Migrations, books: st.Books, shards: cfg.Shards}, Metrics: metricsHandler,
-		Extra: append([]resthandler.Route{{Method: http.MethodPost, Path: webhookhttp.Path, Surface: resthandler.Webhook, Handler: door}}, hostRoutes...),
+		Extra: slices.Concat([]resthandler.Route{{Method: http.MethodPost, Path: webhookhttp.Path, Surface: resthandler.Webhook, Handler: door}}, hostRoutes, entRoutes),
 	})
 	if err != nil {
 		return nil, err
@@ -235,6 +256,7 @@ func wire(ctx context.Context, s settings, log *slog.Logger, getenv func(string)
 	}
 	svc.grpc = grpc.NewServer(opts...)
 	rpc.Register(svc.grpc)
+	entRPC.Register(svc.grpc)
 	ok = true
 	return svc, nil
 }

@@ -32,6 +32,14 @@ type Entitler interface {
 	Resolve(ctx context.Context, s md.Scope) ([]domain.Grant, error)
 }
 
+// Checker answers a batch of questions from one resolution: what a page render asks. It is the same judgement as the Entitler's
+// four questions, with a reason and a way out, for any kind of key.
+type Checker interface {
+	// Check answers every question it was given, in order. A key the realm never declared is denied inside the batch and is not
+	// an error; a batch that cannot be answered, or is not a question, is refused whole with no answers.
+	Check(ctx context.Context, s md.Scope, checks []domain.CheckRequest) ([]domain.CheckResult, error)
+}
+
 // EntitlementStore is the one seam a host swaps. Reads are by realm or by scope and never cross a realm (invariant 10).
 type EntitlementStore interface {
 	// Keys are the realm's declared capabilities, with each enum's ranking exactly as declared (lowest to highest).
