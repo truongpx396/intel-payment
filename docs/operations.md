@@ -258,9 +258,11 @@ replica is serving up to `PAYMENT_ENTITLEMENT_CACHE_TTL` behind.
 
 1. Is the replica's group alive? `redis-cli XINFO GROUPS <prefix>:events` lists `entitlement-cache-<id>|<prefix>.entitlement.>`
    and `…|<prefix>.config.>` for each replica, with `lag` and `pending`.
-2. Are *configuration* changes reaching the bus? That is `payment-worker`'s config relay (it exits at start if it cannot
-   `LISTEN`; a publication it could not make is logged as `config relay`). Without it only subscription changes and override
-   writes evict a cache; a change made by SQL waits for the TTL.
+2. Are *configuration* changes reaching the bus? That is `payment-worker`'s config relay. It never stops the worker — it is a
+   freshness hint and the worker books money — so one that cannot start is logged as an `ERROR` (`config relay cannot start:
+   a configuration change reaches every replica's cache only when its TTL passes`) and retried every 1–30 s; a publication it
+   could not make is logged as `config relay`. Grep the worker's log for both. Without the relay only subscription changes and
+   override writes evict a cache; a change made by SQL waits for the TTL.
 3. Two replicas with the same `PAYMENT_INSTANCE_ID` share a group and **each hears half the announcements**. Give each its own.
 
 ## Retiring a paymentd replica
