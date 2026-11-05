@@ -72,13 +72,13 @@ Published by an **external scheduler** onto `billing:ticks`; the `worker` group 
 | `billing.transfer.tick` | re-drives transfers `in_transit` longer than `TransferRedrive` | 1 min |
 | `billing.journal.tick` | replays pending `spend_journal` rows through the hot function | 10 s |
 | `billing.webhook.tick` | processes `received`/`failed` inbox rows due for (re)processing; retries `unverifiable` verification | 10 s — **not published today**: `payment-worker` runs the same work from a timer of its own, `PAYMENT_WEBHOOK_TICK_INTERVAL` (default 5 s), and nothing subscribes to this subject |
-| `billing.outbound.tick` | delivers pending outbound webhooks with backoff | 5 s |
+| `billing.outbound.tick` | delivers pending outbound webhooks with backoff | 5 s — **not published today**: `payment-worker` runs the same work from a timer of its own, `PAYMENT_EVENTS_TICK_INTERVAL` (default 5 s), and nothing subscribes to this subject |
 | `billing.expiry.tick` | expires credit lots, pre-applying the upper bound ([§3](./hot-path-consistency.md#3-the-durable-writer-ordered-batched-idempotent)) | hourly, under `lots_fefo` |
 | `billing.dunning.tick` | suspends subscriptions past `GraceUntil` | hourly |
 | `billing.subdrift.tick` | `FetchSubscription` for locally active subscriptions; repairs divergence — **the backstop for a missed webhook** | daily |
 | `billing.partitions.tick` | creates ledger (monthly) and dedup/archive (daily) partitions ahead of need; alarms on rows in a DEFAULT partition | daily |
 | `billing.idem.purge.tick` | drops `usage_idem` partitions older than `UsageIdemWindow` | daily |
-| `billing.events.purge.tick` | purges `payment_events` past retention (never inside a provider replay window) and delivered outbound events past theirs | daily |
+| `billing.events.purge.tick` | purges `payment_events` past retention (never inside a provider replay window) and delivered outbound events past theirs | daily — **the outbound half is not published today**: `payment-worker` purges events hourly from a timer of its own (`PAYMENT_EVENT_RETENTION`) |
 | `billing.trim.tick` | **Redis Streams only**: trims acked history below the retention floor | hourly |
 
 ---

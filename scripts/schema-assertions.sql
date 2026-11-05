@@ -385,4 +385,26 @@ BEGIN
   PERFORM pg_temp.ok('a dead letter keeps its payload byte for byte');
 END $$;
 
+-- ------------------------------------------------ an outbound event is recorded once and never changes (FR-048)
+DO $$
+BEGIN
+  INSERT INTO outbound_events (id, realm, type, payload, source)
+  VALUES ('0192f3c4-7b1e-7a2c-9d4e-5f6a7b8c9d0e', 'verify', 'credits.low', '{}', 'billing.balance.low.x|1-0');
+  BEGIN
+    INSERT INTO outbound_events (id, realm, type, payload, source)
+    VALUES ('0192f3c4-7b1e-7a2c-9d4e-5f6a7b8c9d0f', 'verify', 'credits.low', '{}', 'billing.balance.low.x|1-0');
+    RAISE EXCEPTION 'FAIL: one source was recorded as two events';
+  EXCEPTION WHEN unique_violation THEN NULL;
+  END;
+  PERFORM pg_temp.ok('an event is recorded once per source: the recorder is idempotent under an at-least-once bus');
+  BEGIN
+    UPDATE outbound_events SET type = 'payment.succeeded' WHERE realm = 'verify';
+    RAISE EXCEPTION 'FAIL: an outbound event was edited';
+  EXCEPTION WHEN integrity_constraint_violation THEN NULL;
+  END;
+  PERFORM pg_temp.ok('an outbound event never changes once written');
+  DELETE FROM outbound_events WHERE realm = 'verify';
+  PERFORM pg_temp.ok('an event can be purged once retention has passed');
+END $$;
+
 DO $$ BEGIN RAISE NOTICE 'baseline assertions passed'; END $$;

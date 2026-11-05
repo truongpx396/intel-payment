@@ -89,7 +89,7 @@ deps:
   # through a Caller the binary implements (so it imports no authenticator), and is mounted by cmd. That the REST and gRPC doors share
   # `entitlementwire` and nothing else of each other is a depguard rule (.golangci.yml).
   entitlement-driving:   { mayDependOn: [ entitlement-domain, entitlement-ports, metering-domain, api, entitlement-driving ] }
-  events:           { mayDependOn: [ metering-domain, api ] }                  # outbound delivery to hosts
+  events:           { mayDependOn: [ metering-domain, metering-ports, events ] }  # outbound delivery to hosts: it reaches metering through its ports (Bus, Clock, Metrics) and nothing else; its own packages layer as the others' do
   # cmd/** includes cmd/internal, the helpers the binaries share (the environment reader, the store wiring), so a
   # binary depends on its own component.
   cmd:              { mayDependOn: [ cmd, metering-domain, metering-ports, metering-config,

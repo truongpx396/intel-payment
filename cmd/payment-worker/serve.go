@@ -9,14 +9,17 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
 	billingports "github.com/truongpx396/intel-payment/billing/ports"
 	"github.com/truongpx396/intel-payment/cmd/internal/entitlements"
 	"github.com/truongpx396/intel-payment/cmd/internal/envcfg"
+	eventsw "github.com/truongpx396/intel-payment/cmd/internal/events"
 	"github.com/truongpx396/intel-payment/cmd/internal/payments"
 	"github.com/truongpx396/intel-payment/cmd/internal/wiring"
+	"github.com/truongpx396/intel-payment/events"
 	"github.com/truongpx396/intel-payment/metering"
 	pgarchive "github.com/truongpx396/intel-payment/metering/adapters/driven/archive/postgres"
 	otelmetrics "github.com/truongpx396/intel-payment/metering/adapters/driven/otel"
@@ -55,7 +58,7 @@ func runWorker(ctx context.Context, s settings, log *slog.Logger, getenv func(st
 		return err
 	}
 	defer closeBus()
-	metrics, metricsHandler, err := otelmetrics.NewPrometheus(otelmetrics.WithDefs(billingports.MetricCatalog...))
+	metrics, metricsHandler, err := otelmetrics.NewPrometheus(otelmetrics.WithDefs(slices.Concat(billingports.MetricCatalog, events.MetricCatalog)...))
 	if err != nil {
 		return err
 	}
@@ -100,6 +103,14 @@ func runWorker(ctx context.Context, s settings, log *slog.Logger, getenv func(st
 
 	dead, err := app.NewDeadLetters(app.DeadLetterDeps{
 		Store: pgadapter.NewDeadLetters(st.Pool, system.Clock{}), Bus: bus, Metrics: metrics, Prefix: cfg.SubjectPrefix,
+	})
+	if err != nil {
+		return err
+	}
+
+	// Outbound events: what the engine announces becomes a signed webhook and a line in the feed.
+	out, err := eventsw.NewWorker(eventsw.WorkerCommon{
+		Pool: st.Pool, Clock: system.Clock{}, Metrics: metrics, Bus: bus, Log: log, Getenv: getenv, Settings: s.Events, Prefix: cfg.SubjectPrefix,
 	})
 	if err != nil {
 		return err
@@ -150,10 +161,20 @@ func runWorker(ctx context.Context, s settings, log *slog.Logger, getenv func(st
 	}
 	defer func() { _ = sweeper.Close() }()
 
+	// Outbound events: what the engine announces becomes a signed webhook and a line in the feed.
+	recorder, err := out.Subscribe(runCtx)
+	if err != nil {
+		return abort(fmt.Errorf("join the announcements that become events: %w", err))
+	}
+	defer func() { _ = recorder.Close() }()
+	delivered := make(chan struct{})
+	go func() { defer close(delivered); out.Run(runCtx) }()
+
 	r := &runner{s: s, log: log, books: st.Books, writer: writer, replayer: replayer, expirer: expirer, deadLetters: dead}
 	err = r.run(runCtx)
 	stop()
 	<-relayDone
+	<-delivered
 	if perr := <-paid; perr != nil && err == nil {
 		err = perr
 	}

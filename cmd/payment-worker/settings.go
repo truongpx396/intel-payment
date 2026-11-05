@@ -15,6 +15,7 @@ import (
 type settings struct {
 	Engine   metering.Config // defaults applied
 	Payments envcfg.Payments
+	Events   envcfg.Events
 
 	DrainInterval         time.Duration // how long a shard with nothing to book waits before it looks again
 	OwnershipRetry        time.Duration // how often unowned shards are tried, and held ones checked
@@ -37,6 +38,7 @@ func parseSettings(getenv func(string) string) (settings, error) {
 
 	s := settings{
 		Payments:      r.Payments(),
+		Events:        r.Events(),
 		DrainInterval: 250 * time.Millisecond, OwnershipRetry: 2 * time.Second, TransferRedrive: 30 * time.Second,
 		JournalReplayInterval: 5 * time.Second, ShutdownTimeout: 30 * time.Second,
 	}

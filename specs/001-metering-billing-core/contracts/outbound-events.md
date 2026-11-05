@@ -42,6 +42,28 @@ backfill anything a failed endpoint missed.
   `provider_timestamp` for a subscription), because delivery order is not guaranteed and a host must
   be able to discard an event older than one it already applied.
 
+## What is built
+
+Everything in this document is served by `payment-worker` (the recorder, the dispatcher, retention) and `paymentd` (the feed), with these
+limits, said here so the catalogue is not read as more than it is:
+
+- **Emitted today:** `credits.low`, `credits.warning`, `credits.blocked`, the `payment.*` types the processor announces (`succeeded`,
+  `failed`, `refunded`, `disputed`, `charged_back`) and `entitlements.changed`. A type below with no producer yet is **designed, not
+  emitted**: `credits.granted`, `credits.revoked`, `transfer.settled`, `payment.dispute_won`, `subscription.*`, `fulfilment.granted`,
+  `auto_recharge.*`, `account.*`. The `data` of an emitted type carries what the announcement behind it carries and no more — a field the
+  table names that the announcement lacks (`credits.low`'s `balance`, `credits.warning`'s `used` and `resets_at`) is **absent**, never
+  invented.
+- **Endpoints are rows**, in `event_endpoints`, written through the database and audited by its trigger — as keys, overrides and the free
+  tier are for entitlements. There is no admin API for them yet (`/v1/admin/event-endpoints`, `…/test` and
+  `/v1/admin/event-deliveries/{id}/redeliver` are designed, not served): `Dispatcher.Redeliver` exists as a use case and nothing serves it.
+- **A recorded event is a fact once.** The recorder keys an event by the bus message it came from (a payment by the payment fact itself, so
+  a processor that retries after a crash announces one payment once), so an at-least-once bus records it once. Ids are issued under a lock,
+  strictly after the newest id in the log, so they sort in the order events became visible — across replicas whose clocks disagree — which is
+  what lets a cursor never skip one.
+- **A signing secret** is named by `secret_ref` (`env:NAME`, `file:/abs/path`); several, comma-separated, during a rotation, and the request
+  carries one `v1=` per secret. A secret that cannot be resolved sends **nothing**, unsigned: the attempt fails and is retried.
+- **Retention** is `PAYMENT_EVENT_RETENTION` (default 30 days, at least 3): an event something is still owed for is never purged.
+
 ## Event catalogue
 
 | Type | When | `data` (key fields) |
@@ -81,9 +103,12 @@ During a secret rotation the header carries one `v1=` per active secret, so the 
 side without a gap. The host MUST verify on the raw body, in constant time, and reject a `t` more
 than 5 minutes from its clock — the same posture this service holds toward its own providers.
 
-**Retries.** A `2xx` within 10 s is delivered. Anything else — a timeout, a `4xx`, a `5xx` — is
+**Retries.** A `2xx` within 10 s is delivered. A redirect is **not followed** and is a failure (a 3xx is not a 2xx), no proxy is consulted,
+the response is read only up to 64 KiB, and the destination's address is judged when it is connected to — after DNS, so a name that
+resolves to a private address, or changes its answer between a check and the connection, is refused before a byte is sent. Anything else — a timeout, a `4xx`, a `5xx` — is
 retried with exponential backoff and jitter (1 m, 5 m, 30 m, 2 h, then every 6 h) for 72 h, then
-marked `dead`, counted (`events_delivery_failed_total`), and paged. A dead delivery can be
+marked `dead`, counted (`events_delivery_failed_total{realm,endpoint}`, one page each), and paged. A delivery still pending past the
+window — an endpoint switched off keeps what it is owed — is ended the same way. A dead delivery can be
 re-driven from the admin API, and the feed always has the event.
 
 **Ordering** is not guaranteed — retries alone reorder deliveries. Use the version marker in `data`.
@@ -117,4 +142,9 @@ stores the last `id` it processed and resumes from it; there is no server-side c
 - The same event delivered twice carries the same `id`.
 - An endpoint receives only the types it subscribed to, and only its own realm's events.
 - The feed returns every event after a cursor exactly once, in `id` order, across pages.
-- An endpoint resolving to a private address is refused before any request is sent.
+- An endpoint resolving to a private address is refused before any request is sent — a private, loopback, link-local, unspecified or
+  multicast address, an IPv4-mapped form of one, and the IPv6 forms that carry an IPv4 address (NAT64, 6to4); a redirect is not followed;
+  the body is capped. A fuzz target holds the classifier to `net/netip`'s own predicates.
+
+These are `events/contracts.StoreContract` (15 cases, over an in-memory store and PostgreSQL), the dispatcher and recorder tests, the
+sender's tests against a local receiver, and the signature, schedule, guard and id tests of the `events` package.

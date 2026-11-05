@@ -30,6 +30,8 @@ tags:
     description: Selling, and managing what was sold. Credits are never granted here — only a verified payment grants them.
   - name: entitlements
     description: What a plan unlocks besides credits — features, ceilings and tiers — resolved once, so the page and the server agree.
+  - name: events
+    description: How a host hears what happened without touching this service's stores — signed webhooks, and the same log as a feed.
   - name: admin
     description: Configuration as data, every write attributed to a person and a reason.
   - name: platform
@@ -390,6 +392,46 @@ paths:
         "413": { $ref: "#/components/responses/BadRequest" }
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/Unavailable" }
+        "504": { $ref: "#/components/responses/Timeout" }
+  /v1/events:
+    get:
+      operationId: listEvents
+      tags: [events]
+      x-served-by: events
+      summary: The event log after a cursor, oldest first.
+      description: |
+        Everything that happened to the realms the credential covers, for a host that cannot receive webhooks, or that wants to backfill
+        what a failed endpoint missed. A consumer stores the last `id` it processed and resumes from it with `after`: events are in
+        `id` order, and every event is in exactly one page of a consumer that does — there is no server-side cursor to lose. `next` is
+        the cursor to resume from (the last event of the page, or the `after` it was given when nothing is new, and `null` for a
+        consumer that has never had an event). Events are kept for `EventRetention` (30 days by default). The same event is the same
+        bytes as the webhook that carries it, with the same `id`, which is the host's dedup key.
+      x-privilege: record
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: after
+          in: query
+          schema: { type: string, format: uuid }
+          description: The id of the last event already processed. Exclusive; leave out to start at the oldest retained.
+        - name: types
+          in: query
+          schema: { type: string }
+          description: Comma-separated event types to return (at most 20). Leave out for every type. A type this deployment does not emit yet matches nothing.
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+        - $ref: "#/components/parameters/Realm"
+      responses:
+        "200":
+          description: A page of events, possibly none.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EventList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
         "504": { $ref: "#/components/responses/Timeout" }
   /v1/checkout:
     post:
@@ -1407,6 +1449,28 @@ components:
         source: { type: string, enum: [default, subscription, override], description: "Where the grant came from: the answer to 'why can this customer use this?'." }
         expires_at: { type: string, format: date-time, description: "Present when the grant ends: an override given an end, or a plan held only by a failed payment's grace window. Absent: as long as its source lives." }
         reason: { type: string, description: "An override's: who approved it and why. Empty otherwise." }
+    Event:
+      type: object
+      required: [id, type, api_version, created_at, realm, data]
+      properties:
+        id: { type: string, format: uuid, description: "A UUID v7: unique, time-ordered, and the host's dedup key — delivery is at-least-once." }
+        type: { type: string, example: "credits.low" }
+        api_version: { type: string, example: "2026-09-01", description: "Pins the shape of `data`." }
+        created_at: { type: string, format: date-time }
+        realm: { type: string }
+        scope:
+          type: object
+          required: [kind, id]
+          properties:
+            kind: { type: string }
+            id: { type: string }
+        data: { type: object, additionalProperties: true, description: "What the host needs to act. Unknown fields are normal: the catalogue grows without a version bump." }
+    EventList:
+      type: object
+      required: [data, next]
+      properties:
+        data: { type: array, items: { $ref: "#/components/schemas/Event" } }
+        next: { type: string, format: uuid, nullable: true, description: "The cursor to resume from." }
     EntitlementGrantList:
       type: object
       required: [data]
