@@ -68,6 +68,11 @@ gaps, transfers in transit past the alarm, fail-open, idempotency conflicts, web
 failures, webhook inbox age or dead events, DLQ dead count, rows in a DEFAULT partition. Everything
 else is a dashboard.
 
+[`deploy/alerts.yml`](../deploy/alerts.yml) is that list as Prometheus alerting rules, each linking to its entry below, and a test holds the
+two to one set: an alert whose link resolves to no entry, an entry no alert links to, and a metric either names that no component exports all
+fail `make test`. The thresholds are defaults (they follow `PAYMENT_GAP_TIMEOUT`, `PAYMENT_TRANSFER_TRANSIT_ALARM` and `PAYMENT_BUS_MAX_LEN`);
+the expressions are not parsed by that test, so run `promtool check rules deploy/alerts.yml` before loading them.
+
 ---
 
 ## Alert: drift finding
@@ -248,6 +253,22 @@ Publishing a tick twice is harmless: the second is `skipped` at the claim. `mete
 worker), `failed` (the bus redelivers it, then parks it in `dead_letters` and pages — see [Alert: DLQ dead count](#alert-dlq-dead-count)).
 A tick that stops arriving shows as a counter that stops moving. `billing.subdrift.tick` is **not served**: nothing consumes it.
 
+## Alert: a scheduled tick failing
+
+**Means:** `metering_tick_total{outcome="failed"}` moved: a tick's work returned an error (the database or the hot tier was unreachable, a
+per-shard audit found a mismatch, a payload the tick could not read). The bus redelivers it with backoff up to `PAYMENT_BUS_MAX_ATTEMPTS` and
+then parks it in `dead_letters`, which is a page of its own (see [Alert: DLQ dead count](#alert-dlq-dead-count)); a tick that failed once and
+then ran is not a fault. The `tick` label says which.
+
+1. **`audit`**: `ErrAuditMismatch` means a booked balance is not provable from the ledger — treat it as a drift finding
+   ([Alert: drift finding](#alert-drift-finding)), not as a scheduling problem.
+2. **`reconcile`**, **`audit`** with `skipped` rising instead: the shard belongs to another worker, whose own loops work it; nothing to do.
+3. **`partitions`**, **`idem.purge`**: the database refused DDL (a lock wait over two seconds is retried by the next hourly run). A
+   `partitions` tick that keeps failing runs the daily partitions out in four days, and rows then land in a DEFAULT partition
+   ([Alert: rows in a DEFAULT partition](#alert-rows-in-a-default-partition)).
+4. **`trim`**: if it keeps failing the streams are never trimmed ([Alert: stream length approaching the cap](#alert-stream-length-approaching-the-cap)).
+5. A parked tick is harmless to leave once the cause is fixed: the next one does the work.
+
 ## Alert: stream length approaching the cap
 
 **Means:** the trim tick is not running, or a consumer group is so far behind that nothing is
@@ -266,7 +287,7 @@ A stream that will not trim although every worker is healthy has a group nobody 
 
 `entitlement_decisions_total{outcome="error"}` is rising: the entitlements could not be resolved, so hosts are being
 told to deny (`503 unavailable`, never "entitled" and never "not entitled") and any limit sized by a plan answers
-`503 quota_unavailable` (or is uncapped under `AdmitFail=fail_open` — `metering_admit_fail_open_total` says so).
+`503 quota_unavailable` (or is uncapped under `AdmitFail=fail_open` — `metering_admit_failopen_total` says so).
 
 1. **It is the database `paymentd` reads entitlements from.** Check Postgres reachability and the pool first; the cause is in
    `paymentd`'s log (`entitlements could not be resolved`), and the response deliberately names none of it.

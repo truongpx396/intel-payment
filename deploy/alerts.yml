@@ -1,0 +1,188 @@
+# Prometheus alerting rules for intel-payment.
+#
+# Every alert links to its entry in docs/operations.md, and every `## Alert:` entry there has an alert here: a test
+# (deploy/alerts/alerts_test.go, run by `make test`) holds the two to one set, and holds every metric named below, and every metric the
+# runbook names, to the ones the components export. What it does NOT do is parse the expressions or exercise the thresholds: run
+# `promtool check rules deploy/alerts.yml` before loading this, and treat each threshold as the default it is.
+#
+# severity: page   somebody is woken. Money may be wrong, late or unreachable, or a security signal fired.
+# severity: ticket a person looks within the working day. Nothing is lost; something is untidy or lagging.
+#
+# The thresholds follow the defaults in docs/configuration.md (PAYMENT_GAP_TIMEOUT 2m, PAYMENT_TRANSFER_TRANSIT_ALARM 5m,
+# PAYMENT_BUS_MAX_LEN 1000000); change them when you change those.
+groups:
+  - name: intel-payment-books
+    rules:
+      - alert: MeteringDriftFinding
+        expr: increase(metering_drift_findings_total{outcome="drift"}[15m]) > 0
+        labels: {severity: page}
+        annotations:
+          summary: The hot tier and the books disagree at the same sequence number.
+          description: Reconcile healed the hot side and booked nothing; a finding is a defect, not noise.
+          runbook: docs/operations.md#alert-drift-finding
+
+      - alert: MeteringHotTierLostHistory
+        expr: increase(metering_hot_regression_total[15m]) > 0
+        labels: {severity: page}
+        annotations:
+          summary: The hot tier lost history (a Redis restart from a short AOF, or a failover to a lagging replica).
+          runbook: docs/operations.md#alert-regression-or-a-shard-frozen
+
+      - alert: MeteringShardFrozen
+        expr: max by (shard) (metering_shard_frozen_seconds) > 60
+        for: 1m
+        labels: {severity: page}
+        annotations:
+          summary: A shard has been frozen for more than a minute; recovery should take seconds.
+          runbook: docs/operations.md#alert-regression-or-a-shard-frozen
+
+      - alert: MeteringOutboxBehind
+        expr: max by (shard) (metering_outbox_age_seconds) > 30
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: The writer is behind; every undrained intent is inside the RPO window.
+          runbook: docs/operations.md#alert-outbox-depth-or-age-rising
+
+      - alert: MeteringSequenceGap
+        expr: max by (shard) (metering_writer_seq_gap_seconds) > 120
+        labels: {severity: page}
+        annotations:
+          summary: A sequence gap has been open longer than PAYMENT_GAP_TIMEOUT.
+          runbook: docs/operations.md#alert-sequence-gap
+
+      - alert: MeteringIdempotencyConflicts
+        expr: increase(metering_idem_conflict_total[15m]) > 0
+        labels: {severity: page}
+        annotations:
+          summary: A producer reused an idempotency key for a different request; its charges would otherwise be dropped silently.
+          runbook: docs/operations.md#alert-suspense-open-late-replays-idempotency-conflicts
+
+      - alert: MeteringSuspenseOpen
+        expr: max by (realm) (metering_suspense_open) > 0
+        for: 5m
+        labels: {severity: ticket}
+        annotations:
+          summary: A correction has been open for more than a minute, so it is not landing.
+          runbook: docs/operations.md#alert-suspense-open-late-replays-idempotency-conflicts
+
+      - alert: MeteringLateReplays
+        expr: increase(metering_late_replay_total[1h]) > 0
+        labels: {severity: ticket}
+        annotations:
+          summary: Producers are retrying after PAYMENT_HOT_IDEM_TTL; the books reversed each, but the retry policy is wrong.
+          runbook: docs/operations.md#alert-suspense-open-late-replays-idempotency-conflicts
+
+      - alert: MeteringTransferInTransit
+        expr: max by (realm) (metering_transfer_in_transit_age_seconds) > 300
+        labels: {severity: page}
+        annotations:
+          summary: A transfer's destination has not been credited within PAYMENT_TRANSFER_TRANSIT_ALARM.
+          runbook: docs/operations.md#alert-transfer-in-transit
+
+      - alert: MeteringServedWhileHotTierDown
+        expr: increase(metering_admit_failopen_total[5m]) > 0
+        labels: {severity: page}
+        annotations:
+          summary: Work was served while the hot tier was unavailable (fail_open); nothing is unmetered, but it must be reconciled.
+          runbook: docs/operations.md#alert-fail-open-events-or-deferred-usage
+
+      - alert: MeteringDeferredUsageNotDraining
+        expr: max by (realm) (metering_journal_pending) > 0
+        for: 15m
+        labels: {severity: page}
+        annotations:
+          summary: Deferred usage is not draining to zero after the hot tier came back.
+          runbook: docs/operations.md#alert-fail-open-events-or-deferred-usage
+
+      - alert: MeteringStreamNearTheCap
+        expr: max by (shard) (metering_outbox_depth) > 800000
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: A stream is at 80% of PAYMENT_BUS_MAX_LEN; at the cap the hot path refuses with backpressure and Record defers to the journal.
+          runbook: docs/operations.md#alert-stream-length-approaching-the-cap
+
+      - alert: MeteringDefaultPartitionHasRows
+        expr: max by (table) (metering_default_partition_rows) > 0
+        labels: {severity: page}
+        annotations:
+          summary: Rows landed in a DEFAULT partition; a partition for that range cannot be created until they are moved.
+          runbook: docs/operations.md#alert-rows-in-a-default-partition
+
+      - alert: MeteringDeadLetters
+        expr: max by (realm) (metering_dead_letters) > 0
+        labels: {severity: page}
+        annotations:
+          summary: A message used its delivery budget and is parked; nothing delivers it again until an operator replays it.
+          runbook: docs/operations.md#alert-dlq-dead-count
+
+      - alert: MeteringTickFailing
+        expr: increase(metering_tick_total{outcome="failed"}[15m]) > 0
+        labels: {severity: page}
+        annotations:
+          summary: A scheduled tick failed; the bus redelivers it and then parks it in dead_letters.
+          runbook: docs/operations.md#alert-a-scheduled-tick-failing
+
+  - name: intel-payment-payments
+    rules:
+      - alert: BillingWebhookVerificationFailures
+        expr: increase(billing_webhook_verify_failed_total[5m]) > 0
+        labels: {severity: page}
+        annotations:
+          summary: A webhook failed signature verification; a misconfigured secret after a rotation, or someone probing. A security signal.
+          runbook: docs/operations.md#alert-webhook-verification-failures
+
+      - alert: BillingWebhookInboxOld
+        expr: billing_webhook_inbox_age_seconds > 120
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: A verified payment has not been fulfilled for two minutes; it is not lost, it is late.
+          runbook: docs/operations.md#alert-webhook-inbox-age-or-dead-events
+
+      - alert: BillingWebhookEventsDead
+        expr: increase(billing_webhook_dead_total[15m]) > 0
+        labels: {severity: page}
+        annotations:
+          summary: A webhook event exhausted its retries and will never be leased again; the customer has paid.
+          runbook: docs/operations.md#alert-webhook-inbox-age-or-dead-events
+
+      - alert: EventsDeliveryFailed
+        expr: increase(events_delivery_failed_total[15m]) > 0
+        labels: {severity: page}
+        annotations:
+          summary: A webhook delivery was marked dead after 72 hours of retries; the host still has the event in GET /v1/events.
+          runbook: docs/operations.md#alert-outbound-deliveries-failing
+
+      - alert: EventsDeadDeliveries
+        expr: max by (realm) (events_dead_deliveries) > 0
+        for: 1h
+        labels: {severity: ticket}
+        annotations:
+          summary: Dead webhook deliveries nobody has re-driven.
+          runbook: docs/operations.md#alert-outbound-deliveries-failing
+
+  - name: intel-payment-entitlements
+    rules:
+      - alert: EntitlementChecksFailing
+        expr: sum(rate(entitlement_decisions_total{outcome="error"}[5m])) > 0
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: Entitlements cannot be resolved, so hosts are told to deny (503) and plan-sized limits answer 503 quota_unavailable.
+          runbook: docs/operations.md#alert-entitlement-checks-failing
+
+      - alert: EntitlementValuesItsKeyCannotHold
+        expr: increase(entitlement_invalid_total[1h]) > 0
+        labels: {severity: ticket}
+        annotations:
+          summary: A stored grant was skipped because its key cannot hold it; a customer may be on the free tier's value.
+          runbook: docs/operations.md#alert-entitlement-values-its-key-cannot-hold
+
+      - alert: EntitlementCacheNotHearingAnnouncements
+        expr: increase(entitlement_cache_invalidations_total[24h]) == 0 and increase(billing_webhook_processed_total{outcome="processed"}[24h]) > 0
+        labels: {severity: ticket}
+        annotations:
+          summary: A replica's entitlement cache saw no invalidations on a day with processed payments; it is serving up to the cache TTL behind.
+          runbook: docs/operations.md#alert-a-replicas-entitlement-cache-is-not-hearing-announcements
