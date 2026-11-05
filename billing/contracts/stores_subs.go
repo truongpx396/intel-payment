@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -216,6 +217,74 @@ func SubsCases() []StoreCase[SubsFactory] {
 			}
 			if due, _ := s.DueForGraceExpiry(Ctx(), grace.Add(time.Hour)); len(due) != 0 {
 				t.Fatalf("a recovered subscription is due: %+v", due)
+			}
+		}},
+		{"the live subscriptions of an account are listed by provider id, a page at a time, and none twice", func(t testing.TB, mk SubsFactory) {
+			s := mk(t)
+			live := []domain.SubStatus{domain.Trialing, domain.Active, domain.PastDue, domain.Paused, domain.Active}
+			for i, st := range live {
+				apply(t, s, subOf(scope(30+i), fmt.Sprintf("sub-l%d", i+1), st, ProCode), us(time.Hour))
+			}
+			var got []string
+			after := ""
+			for pages := 0; ; pages++ {
+				if pages > len(live) {
+					t.Fatalf("still reading after %d pages: the cursor does not move (%v)", pages, got)
+				}
+				page, err := s.LiveOf(Ctx(), AccountID, after, 2)
+				if err != nil {
+					t.Fatalf("LiveOf: %v", err)
+				}
+				if len(page) > 2 {
+					t.Fatalf("a page of %d was returned for a limit of 2", len(page))
+				}
+				for _, sub := range page {
+					got = append(got, sub.ProviderSubscriptionID)
+				}
+				if len(page) < 2 {
+					break
+				}
+				after = page[len(page)-1].ProviderSubscriptionID
+			}
+			if want := []string{"sub-l1", "sub-l2", "sub-l3", "sub-l4", "sub-l5"}; !slices.Equal(got, want) {
+				t.Fatalf("listed %v, want %v", got, want)
+			}
+		}},
+		{"an ended subscription is not listed, and another account's is not either", func(t testing.TB, mk SubsFactory) {
+			s := mk(t)
+			apply(t, s, subOf(scope(40), "sub-gone", domain.Canceled, ProCode), us(time.Hour))
+			apply(t, s, subOf(scope(41), "sub-new", domain.Incomplete, ProCode), us(time.Hour))
+			other := subOf(scope(42), "sub-other", domain.Active, ProCode)
+			other.Account = OtherAccountID
+			apply(t, s, other, us(time.Hour))
+			apply(t, s, subOf(scope(43), "sub-mine", domain.Active, ProCode), us(time.Hour))
+			got, err := s.LiveOf(Ctx(), AccountID, "", 100)
+			if err != nil {
+				t.Fatalf("LiveOf: %v", err)
+			}
+			if len(got) != 1 || got[0].ProviderSubscriptionID != "sub-mine" {
+				t.Fatalf("listed %+v, want only sub-mine: a canceled one, one not yet started and another account's are not the sweep's", got)
+			}
+			if got[0].Account != AccountID || got[0].Status != domain.Active || got[0].Scope != scope(43).Normalized() {
+				t.Fatalf("a listed subscription does not round-trip: %+v", got[0])
+			}
+		}},
+		{"the accounts that hold a live subscription are listed once each, and one with only ended ones is not", func(t testing.TB, mk SubsFactory) {
+			s := mk(t)
+			apply(t, s, subOf(scope(50), "sub-1", domain.Active, ProCode), us(time.Hour))
+			apply(t, s, subOf(scope(51), "sub-2", domain.PastDue, ProCode), us(time.Hour))
+			b := subOf(scope(52), "sub-3", domain.Trialing, ProCode)
+			b.Account = OtherAccountID
+			apply(t, s, b, us(time.Hour))
+			ended := subOf(scope(53), "sub-4", domain.Canceled, ProCode)
+			ended.Account = InactiveID
+			apply(t, s, ended, us(time.Hour))
+			got, err := s.LiveAccounts(Ctx())
+			if err != nil {
+				t.Fatalf("LiveAccounts: %v", err)
+			}
+			if want := []string{AccountID, OtherAccountID}; !slices.Equal(got, want) {
+				t.Fatalf("accounts = %v, want %v", got, want)
 			}
 		}},
 	}

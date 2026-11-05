@@ -18,8 +18,8 @@ import (
 // R110, end to end: the scheduled ticks are published the way an external scheduler would publish them — `payment-worker tick <name>` —
 // and worked by a real payment-worker over Redis and PostgreSQL, each under its claim.
 
-// servedTicks are the fourteen ticks of bus-subjects.md less `subdrift`, whose sweep is designed and not built.
-var servedTicks = []string{"reconcile", "audit", "transfer", "journal", "webhook", "outbound", "expiry", "dunning", "partitions", "idem.purge", "events.purge", "trim", "usage.rollup"}
+// servedTicks are the fourteen ticks of bus-subjects.md: a worker serves every one of them.
+var servedTicks = []string{"reconcile", "audit", "transfer", "journal", "webhook", "outbound", "expiry", "dunning", "subdrift", "partitions", "idem.purge", "events.purge", "trim", "usage.rollup"}
 
 // publishTick runs `payment-worker tick …` with the worker's own environment and returns what it said.
 func publishTick(t *testing.T, env map[string]string, args ...string) string {
@@ -89,7 +89,6 @@ func TestEveryScheduledTickWithNothingDueIsServedCountedIdleAndWritesNothing(t *
 	for _, name := range servedTicks {
 		publishTick(t, env, tickPayload(name, 3)...)
 	}
-	publishTick(t, env, "subdrift") // not served: published, never consumed
 	for _, name := range servedTicks {
 		eventually(t, 30*time.Second, name+" to be served", func() bool {
 			_, body := httpDo(t, c, "GET", wbase+"/metrics", "", "")
@@ -104,10 +103,7 @@ func TestEveryScheduledTickWithNothingDueIsServedCountedIdleAndWritesNothing(t *
 			}
 		}
 	}
-	if strings.Contains(body, `tick="subdrift"`) {
-		t.Error("a tick this process does not serve was consumed")
-	}
-	for _, name := range []string{"reconcile", "audit", "transfer", "journal", "outbound", "expiry", "dunning", "partitions", "idem.purge", "events.purge", "usage.rollup"} {
+	for _, name := range []string{"reconcile", "audit", "transfer", "journal", "outbound", "expiry", "dunning", "subdrift", "partitions", "idem.purge", "events.purge", "usage.rollup"} {
 		if !tickCount(body, name, "idle") {
 			t.Errorf("the %s tick had nothing due and was not counted idle", name)
 		}
