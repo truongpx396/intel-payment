@@ -19,8 +19,9 @@ across rate cards over three disjoint unit spaces, so that is a test result rath
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
 > **Status, stated honestly.** The **metering core**, the **payment pipeline** and the **entitlements** are built, verified
-> in CI and served by two binaries, `paymentd` and `payment-worker`. **Outbound events, the operational surface and the
-> credits UI are designed, not built** (`events/` is a stub), and **post-paid invoicing**
+> in CI and served by two binaries, `paymentd` and `payment-worker`. **The operational surface (ticks, admin operations, the
+> usage rollup) and the credits UI are designed, not built**; outbound events (signed webhooks and a cursor feed) and the parking of
+> messages the bus gave up on are built, and **post-paid invoicing**
 > ([Phase 2](specs/002-postpaid-invoicing/)) is designed, not built. The provider adapters have met their sandboxes
 > once ([docs/sandbox.md](docs/sandbox.md)): not a buyer approving a PayPal order, a paid Polar order, or a live account.
 > Sub-millisecond admission is the design target; nothing has been load tested. The task count and the gap list are in
@@ -636,8 +637,8 @@ design-system/         the credits screen design (the UI itself is not built)
 **❌ Not built** (the phases and reasoning are in [ROADMAP.md](ROADMAP.md)):
 
 - **An admin API for entitlements.** Keys, plan entitlements, the free tier and overrides are SQL rows today — each write audited by the database, and an override refused without a reason and an actor, whichever way it is written. `Overrides.Put` exists as a use case (it validates, writes and announces) and nothing serves it yet.
-- **Outbound events.** Signed webhooks and a cursor feed (`events/` is a stub).
-- **The operational surface and the credits UI.**
+- **An admin API for event endpoints.** Outbound events are built (a signed, retried webhook per subscribed endpoint, and `GET /v1/events`), but an endpoint is an `event_endpoints` row for now, and a dead delivery or a parked message is re-driven by a use case nothing serves yet.
+- **The rest of the operational surface** (scheduled-tick handlers, admin operations, the `usage_daily` rollup) **and the credits UI.**
 - **Post-paid invoicing** ([Phase 2](specs/002-postpaid-invoicing/)), including coupons, discounts, trials, quantity subscriptions and invoice generation. Phase 1 collects payments; it issues no invoices.
 - **A saved payment method captured automatically** from a `setup` checkout. The host passes `payment_method_ref` to `PUT /v1/auto-recharge` itself.
 - **The JetStream intent path in the binary.** It exists in the engine; `payment-worker` drains the Redis outbox only.
