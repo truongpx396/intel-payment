@@ -1,9 +1,12 @@
 package domain
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"math"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -192,9 +195,10 @@ func Breakdown(rollup map[UsageKey]UsageTotals, q BreakdownQuery) ([]BreakdownRo
 }
 
 func sortBreakdown(rows []BreakdownRow) {
-	for i := 1; i < len(rows); i++ {
-		for j := i; j > 0 && (rows[j].Credits > rows[j-1].Credits || rows[j].Credits == rows[j-1].Credits && rows[j].Dimension < rows[j-1].Dimension); j-- {
-			rows[j], rows[j-1] = rows[j-1], rows[j]
+	slices.SortFunc(rows, func(a, b BreakdownRow) int {
+		if c := cmp.Compare(b.Credits, a.Credits); c != 0 {
+			return c // the largest spend first
 		}
-	}
+		return strings.Compare(a.Dimension, b.Dimension) // ties by name, so the order is stable
+	})
 }

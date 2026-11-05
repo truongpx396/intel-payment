@@ -232,10 +232,10 @@ func ParseRollupDays(payload []byte) (days int, ok bool, err error) {
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return 0, false, fmt.Errorf("%w: the payload is not JSON: %w", domain.ErrInvalid, err)
 	}
-	switch {
-	case p.Days == nil:
+	if p.Days == nil {
 		return 0, false, nil
-	case *p.Days < 1 || *p.Days > MaxRollupDays:
+	}
+	if *p.Days < 1 || *p.Days > MaxRollupDays {
 		return 0, false, fmt.Errorf("%w: days is 1 to %d, got %d", domain.ErrInvalid, MaxRollupDays, *p.Days)
 	}
 	return *p.Days, true, nil
