@@ -202,7 +202,18 @@ func (m *recMetrics) Count(name string, n int64, l ports.Labels) {
 	m.mu.Lock()
 	m.counts[name] += n
 	m.counts[name+"{"+l["reason"]+l["outcome"]+l["op"]+l["cause"]+l["limit"]+"}"] += n
+	m.counts[name+"{"+l["tick"]+l["outcome"]+"}"] += n
 	m.mu.Unlock()
+}
+
+func (m *recMetrics) counts_() map[string]int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := map[string]int64{}
+	for k, v := range m.counts {
+		out[k] = v
+	}
+	return out
 }
 
 func (m *recMetrics) Gauge(name string, v int64, _ ports.Labels) {
