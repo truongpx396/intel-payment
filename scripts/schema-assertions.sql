@@ -343,4 +343,46 @@ BEGIN
   DELETE FROM entitlement_keys WHERE realm = 'verify' AND key IN ('qk_quota', 'qk_flag');
 END $$;
 
+-- ------------------------------------------------ a dead letter is parked once and never dropped (FR-043)
+DO $$
+DECLARE letter_id uuid;
+BEGIN
+  INSERT INTO dead_letters (realm, subject, source_id, payload, attempts, last_error)
+  VALUES ('verify', 'billing.payment.t1', '1700000000000-0', '\x00ff7b', 5, 'boom') RETURNING dead_letters.id INTO letter_id;
+  BEGIN
+    INSERT INTO dead_letters (realm, subject, source_id, payload) VALUES ('verify', 'billing.payment.t1', '1700000000000-0', '\x00');
+    RAISE EXCEPTION 'FAIL: the same envelope was parked twice';
+  EXCEPTION WHEN unique_violation THEN NULL;
+  END;
+  PERFORM pg_temp.ok('an envelope the bus delivers twice parks one letter: (subject, source_id) is unique');
+  BEGIN
+    DELETE FROM dead_letters WHERE dead_letters.id = letter_id;
+    RAISE EXCEPTION 'FAIL: a dead letter was deleted';
+  EXCEPTION WHEN integrity_constraint_violation THEN NULL;
+  END;
+  PERFORM pg_temp.ok('deleting a dead letter is refused');
+  BEGIN
+    UPDATE dead_letters SET payload = '\x00' WHERE dead_letters.id = letter_id;
+    RAISE EXCEPTION 'FAIL: a parked payload was rewritten';
+  EXCEPTION WHEN integrity_constraint_violation THEN NULL;
+  END;
+  BEGIN
+    UPDATE dead_letters SET last_error = 'something kinder' WHERE dead_letters.id = letter_id;
+    RAISE EXCEPTION 'FAIL: what a letter says about its failure was rewritten';
+  EXCEPTION WHEN integrity_constraint_violation THEN NULL;
+  END;
+  PERFORM pg_temp.ok('what a dead letter says about its failure cannot be rewritten');
+  UPDATE dead_letters SET replay_claimed_until = now() + interval '1 minute' WHERE dead_letters.id = letter_id;
+  UPDATE dead_letters SET replayed_at = now(), replay_claimed_until = NULL WHERE dead_letters.id = letter_id;
+  BEGIN
+    UPDATE dead_letters SET replayed_at = NULL WHERE dead_letters.id = letter_id;
+    RAISE EXCEPTION 'FAIL: a replayed dead letter was un-replayed';
+  EXCEPTION WHEN integrity_constraint_violation THEN NULL;
+  END;
+  PERFORM pg_temp.ok('a replay claims, then marks, a letter — and a replayed letter stays replayed');
+  IF (SELECT payload FROM dead_letters WHERE dead_letters.id = letter_id) <> '\x00ff7b'::bytea THEN
+    RAISE EXCEPTION 'FAIL: the payload was not kept byte for byte'; END IF;
+  PERFORM pg_temp.ok('a dead letter keeps its payload byte for byte');
+END $$;
+
 DO $$ BEGIN RAISE NOTICE 'baseline assertions passed'; END $$;
