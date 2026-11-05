@@ -5,6 +5,7 @@ package alerts_test
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -87,8 +88,31 @@ func known(name string, metrics map[string]bool) bool {
 	return false
 }
 
+var createTable = regexp.MustCompile(`(?m)^CREATE TABLE (?:IF NOT EXISTS )?([a-z_]+)`)
+
+// tables are the names the schema gives its tables. A runbook that says `entitlement_overrides` means the table, and several share a prefix
+// with a metric's component.
+func tables(t testing.TB) map[string]bool {
+	t.Helper()
+	files, err := filepath.Glob("../../migrations/*.sql")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no migrations found: %v", err)
+	}
+	out := map[string]bool{}
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range createTable.FindAllStringSubmatch(string(raw), -1) {
+			out[m[1]] = true
+		}
+	}
+	return out
+}
+
 // check returns every way the alert rules and the runbook disagree, in a stable order.
-func check(rules []byte, runbook string, metrics map[string]bool) []string {
+func check(rules []byte, runbook string, metrics, notMetrics map[string]bool) []string {
 	var problems []string
 	var f ruleFile
 	if err := yaml.Unmarshal(rules, &f); err != nil {
@@ -149,7 +173,7 @@ func check(rules []byte, runbook string, metrics map[string]bool) []string {
 		}
 	}
 	for _, mm := range backticked.FindAllStringSubmatch(runbook, -1) {
-		if !known(mm[1], metrics) {
+		if !known(mm[1], metrics) && !notMetrics[mm[1]] {
 			problems = append(problems, fmt.Sprintf("the runbook names %s, which no component exports", mm[1]))
 		}
 	}
@@ -167,7 +191,7 @@ func TestTheShippedAlertsAndTheRunbookAreOneSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range check(rules, string(runbook), catalogue()) {
+	for _, p := range check(rules, string(runbook), catalogue(), tables(t)) {
 		t.Error(p)
 	}
 }
@@ -192,7 +216,7 @@ const goodRunbook = "## Alert: drift finding\n\nSee `metering_drift_findings_tot
 func TestTheCheckRejectsEveryWayTheAlertsAndTheRunbookCanDisagree(t *testing.T) {
 	t.Parallel()
 	metrics := catalogue()
-	if got := check([]byte(goodRules), goodRunbook, metrics); len(got) != 0 {
+	if got := check([]byte(goodRules), goodRunbook, metrics, nil); len(got) != 0 {
 		t.Fatalf("a consistent pair is reported: %v", got)
 	}
 	for name, tc := range map[string]struct {
@@ -221,7 +245,7 @@ func TestTheCheckRejectsEveryWayTheAlertsAndTheRunbookCanDisagree(t *testing.T) 
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			got := check([]byte(tc.rules), tc.runbook, metrics)
+			got := check([]byte(tc.rules), tc.runbook, metrics, nil)
 			for _, p := range got {
 				if strings.Contains(p, tc.want) {
 					return
@@ -232,11 +256,26 @@ func TestTheCheckRejectsEveryWayTheAlertsAndTheRunbookCanDisagree(t *testing.T) 
 	}
 }
 
+func TestATableNameInTheRunbookIsNotMistakenForAMetric(t *testing.T) {
+	t.Parallel()
+	metrics := catalogue()
+	rb := goodRunbook + "Look in `entitlement_overrides`.\n"
+	if got := check([]byte(goodRules), rb, metrics, tables(t)); len(got) != 0 {
+		t.Fatalf("a table is not a metric: %v", got)
+	}
+	if got := check([]byte(goodRules), rb, metrics, nil); len(got) != 1 {
+		t.Fatalf("without the schema it cannot tell: %v", got)
+	}
+	if !tables(t)["entitlement_overrides"] || !tables(t)["dead_letters"] || tables(t)["metering_dead_letters"] {
+		t.Fatal("the tables are read from the migrations")
+	}
+}
+
 func TestAHistogramsSuffixedSeriesAreTheMetricsOwn(t *testing.T) {
 	t.Parallel()
 	metrics := catalogue()
 	rules := strings.Replace(goodRules, "increase(metering_drift_findings_total[15m]) > 0", "histogram_quantile(0.99, rate(metering_admit_latency_seconds_bucket[5m])) > 0.005", 1)
-	if got := check([]byte(rules), goodRunbook, metrics); len(got) != 0 {
+	if got := check([]byte(rules), goodRunbook, metrics, nil); len(got) != 0 {
 		t.Fatalf("%v", got)
 	}
 }
