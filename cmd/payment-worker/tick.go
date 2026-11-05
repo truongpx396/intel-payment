@@ -48,6 +48,12 @@ func publishTick(ctx context.Context, s settings, args []string, stdout, stderr 
 			return 2
 		}
 	}
+	if name == "usage.rollup" {
+		if _, _, err := app.ParseRollupDays(payload); err != nil {
+			fmt.Fprintf(stderr, "payment-worker tick: %v\n", err)
+			return 2
+		}
+	}
 	rdb, err := hotredis.Connect(s.Engine.BalanceRedisURL)
 	if err != nil {
 		fmt.Fprintln(stderr, "payment-worker tick: PAYMENT_BALANCE_REDIS_URL is not a redis:// or redis+cluster:// URL")

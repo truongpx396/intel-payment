@@ -75,7 +75,7 @@ A per-shard tick runs under the shard's lease: this worker's own when it owns th
 
 **Served today:** every tick below **except `billing.subdrift.tick`**. The sweep that asks each provider for the current state of every locally active subscription is designed and not built, so no process subscribes to the subject — a tick published for it is not consumed, and nothing is repaired by it (`POST /v1/admin/subdrift` in [rest-api.md](./rest-api.md) is the same sweep, forced, and is not built either). A webhook that never arrived is repaired by redelivering it from the provider's dashboard, which the inbox makes safe.
 
-**What also runs without a scheduler.** `payment-worker` keeps its own timers for the work it always did (journal replay, transfer re-drive, expiry, each owned shard's reconcile and audit, the webhook inbox, outbound deliveries and the purges) and, hourly and under the same claim, for the three nothing else would drive: `partitions`, `idem.purge` and `trim`. A scheduler is therefore for a different cadence, an off-peak audit, or a manual run — not a requirement.
+**What also runs without a scheduler.** `payment-worker` keeps its own timers for the work it always did (journal replay, transfer re-drive, expiry, each owned shard's reconcile and audit, the webhook inbox, outbound deliveries and the purges) and, hourly and under the same claim, for the three nothing else would drive: `partitions`, `idem.purge` and `trim` (hourly) and for `usage.rollup` (every five minutes). A scheduler is therefore for a different cadence, an off-peak audit, or a manual run — not a requirement.
 
 | Tick | Does | Cadence |
 |---|---|---|
@@ -92,6 +92,7 @@ A per-shard tick runs under the shard's lease: this worker's own when it owns th
 | `billing.idem.purge.tick` | drops the daily `usage_idem` partitions that lie wholly before `now − UsageIdemWindow` (a day with any instant inside the window is kept; the DEFAULT partition and any partition not made by `ensure_daily_partitions` are never touched; each drop waits two seconds for its lock at most) | daily (the worker also runs it hourly) |
 | `billing.events.purge.tick` | purges `payment_events` past retention (never inside a provider replay window) and delivered outbound events past theirs | daily — **the outbound half is not published today**: `payment-worker` purges events hourly from a timer of its own (`PAYMENT_EVENT_RETENTION`) |
 | `billing.trim.tick` | **Redis Streams only**: trims acked history below the retention floor (`PAYMENT_BUS_RETENTION`) on the events and ticks streams and on each shard's outbox | hourly (the worker also runs it hourly) |
+| `billing.usage.rollup.tick` | recomputes the `usage_daily` rollup (below) for the days still open to a late row — the usage dedup window and a day — and replaces them; `{"days": N}` (1 to 3660) reaches further back, for a backfill. A window nothing changed in writes nothing | every 5 min (the worker runs it itself) |
 
 ---
 
@@ -176,7 +177,7 @@ The replay route (`POST /v1/admin/dead-letters/{id}/replay`, [rest-api.md](./res
 `BusContract` runs against **both** adapters — the only way "swappable" means anything.
 
 - A consumer killed mid-handler has its in-flight entry **redelivered**, not lost — `XAUTOCLAIM` on Redis, ack-wait on JetStream.
-- Two schedulers publishing the same `billing.reconcile.tick` produce exactly one reconcile for the shard — and, for every tick: two concurrent runs do the work once, a run killed midway is completed by the next, and a tick with nothing due writes nothing (`app.Ticks` over all thirteen names; `ClaimerContract` over an in-memory claimer and PostgreSQL; and a real worker serving each tick, writing no row in an idle round).
+- Two schedulers publishing the same `billing.reconcile.tick` produce exactly one reconcile for the shard — and, for every tick: two concurrent runs do the work once, a run killed midway is completed by the next, and a tick with nothing due writes nothing (`app.Ticks` over all fourteen names; `ClaimerContract` over an in-memory claimer and PostgreSQL; and a real worker serving each tick, writing no row in an idle round).
 - A message under the attempt cap is redelivered by the Bus and applied at most once; at the cap it lands in `dead_letters`, pages once however often its envelope is delivered, and is never delivered again except by an operator's replay, which delivers it once (`DeadLetterContract`, run over the in-memory store and PostgreSQL, and a property over any interleaving of failures, duplicate envelopes, replays — racing, failing and killed midway — in `metering/app`).
 - Publishing to realm A's subject never affects anything in realm B.
 - **Trim never removes an un-acked entry**, even when the stream is over its length target.

@@ -151,3 +151,17 @@ mutator = "CONDITIONALS_BOUNDARY"
 col = 59
 line = 'sort.Slice(strays, func(i, j int) bool { return strays[i] < strays[j] })'
 why = "strays are the keys of a map, so no two are equal and < and <= agree"
+
+[[equivalent]]
+file = "metering/domain/usage.go"
+mutator = "CONDITIONALS_BOUNDARY"
+col = 7
+line = 'if (b > 0 && a > math.MaxInt64-b) || (b < 0 && a < math.MinInt64-b) {'
+why = "when b is 0 the second operand, a > math.MaxInt64, is false for every int64, so b > 0 and b >= 0 agree"
+
+[[equivalent]]
+file = "metering/domain/usage.go"
+mutator = "CONDITIONALS_BOUNDARY"
+col = 41
+line = 'if (b > 0 && a > math.MaxInt64-b) || (b < 0 && a < math.MinInt64-b) {'
+why = "when b is 0 the second operand, a < math.MinInt64, is false for every int64, so b < 0 and b <= 0 agree"

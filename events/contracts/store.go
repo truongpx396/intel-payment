@@ -257,6 +257,10 @@ func feedExactlyOnce(tb testing.TB, f StoreFactory) {
 func feedWhileWriting(tb testing.TB, f StoreFactory) {
 	w := newWorld(tb, f)
 	const writers, each = 4, 25
+	// A consumer already holds a cursor when the writers start, so every event recorded from here on must sort after it. A store that
+	// issues ids without looking at the last puts about half of them behind the cursor — whatever the timing of the consumer's reads, so
+	// this is a certainty and not a race that has to be lost.
+	first := w.append(tb, ev("acme", events.CreditsLow, -1), "first")
 	var wg sync.WaitGroup
 	for g := range writers {
 		wg.Add(1)
@@ -272,9 +276,9 @@ func feedWhileWriting(tb testing.TB, f StoreFactory) {
 	}
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
-	seen := map[string]bool{}
-	var order []string
-	cursor := ""
+	seen := map[string]bool{first.ID: true}
+	order := []string{first.ID}
+	cursor := first.ID
 	finished := false
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
@@ -302,8 +306,8 @@ func feedWhileWriting(tb testing.TB, f StoreFactory) {
 		}
 	}
 checked:
-	if len(order) != writers*each {
-		tb.Fatalf("a consumer paging while %d events were recorded saw %d: an event became visible behind its cursor", writers*each, len(order))
+	if len(order) != 1+writers*each {
+		tb.Fatalf("a consumer paging while %d events were recorded saw %d: an event became visible behind its cursor", 1+writers*each, len(order)-1)
 	}
 	for i := 1; i < len(order); i++ {
 		if order[i] <= order[i-1] {

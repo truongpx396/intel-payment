@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	pgadapter "github.com/truongpx396/intel-payment/metering/adapters/driven/postgres"
 	"github.com/truongpx396/intel-payment/metering/app"
@@ -30,6 +31,7 @@ type tickWork struct {
 	expirer  *app.Expirer
 	books    *pgadapter.Books
 	maint    *pgadapter.Maintenance
+	usage    ports.UsageStore
 	stream   ports.IntentStream
 	bus      ports.Bus
 	pay      *payments.Loops
@@ -130,6 +132,18 @@ func (w *tickWork) handlers() []app.TickHandler {
 			}
 			out, err := w.out.Purge(ctx)
 			return inbox + out, err
+		}},
+		// The days still open to a late row (a usage row is booked within the dedup window of happening) are recomputed from the ledger and
+		// replaced; a payload {"days": N} reaches further back, for a backfill. A window nothing changed in writes nothing.
+		{Name: "usage.rollup", Key: app.NoPayload, Run: func(ctx context.Context, p []byte) (int, error) {
+			now := w.clock.Now()
+			back := w.s.Engine.UsageIdemWindow + 24*time.Hour
+			if days, ok, err := app.ParseRollupDays(p); err != nil {
+				return 0, err
+			} else if ok {
+				back = time.Duration(days) * 24 * time.Hour
+			}
+			return w.usage.Rollup(ctx, now.Add(-back), now, time.UTC)
 		}},
 		// The bus does not count what it trims, so a trim that completes is reported as having run.
 		{Name: "trim", Key: app.NoPayload, Run: func(ctx context.Context, _ []byte) (int, error) {
