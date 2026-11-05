@@ -329,3 +329,80 @@ func TestBreakdownTiesAreOrderedByNameSoTheOrderIsStable(t *testing.T) {
 		t.Fatalf("%+v, %v", rows, err)
 	}
 }
+
+// The edge of what an int64 holds, from both sides and for both signs: a sum that exactly fits is kept, and one more is refused. Without this
+// the overflow test only shows that an overflow is caught somewhere, not where.
+func TestASumThatExactlyFitsIsKeptAndOneMoreOrOneLessIsRefused(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	sum := func(a, b int64) (int64, error) {
+		got, err := domain.Rollup([]domain.LedgerUse{use(at, "d", "", a, 0, 1), use(at, "d", "", b, 0, 1)}, time.UTC)
+		for _, v := range got {
+			return int64(v.Credits), err
+		}
+		return 0, err
+	}
+	for _, tc := range []struct {
+		a, b    int64
+		want    int64
+		refused bool
+	}{
+		{math.MaxInt64 - 1, 1, math.MaxInt64, false}, {math.MaxInt64, 0, math.MaxInt64, false}, {0, math.MaxInt64, math.MaxInt64, false},
+		{math.MaxInt64, 1, 0, true}, {1, math.MaxInt64, 0, true}, {math.MaxInt64, math.MaxInt64, 0, true}, {math.MaxInt64/2 + 1, math.MaxInt64/2 + 1, 0, true},
+		{math.MaxInt64 / 2, math.MaxInt64/2 + 1, math.MaxInt64, false},
+		{math.MinInt64 + 1, -1, math.MinInt64, false}, {math.MinInt64, 0, math.MinInt64, false}, {0, math.MinInt64, math.MinInt64, false},
+		{math.MinInt64, -1, 0, true}, {-1, math.MinInt64, 0, true}, {math.MinInt64, math.MinInt64, 0, true},
+		{math.MaxInt64, -1, math.MaxInt64 - 1, false}, {math.MinInt64, 1, math.MinInt64 + 1, false}, {math.MaxInt64, math.MinInt64, -1, false},
+		{5, 7, 12, false}, {-5, -7, -12, false}, {-5, 7, 2, false}, {0, 0, 0, false},
+	} {
+		got, err := sum(tc.a, tc.b)
+		switch {
+		case tc.refused && !errors.Is(err, domain.ErrUsageOverflow):
+			t.Errorf("%d + %d does not fit and was %d, %v", tc.a, tc.b, got, err)
+		case !tc.refused && (err != nil || got != tc.want):
+			t.Errorf("%d + %d = %d fits and was %d, %v", tc.a, tc.b, tc.want, got, err)
+		}
+	}
+	// The cost and the event count are held to the same edge.
+	for name, mk := range map[string]func(a, b int64) []domain.LedgerUse{
+		"cost": func(a, b int64) []domain.LedgerUse {
+			return []domain.LedgerUse{use(at, "d", "", 0, a, 1), use(at, "d", "", 0, b, 1)}
+		},
+		"events": func(a, b int64) []domain.LedgerUse {
+			return []domain.LedgerUse{use(at, "d", "", 0, 0, a), use(at, "d", "", 0, 0, b)}
+		},
+	} {
+		if _, err := domain.Rollup(mk(math.MaxInt64-1, 1), time.UTC); err != nil {
+			t.Errorf("%s: an exact fit was refused: %v", name, err)
+		}
+		if _, err := domain.Rollup(mk(math.MaxInt64, 1), time.UTC); !errors.Is(err, domain.ErrUsageOverflow) {
+			t.Errorf("%s: one past the edge: %v", name, err)
+		}
+	}
+}
+
+// A breakdown of more dimensions than a few, in every starting order, comes out largest first with ties by name.
+func TestABreakdownIsOrderedLargestFirstWithTiesByNameWhateverTheStartingOrder(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	spend := map[string]int64{"e": 1, "a": 7, "d": 7, "b": 3, "c": 3, "f": 9, "g": 0}
+	want := []string{"f", "a", "d", "b", "c", "e", "g"}
+	for seed := uint64(1); seed <= 40; seed++ {
+		r := rand.New(rand.NewPCG(seed, 5))
+		var uses []domain.LedgerUse
+		for dim, c := range spend {
+			uses = append(uses, use(at, dim, "u", c, 0, 1))
+		}
+		r.Shuffle(len(uses), func(i, j int) { uses[i], uses[j] = uses[j], uses[i] })
+		roll, _ := domain.Rollup(uses, time.UTC)
+		rows, err := domain.Breakdown(roll, domain.BreakdownQuery{Scope: acme, From: "2026-11-05", To: "2026-11-05", Member: "u"})
+		if err != nil || len(rows) != len(want) {
+			t.Fatalf("%v, %v", rows, err)
+		}
+		for i, w := range want {
+			if rows[i].Dimension != w {
+				t.Fatalf("seed %d: position %d is %q, want %q (%+v)", seed, i, rows[i].Dimension, w, rows)
+			}
+		}
+	}
+}
