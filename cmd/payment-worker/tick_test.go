@@ -24,7 +24,7 @@ func TestATickThatDoesNotExistIsRefusedAndTheOnesThatDoAreListed(t *testing.T) {
 	if code != 2 || out != "" || !strings.Contains(errs, `"nightly" is not a tick`) {
 		t.Fatalf("%d %q %q", code, out, errs)
 	}
-	for _, name := range []string{"reconcile", "audit", "transfer", "journal", "webhook", "outbound", "expiry", "dunning", "subdrift", "partitions", "idem.purge", "events.purge", "trim"} {
+	for _, name := range []string{"reconcile", "audit", "transfer", "journal", "webhook", "outbound", "expiry", "dunning", "subdrift", "partitions", "idem.purge", "events.purge", "trim", "usage.rollup"} {
 		if !strings.Contains(errs, name) {
 			t.Errorf("the refusal does not list %s: %q", name, errs)
 		}
@@ -40,6 +40,15 @@ func TestAPerShardTickMustNameAShardTheDeploymentHas(t *testing.T) {
 	} {
 		if code, out, errs := runTick(t, env, args...); code != 2 || out != "" || errs == "" {
 			t.Errorf("%v: %d %q %q", args, code, out, errs)
+		}
+	}
+}
+
+func TestAUsageRollupBackfillThatIsNotAWholeNumberOfDaysInRangeIsRefused(t *testing.T) {
+	t.Parallel()
+	for _, p := range []string{`{"days":0}`, `{"days":-5}`, `{"days":3661}`, `{"days":"30"}`, `{"days":1.5}`} {
+		if code, out, errs := runTick(t, with(), "usage.rollup", p); code != 2 || out != "" || errs == "" {
+			t.Errorf("%s: %d %q %q", p, code, out, errs)
 		}
 	}
 }

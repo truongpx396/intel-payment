@@ -18,8 +18,8 @@ import (
 // R110, end to end: the scheduled ticks are published the way an external scheduler would publish them — `payment-worker tick <name>` —
 // and worked by a real payment-worker over Redis and PostgreSQL, each under its claim.
 
-// servedTicks are the thirteen ticks of bus-subjects.md less `subdrift`, whose sweep is designed and not built.
-var servedTicks = []string{"reconcile", "audit", "transfer", "journal", "webhook", "outbound", "expiry", "dunning", "partitions", "idem.purge", "events.purge", "trim"}
+// servedTicks are the fourteen ticks of bus-subjects.md less `subdrift`, whose sweep is designed and not built.
+var servedTicks = []string{"reconcile", "audit", "transfer", "journal", "webhook", "outbound", "expiry", "dunning", "partitions", "idem.purge", "events.purge", "trim", "usage.rollup"}
 
 // publishTick runs `payment-worker tick …` with the worker's own environment and returns what it said.
 func publishTick(t *testing.T, env map[string]string, args ...string) string {
@@ -107,7 +107,7 @@ func TestEveryScheduledTickWithNothingDueIsServedCountedIdleAndWritesNothing(t *
 	if strings.Contains(body, `tick="subdrift"`) {
 		t.Error("a tick this process does not serve was consumed")
 	}
-	for _, name := range []string{"reconcile", "audit", "transfer", "journal", "outbound", "expiry", "dunning", "partitions", "idem.purge", "events.purge"} {
+	for _, name := range []string{"reconcile", "audit", "transfer", "journal", "outbound", "expiry", "dunning", "partitions", "idem.purge", "events.purge", "usage.rollup"} {
 		if !tickCount(body, name, "idle") {
 			t.Errorf("the %s tick had nothing due and was not counted idle", name)
 		}
@@ -224,5 +224,59 @@ func TestAReconcileTickDeliveredTwiceRecordsOneRunAndThenFindsNothingDue(t *test
 	_, body := httpDo(t, c, "GET", wbase+"/metrics", "", "")
 	if !strings.Contains(body, `metering_tick_total{outcome="idle",tick="reconcile"}`) {
 		t.Fatalf("the idle reconcile was not counted:\n%s", body)
+	}
+}
+
+func TestTheUsageRollupTickBuildsTheDailyRowsFromWhatWasBookedAndThenFindsNothingToDo(t *testing.T) {
+	t.Parallel()
+	realm, dsn := seededRealm(t)
+	rd := dedicatedRedis(t)
+	rdURL := "redis://" + rd + "/0"
+	pool := ledgerPool(t, dsn)
+	env := paymentsEnv(workerEnv(realm, dsn, "PAYMENT_BALANCE_REDIS_URL", rdURL, "PAYMENT_RECONCILE_INTERVAL", "1h", "PAYMENT_RECONCILE_FULL_SWEEP_INTERVAL", "24h"))
+	w := startWorker(t, env)
+	awaitOwning(t, pool, w, 8)
+	d := startPaymentd(t, paymentsEnv(paymentdEnv(realm, dsn, "PAYMENT_BALANCE_REDIS_URL", rdURL, "PAYMENT_SHARDS", "8")))
+	base := d.httpURL(t)
+	c := &http.Client{Timeout: 10 * time.Second}
+	awaitReady(t, d, c, base)
+	sc := domain.Scope{Realm: domain.Realm(realm), Kind: "workspace", ID: fmt.Sprintf("w-%d", seq.Add(1))}
+	scopeJSON := fmt.Sprintf(`{"kind":%q,"id":%q}`, sc.Kind, sc.ID)
+	grantWhenReady(t, c, base, scopeJSON)
+	var spent int64
+	for i := range 3 {
+		spent += -record(t, c, base, scopeJSON, fmt.Sprintf("r-%d", i)) // a record's delta is negative
+	}
+	eventually(t, 30*time.Second, "the usage to be booked", func() bool { return bookedFor(t, pool, realm, sc).usage == 3 })
+
+	rows := func() (credits, events int64, n int) {
+		must(t, pool.QueryRow(t.Context(), `SELECT coalesce(sum(credits), 0), coalesce(sum(events), 0), count(*) FROM usage_daily WHERE realm = $1 AND scope_id = $2`, realm, sc.ID).Scan(&credits, &events, &n))
+		return credits, events, n
+	}
+	if _, _, n := rows(); n != 0 {
+		t.Fatalf("%d rows before any rollup: the rollup is a tick, not a side effect of booking", n)
+	}
+	publishTick(t, env, "usage.rollup")
+	eventually(t, 30*time.Second, "the daily rows to be built", func() bool { _, _, n := rows(); return n > 0 })
+	credits, events, _ := rows()
+	if credits != spent || events != 3 {
+		t.Fatalf("the daily rows say %d credits over %d events, the books say %d over 3", credits, events, spent)
+	}
+	var dim string
+	must(t, pool.QueryRow(t.Context(), `SELECT dimension FROM usage_daily WHERE realm = $1 AND scope_id = $2 LIMIT 1`, realm, sc.ID).Scan(&dim))
+	if dim != "llm.chat" {
+		t.Fatalf("the dimension is the resource that was metered: %q", dim)
+	}
+
+	// Nothing booked since: the same window again, and a backfill of thirty days, change nothing and are counted idle.
+	wbase := "http://" + w.listening(t, "ops")
+	publishTick(t, env, "usage.rollup", `{"days":30}`)
+	publishTick(t, env, "usage.rollup")
+	eventually(t, 30*time.Second, "the idle rollup to be counted", func() bool {
+		_, body := httpDo(t, c, "GET", wbase+"/metrics", "", "")
+		return strings.Contains(body, `metering_tick_total{outcome="idle",tick="usage.rollup"}`)
+	})
+	if c2, e2, _ := rows(); c2 != credits || e2 != events {
+		t.Fatalf("a window nothing changed in changed the rows: %d/%d, then %d/%d", credits, events, c2, e2)
 	}
 }

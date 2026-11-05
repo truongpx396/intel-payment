@@ -143,11 +143,11 @@ func tickMsg(name string, payload []byte) ports.Message {
 	return ports.Message{Subject: app.TickSubject("billing", name), ID: "1-0", Payload: payload, Attempts: 1}
 }
 
-func TestThereAreThirteenTicksAndEachHasItsOwnSubject(t *testing.T) {
+func TestThereAreFourteenTicksAndEachHasItsOwnSubject(t *testing.T) {
 	t.Parallel()
-	want := []string{"reconcile", "audit", "transfer", "journal", "webhook", "outbound", "expiry", "dunning", "subdrift", "partitions", "idem.purge", "events.purge", "trim"}
+	want := []string{"reconcile", "audit", "transfer", "journal", "webhook", "outbound", "expiry", "dunning", "subdrift", "partitions", "idem.purge", "events.purge", "trim", "usage.rollup"}
 	if fmt.Sprint(app.TickNames) != fmt.Sprint(want) {
-		t.Fatalf("the ticks are %v, want the thirteen of bus-subjects.md in its order: %v", app.TickNames, want)
+		t.Fatalf("the ticks are %v, want the fourteen of bus-subjects.md in its order: %v", app.TickNames, want)
 	}
 	if got := app.TickSubject("billing", "idem.purge"); got != "billing.idem.purge.tick" {
 		t.Fatalf("%q", got)
@@ -408,7 +408,7 @@ func TestTheTicksAProcessServesAreJoinedOneSubjectEachUnderTheWorkerGroup(t *tes
 		t.Fatal(err)
 	}
 	defer func() { _ = sub.Close() }()
-	if len(b.joined) != 13 || b.joined[0] != "billing.reconcile.tick as worker" || b.joined[12] != "billing.trim.tick as worker" {
+	if len(b.joined) != 14 || b.joined[0] != "billing.reconcile.tick as worker" || b.joined[13] != "billing.usage.rollup.tick as worker" {
 		t.Fatalf("joined %d: %v", len(b.joined), b.joined)
 	}
 	// A process that serves only some ticks joins only those.
@@ -445,5 +445,23 @@ func TestTicksWithoutWhatTheyNeedOrWithAnUnknownHandlerAreRefused(t *testing.T) 
 	tk, _ := app.NewTicks(app.TicksDeps{Claims: contracts.NewMemClaimer(), Prefix: "billing", Handlers: []app.TickHandler{ok}})
 	if o, err := tk.Do(context.Background(), "audit", nil); err == nil || o != app.TickFailed {
 		t.Errorf("a tick this process does not serve: %v, %v", o, err)
+	}
+}
+
+func TestAUsageRollupTickMayAskForADaysBackfillWithinRange(t *testing.T) {
+	t.Parallel()
+	for payload, want := range map[string]struct {
+		days int
+		ok   bool
+	}{"": {0, false}, `{}`: {0, false}, `{"days":null}`: {0, false}, `{"days":1}`: {1, true}, `{"days":400}`: {400, true}, `{"days":3660}`: {3660, true}} {
+		days, ok, err := app.ParseRollupDays([]byte(payload))
+		if err != nil || days != want.days || ok != want.ok {
+			t.Errorf("%q: %d %v %v", payload, days, ok, err)
+		}
+	}
+	for _, bad := range []string{`{"days":0}`, `{"days":-1}`, `{"days":3661}`, `{"days":"7"}`, `{"days":2.5}`, `not json`, `[1]`} {
+		if _, _, err := app.ParseRollupDays([]byte(bad)); !errors.Is(err, domain.ErrInvalid) {
+			t.Errorf("%q: %v", bad, err)
+		}
 	}
 }
