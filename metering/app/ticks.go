@@ -202,7 +202,7 @@ type ShardPayload struct {
 func ParseShard(payload []byte, shards int) (ShardPayload, error) {
 	var p ShardPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		return p, fmt.Errorf("%w: the payload is not JSON: %v", domain.ErrInvalid, err)
+		return p, fmt.Errorf("%w: the payload is not JSON: %w", domain.ErrInvalid, err)
 	}
 	switch {
 	case p.Shard == nil:

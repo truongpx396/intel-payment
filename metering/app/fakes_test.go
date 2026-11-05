@@ -206,7 +206,7 @@ func (m *recMetrics) Count(name string, n int64, l ports.Labels) {
 	m.mu.Unlock()
 }
 
-func (m *recMetrics) counts_() map[string]int64 {
+func (m *recMetrics) snapshot() map[string]int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := map[string]int64{}

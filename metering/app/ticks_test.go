@@ -183,7 +183,7 @@ func TestEveryTickRunsTwiceAtOnceAsOne(t *testing.T) {
 			for r.metrics.count(ports.MetricTick+"{"+name+"skipped}") < 7 {
 				select {
 				case <-deadline:
-					t.Fatalf("the other runs were not turned away: %v", r.metrics.counts_())
+					t.Fatalf("the other runs were not turned away: %v", r.metrics.snapshot())
 				case <-time.After(5 * time.Millisecond):
 				}
 			}
@@ -213,7 +213,7 @@ func TestEveryTickKilledMidwayIsCompletedByTheNext(t *testing.T) {
 	for _, name := range app.TickNames {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			r := newTickRig(t, 10, func(n string, w *worklist) { w.dieAt = 4 })
+			r := newTickRig(t, 10, func(_ string, w *worklist) { w.dieAt = 4 })
 			w := r.work[name]
 			go func() { _, _ = r.ticks.Do(context.Background(), name, payloadFor(name)) }() // dies after four items, holding its claim
 			select {
@@ -273,10 +273,10 @@ func TestATickWhoseRunFailsHandsTheWorkToTheNextAndTheBusRedeliversIt(t *testing
 				t.Fatal(err)
 			}
 			if r.metrics.count(ports.MetricTick+"{"+name+"failed}") != 1 {
-				t.Fatalf("the failure is not counted: %v", r.metrics.counts_())
+				t.Fatalf("the failure is not counted: %v", r.metrics.snapshot())
 			}
 			if r.metrics.count(ports.MetricTick+"{"+name+"skipped}") != 0 || r.metrics.count(ports.MetricTick+"{"+name+"idle}") != 1 {
-				t.Fatalf("the redelivery was turned away at a claim the failed run kept, instead of running: %v", r.metrics.counts_())
+				t.Fatalf("the redelivery was turned away at a claim the failed run kept, instead of running: %v", r.metrics.snapshot())
 			}
 		})
 	}
@@ -395,7 +395,7 @@ func TestATickSkippedByItsHandlerIsSkippedNotFailed(t *testing.T) {
 		t.Fatalf("%v, %v", o, err)
 	}
 	if m.count(ports.MetricTick+"{auditskipped}") != 1 {
-		t.Fatalf("%v", m.counts_())
+		t.Fatalf("%v", m.snapshot())
 	}
 }
 

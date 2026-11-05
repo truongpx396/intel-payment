@@ -69,7 +69,7 @@ func TestAnIncrementalReconcileThatNeverRanIsDueForEverythingOnce(t *testing.T) 
 
 func TestAFullSweepIsDueWheneverTheShardHoldsAScopeWhateverTheLastRunWas(t *testing.T) {
 	t.Parallel()
-	b := &reconcileBooks{last: time.Now(), scopes: []ports.ScopeState{{}}}
+	b := &reconcileBooks{last: time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC), scopes: []ports.ScopeState{{}}}
 	w := &Writer{d: Deps{Books: b}}
 	if due, err := w.ReconcileDue(context.Background(), 1, domain.ReconcileFull); err != nil || !due {
 		t.Fatalf("%v, %v", due, err)
