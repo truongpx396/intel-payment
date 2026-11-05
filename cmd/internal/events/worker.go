@@ -127,12 +127,18 @@ func (w *Worker) tick(ctx context.Context) error {
 }
 
 func (w *Worker) purge(ctx context.Context) error {
+	_, err := w.Purge(ctx)
+	return err
+}
+
+// Purge deletes the events kept past their retention, which an event something is still owed for never is, and returns how many.
+func (w *Worker) Purge(ctx context.Context) (int, error) {
 	n, err := w.store.Purge(ctx, w.c.Clock.Now().Add(-w.c.Settings.Retention))
 	if err != nil {
-		return fmt.Errorf("purge events past retention: %w", err)
+		return 0, fmt.Errorf("purge events past retention: %w", err)
 	}
 	if n > 0 {
 		w.c.Log.Info("events: events past retention were deleted", "count", n)
 	}
-	return nil
+	return n, nil
 }

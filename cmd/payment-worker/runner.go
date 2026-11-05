@@ -28,6 +28,25 @@ type runner struct {
 
 	owned map[domain.Shard]*ownership // touched only by the ownership loop
 	wg    sync.WaitGroup              // every goroutine it starts
+
+	ownMu sync.RWMutex
+	mine  map[domain.Shard]bool // the shards this process owns now: what a tick handler may ask from any goroutine
+}
+
+// owns reports whether this process holds the shard's lease at this moment.
+func (r *runner) owns(sh domain.Shard) bool {
+	r.ownMu.RLock()
+	defer r.ownMu.RUnlock()
+	return r.mine[sh]
+}
+
+func (r *runner) setOwned(sh domain.Shard, owned bool) {
+	r.ownMu.Lock()
+	defer r.ownMu.Unlock()
+	if r.mine == nil {
+		r.mine = map[domain.Shard]bool{}
+	}
+	r.mine[sh] = owned
 }
 
 type ownership struct {
@@ -90,6 +109,7 @@ func (r *runner) reap(ctx context.Context) {
 			<-o.done
 		}
 		delete(r.owned, sh)
+		r.setOwned(sh, false)
 	}
 }
 
@@ -118,6 +138,7 @@ func (r *runner) acquire(ctx context.Context) {
 		sctx, cancel := context.WithCancel(ctx)
 		o := &ownership{lease: lease, cancel: cancel, done: make(chan struct{})}
 		r.owned[sh] = o
+		r.setOwned(sh, true)
 		r.wg.Add(1)
 		go func() {
 			defer r.wg.Done()

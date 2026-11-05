@@ -29,6 +29,10 @@ import (
 	"github.com/truongpx396/intel-payment/metering/app"
 )
 
+// housekeepingEvery is how often the worker runs the ticks nothing else would: cheap, idempotent, and a claim keeps replicas from doing
+// the same one together.
+const housekeepingEvery = time.Hour
+
 // serve parses the settings, wires the writer to its stores and runs it until ctx is done.
 func serve(ctx context.Context, getenv func(string) string, stderr io.Writer) int {
 	s, err := parseSettings(getenv)
@@ -147,9 +151,13 @@ func runWorker(ctx context.Context, s settings, log *slog.Logger, getenv func(st
 
 	// What a worker joins after the payment loops are running fails together with them: the same fault (a prefix the bus will not take)
 	// stops all of them, and the operator is told every subscription that could not be joined, the low-balance one included.
+	var delivered chan struct{} // closed when the outbound-event loops have stopped; nil until they are started
 	abort := func(err error) error {
 		stop()
 		<-relayDone
+		if delivered != nil {
+			<-delivered
+		}
 		return errors.Join(err, <-paid)
 	}
 
@@ -167,10 +175,35 @@ func runWorker(ctx context.Context, s settings, log *slog.Logger, getenv func(st
 		return abort(fmt.Errorf("join the announcements that become events: %w", err))
 	}
 	defer func() { _ = recorder.Close() }()
-	delivered := make(chan struct{})
+	delivered = make(chan struct{})
 	go func() { defer close(delivered); out.Run(runCtx) }()
 
+	// The scheduled ticks, claimed so that a tick published twice, or delivered to two replicas, is worked once.
 	r := &runner{s: s, log: log, books: st.Books, writer: writer, replayer: replayer, expirer: expirer, deadLetters: dead}
+	work := &tickWork{
+		s: s, log: log, clock: system.Clock{}, r: r, writer: writer, replayer: replayer, expirer: expirer, books: st.Books,
+		maint: pgadapter.NewMaintenance(st.Pool), stream: stream, bus: bus, pay: pay, out: out, met: metrics,
+	}
+	ticks, err := app.NewTicks(app.TicksDeps{Claims: pgadapter.NewClaims(st.Pool), Metrics: metrics, Prefix: cfg.SubjectPrefix, Handlers: work.handlers()})
+	if err != nil {
+		return abort(err)
+	}
+	tickSub, err := ticks.Subscribe(runCtx, bus)
+	if err != nil {
+		return abort(fmt.Errorf("join the scheduled ticks: %w", err))
+	}
+	defer func() { _ = tickSub.Close() }()
+	log.Info("serving scheduled ticks", "ticks", ticks.Served())
+
+	// Housekeeping with no other driver: partitions are made four days ahead and would run out, the usage guard would never be dropped, and the
+	// bus would never be trimmed. They are the same ticks, under the same claim, so a scheduler that also publishes them does no harm.
+	for _, name := range []string{"partitions", "idem.purge", "trim"} {
+		r.start(runCtx, name+" tick", housekeepingEvery, func(ctx context.Context) error {
+			_, err := ticks.Do(ctx, name, nil)
+			return err
+		})
+	}
+
 	err = r.run(runCtx)
 	stop()
 	<-relayDone

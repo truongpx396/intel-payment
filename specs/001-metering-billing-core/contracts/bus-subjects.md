@@ -65,6 +65,18 @@ Switching is a `cmd/` wiring change. No subject, payload, handler or invariant d
 
 Published by an **external scheduler** onto `billing:ticks`; the `worker` group delivers each to one replica; every handler is an idempotent claim, so a duplicated tick has no second effect.
 
+**How a tick is run.** `payment-worker tick <name> [json]` publishes one (`payment-worker tick journal`, `payment-worker tick reconcile '{"shard":3}'`): the door a cron or a CronJob uses, needing the worker's `PAYMENT_*` variables and only the bus. A worker replica receives it and runs it under a **claim** (`ports.Claimer`; PostgreSQL: a session advisory lock on `<tick>|<key>`, which writes nothing). The key is the tick alone, except for the per-shard ones — `reconcile` and `audit` carry `{"shard": N}` (and `reconcile` a `kind`, `incremental` by default or `full`), claim per shard and kind, and are **refused when they name no shard**: guessing "all of them" is how one worker would be handed every shard's work. Three things hold of every handler, and `app.Ticks` is the one place that makes them hold:
+
+- **Two concurrent runs of one tick do the work once.** The second finds the claim held and is counted `skipped`.
+- **A run killed midway is completed by the next.** The claim is a lock the server drops with the session, so a dead holder holds nothing; the work behind a tick is idempotent (every effect is keyed, every booking guarded), so the next run starts again from what the books say is left.
+- **A tick with nothing due writes nothing.** It is counted `idle` (`metering_tick_total{tick,outcome}`: `ran`, `idle`, `skipped`, `failed`), and neither the claim nor the handler leaves a row. A reconcile asks first whether any scope was booked since the last one (`Writer.ReconcileDue`), because a reconcile that runs always records its run.
+
+A per-shard tick runs under the shard's lease: this worker's own when it owns the shard, otherwise a lease taken for the duration; a shard another worker owns is that worker's, and the tick is `skipped`. A `failed` tick is an error to the bus, which delivers it again and then parks it in `dead_letters` ([Dead letters](#dead-letters)): a persistent failure pages.
+
+**Served today:** every tick below **except `billing.subdrift.tick`**. The sweep that asks each provider for the current state of every locally active subscription is designed and not built, so no process subscribes to the subject — a tick published for it is not consumed, and nothing is repaired by it (`POST /v1/admin/subdrift` in [rest-api.md](./rest-api.md) is the same sweep, forced, and is not built either). A webhook that never arrived is repaired by redelivering it from the provider's dashboard, which the inbox makes safe.
+
+**What also runs without a scheduler.** `payment-worker` keeps its own timers for the work it always did (journal replay, transfer re-drive, expiry, each owned shard's reconcile and audit, the webhook inbox, outbound deliveries and the purges) and, hourly and under the same claim, for the three nothing else would drive: `partitions`, `idem.purge` and `trim`. A scheduler is therefore for a different cadence, an off-peak audit, or a manual run — not a requirement.
+
 | Tick | Does | Cadence |
 |---|---|---|
 | `billing.reconcile.tick` | incremental reconcile per shard ([§8](./hot-path-consistency.md#8-reconcile-audit-and-resharding)); `{shard, kind: full}` on `ReconcileFullSweepInterval` | 5 min / 24 h |
@@ -76,10 +88,10 @@ Published by an **external scheduler** onto `billing:ticks`; the `worker` group 
 | `billing.expiry.tick` | expires credit lots, pre-applying the upper bound ([§3](./hot-path-consistency.md#3-the-durable-writer-ordered-batched-idempotent)) | hourly, under `lots_fefo` |
 | `billing.dunning.tick` | suspends subscriptions past `GraceUntil` | hourly |
 | `billing.subdrift.tick` | `FetchSubscription` for locally active subscriptions; repairs divergence — **the backstop for a missed webhook** | daily |
-| `billing.partitions.tick` | creates ledger (monthly) and dedup/archive (daily) partitions ahead of need; alarms on rows in a DEFAULT partition | daily |
-| `billing.idem.purge.tick` | drops `usage_idem` partitions older than `UsageIdemWindow` | daily |
+| `billing.partitions.tick` | creates ledger (monthly, 3 ahead) and usage guard and usage events (daily, 4 ahead) partitions ahead of need; alarms on rows in a DEFAULT partition | daily (the worker also runs it hourly) |
+| `billing.idem.purge.tick` | drops the daily `usage_idem` partitions that lie wholly before `now − UsageIdemWindow` (a day with any instant inside the window is kept; the DEFAULT partition and any partition not made by `ensure_daily_partitions` are never touched; each drop waits two seconds for its lock at most) | daily (the worker also runs it hourly) |
 | `billing.events.purge.tick` | purges `payment_events` past retention (never inside a provider replay window) and delivered outbound events past theirs | daily — **the outbound half is not published today**: `payment-worker` purges events hourly from a timer of its own (`PAYMENT_EVENT_RETENTION`) |
-| `billing.trim.tick` | **Redis Streams only**: trims acked history below the retention floor | hourly |
+| `billing.trim.tick` | **Redis Streams only**: trims acked history below the retention floor (`PAYMENT_BUS_RETENTION`) on the events and ticks streams and on each shard's outbox | hourly (the worker also runs it hourly) |
 
 ---
 
@@ -164,7 +176,7 @@ The replay route (`POST /v1/admin/dead-letters/{id}/replay`, [rest-api.md](./res
 `BusContract` runs against **both** adapters — the only way "swappable" means anything.
 
 - A consumer killed mid-handler has its in-flight entry **redelivered**, not lost — `XAUTOCLAIM` on Redis, ack-wait on JetStream.
-- Two schedulers publishing the same `billing.reconcile.tick` produce exactly one reconcile for the shard.
+- Two schedulers publishing the same `billing.reconcile.tick` produce exactly one reconcile for the shard — and, for every tick: two concurrent runs do the work once, a run killed midway is completed by the next, and a tick with nothing due writes nothing (`app.Ticks` over all thirteen names; `ClaimerContract` over an in-memory claimer and PostgreSQL; and a real worker serving each tick, writing no row in an idle round).
 - A message under the attempt cap is redelivered by the Bus and applied at most once; at the cap it lands in `dead_letters`, pages once however often its envelope is delivered, and is never delivered again except by an operator's replay, which delivers it once (`DeadLetterContract`, run over the in-memory store and PostgreSQL, and a property over any interleaving of failures, duplicate envelopes, replays — racing, failing and killed midway — in `metering/app`).
 - Publishing to realm A's subject never affects anything in realm B.
 - **Trim never removes an un-acked entry**, even when the stream is over its length target.

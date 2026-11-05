@@ -232,6 +232,22 @@ SELECT ep.id AS endpoint, ep.url, count(*) AS dead, max(d.last_status) AS last_s
 4. An endpoint is a row: to stop the pages from a host that is gone, set `event_endpoints.active = false`. Its owed deliveries end at
    the window, and are counted once.
 
+## Scheduling the ticks
+
+`payment-worker` drives its own periodic work, so a deployment runs without a scheduler. A scheduler (a cron, a CronJob) is for another
+cadence or a manual run, and publishes through the worker's own binary — it needs the worker's `PAYMENT_*` variables and only the bus:
+
+```bash
+payment-worker tick audit '{"shard":0}'            # one per shard; a per-shard tick that names no shard is refused
+payment-worker tick reconcile '{"shard":3,"kind":"full"}'
+payment-worker tick partitions                     # journal, transfer, expiry, webhook, outbound, dunning, idem.purge, events.purge, trim
+```
+
+Publishing a tick twice is harmless: the second is `skipped` at the claim. `metering_tick_total{tick,outcome}` says what became of each:
+`ran` (work was done), `idle` (nothing was due, nothing was written), `skipped` (another run held the claim, or the shard belongs to another
+worker), `failed` (the bus redelivers it, then parks it in `dead_letters` and pages — see [Alert: DLQ dead count](#alert-dlq-dead-count)).
+A tick that stops arriving shows as a counter that stops moving. `billing.subdrift.tick` is **not served**: nothing consumes it.
+
 ## Alert: stream length approaching the cap
 
 **Means:** the trim tick is not running, or a consumer group is so far behind that nothing is

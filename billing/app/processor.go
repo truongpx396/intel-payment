@@ -145,7 +145,7 @@ func (p *Processor) Tick(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("event %s: %w", le.Event.ProviderEventID, err))
 		}
 	}
-	if err := p.sweepGrace(ctx); err != nil {
+	if _, err := p.SweepGrace(ctx); err != nil {
 		errs = append(errs, err)
 	}
 	if err := p.publishInboxAge(ctx); err != nil {
@@ -803,17 +803,19 @@ func (p *Processor) applySubscription(ctx context.Context, acct domain.ProviderA
 	return subResult{sub: sub, applied: applied}, nil
 }
 
-// sweepGrace announces, once, that a grace window has ended — so entitlement caches evict the scope at that
+// SweepGrace announces, once, that a grace window has ended — so entitlement caches evict the scope at that
 // instant instead of at their TTL. Entitlements themselves lapse by the clock (Sub.HoldsEntitlements); this only
 // tells the others. The announcement is made before it is recorded, so a crash between them repeats it, which
 // is harmless, instead of losing it.
-func (p *Processor) sweepGrace(ctx context.Context) error {
+// It returns how many windows it announced: it is also the `billing.dunning.tick` (the sweep that runs on every webhook tick, run alone).
+func (p *Processor) SweepGrace(ctx context.Context) (int, error) {
 	now := p.d.Clock.Now()
 	due, err := p.d.Subs.DueForGraceExpiry(ctx, now)
 	if err != nil {
-		return fmt.Errorf("list ended grace windows: %w", err)
+		return 0, fmt.Errorf("list ended grace windows: %w", err)
 	}
 	var errs []error
+	announced := 0
 	for _, s := range due {
 		if err := p.announceEntitlement(ctx, s.Scope, "grace_expired"); err != nil {
 			errs = append(errs, err)
@@ -821,7 +823,9 @@ func (p *Processor) sweepGrace(ctx context.Context) error {
 		}
 		if _, err := p.d.Subs.MarkGraceLapsed(ctx, s, now); err != nil {
 			errs = append(errs, fmt.Errorf("record the end of the grace of %s: %w", s.ProviderSubscriptionID, err))
+			continue
 		}
+		announced++
 	}
-	return errors.Join(errs...)
+	return announced, errors.Join(errs...)
 }
