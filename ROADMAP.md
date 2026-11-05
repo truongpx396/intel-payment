@@ -34,7 +34,7 @@ else**, and saying so is more useful than pretending otherwise:
 
 **Status: in progress — the foundation, the metering core, the transports and the payment pipeline (webhook door, processor, Stripe/Polar/PayPal adapters, auto top-up) are built and verified; the payment `/v1` routes, the admin API and a first sandbox rehearsal are done too, and so are the entitlements (REST, gRPC, the cache and the plan-sized ceilings); outbound events, the operational surface and the UI are not.** → [specs/001-metering-billing-core](specs/001-metering-billing-core/)
 
-Tasks: 166 of 197 done (specs/001-metering-billing-core/tasks.md) — counted by `scripts/check-spec-drift.sh`, which fails CI when this line and the task list disagree.
+Tasks: 168 of 197 done (specs/001-metering-billing-core/tasks.md) — counted by `scripts/check-spec-drift.sh`, which fails CI when this line and the task list disagree.
 
 Prepaid credits in pools, exact rational pricing, the admission gate with subject- and plan-sized
 ceilings, the single durable writer with a per-scope sequence watermark, cluster-safe hot-path

@@ -49,7 +49,7 @@ Every variable maps 1:1 to a `Config` field. The last column is what happens if 
 | `PAYMENT_SUBJECT_PREFIX` | `billing` | Fit into a host's existing namespace |
 | `PAYMENT_BUS_RETENTION` | `168h` | Acked entries kept this long, then trimmed. Streams only |
 | `PAYMENT_BUS_MAX_LEN` | `1000000` | Per-stream cap. At the cap the hot function refuses with backpressure and `Record` defers to the journal — nothing is trimmed or dropped |
-| `PAYMENT_BUS_MAX_ATTEMPTS` | `5` | Deliveries before an event goes to the DLQ (intents are parked into suspense instead) |
+| `PAYMENT_BUS_MAX_ATTEMPTS` | `5` | Deliveries before a message goes to the DLQ, where `payment-worker` parks it in `dead_letters` and pages (an intent is parked into suspense instead) |
 | `PAYMENT_BUS_ACK_WAIT` | `30s` | In-flight reclaim threshold (`XAUTOCLAIM` / ack-wait) |
 
 ### Settlement durability

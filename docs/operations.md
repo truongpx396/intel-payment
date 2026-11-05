@@ -60,6 +60,7 @@ needs ~272; the compose Postgres is started with `max_connections=400`. Run repl
 | **Webhook verification failures** | `billing_webhook_verify_failed_total` | zero. A security signal |
 | **Webhook inbox age** | `billing_webhook_inbox_age_seconds` | seconds |
 | Outbound deliveries | `events_delivery_failed_total` | ~zero |
+| **Dead letters** | `metering_dead_letters` (and `metering_dead_lettered_total` per parking) | **zero** |
 | DEFAULT partitions | `metering_default_partition_rows` | zero |
 
 **Page on:** drift findings, regressions, a shard frozen longer than a minute, outbox age, sequence
@@ -363,13 +364,26 @@ grant impossible.
 
 ## Alert: DLQ dead count
 
-**Means:** a message exhausted its retry budget. It is parked, never dropped.
+**Means:** a message exhausted its delivery budget (`PAYMENT_BUS_MAX_ATTEMPTS`) and `payment-worker` parked it in
+`dead_letters`. It is kept, byte for byte, and nothing delivers it again until you say so.
+`metering_dead_letters` is the number nobody has replayed (it clears when the last one is replayed);
+`metering_dead_lettered_total` moves once per parking.
 
 ```sql
-SELECT subject, attempts, last_error, parked_at FROM dead_letters WHERE replayed_at IS NULL ORDER BY parked_at DESC;
+SELECT id, realm, subject, attempts, last_error, parked_at
+  FROM dead_letters WHERE replayed_at IS NULL ORDER BY parked_at DESC;
+SELECT encode(payload, 'escape') FROM dead_letters WHERE id = '<id>';  -- the message as it arrived
 ```
 
-Fix the cause, then `POST /v1/admin/dead-letters/{id}/replay`. Replay is idempotent.
+1. **Read `last_error` and the subject.** A subject of `billing.dlq.…` is a message that was not even a dead-letter envelope; its
+   payload is the raw bytes, and it cannot be replayed (there is no subject to send it back to).
+2. **Fix the cause first.** A replayed message that fails again is a new letter and a new page.
+3. **Replay it.** The replay is `app.DeadLetters.Replay`: it claims the letter for a minute, publishes the payload to its
+   original subject and marks it replayed (the row stays). Two replays at once publish once; a publish that fails can be retried
+   at once; one killed midway is completed by the next after the minute. **The admin route for it
+   (`POST /v1/admin/dead-letters/{id}/replay`) is designed and not served yet** ([rest-api.md](../specs/001-metering-billing-core/contracts/rest-api.md)):
+   until it is, a replay is a call from a Go program that holds the bus and the store.
+4. A parked **tick** (`….tick`) is harmless to leave: the next scheduled tick does the work.
 
 ---
 

@@ -20,6 +20,7 @@ import (
 	"github.com/truongpx396/intel-payment/metering"
 	pgarchive "github.com/truongpx396/intel-payment/metering/adapters/driven/archive/postgres"
 	otelmetrics "github.com/truongpx396/intel-payment/metering/adapters/driven/otel"
+	pgadapter "github.com/truongpx396/intel-payment/metering/adapters/driven/postgres"
 	"github.com/truongpx396/intel-payment/metering/adapters/driven/redisstreams"
 	"github.com/truongpx396/intel-payment/metering/adapters/driven/system"
 	"github.com/truongpx396/intel-payment/metering/app"
@@ -97,6 +98,13 @@ func runWorker(ctx context.Context, s settings, log *slog.Logger, getenv func(st
 		return err
 	}
 
+	dead, err := app.NewDeadLetters(app.DeadLetterDeps{
+		Store: pgadapter.NewDeadLetters(st.Pool, system.Clock{}), Bus: bus, Metrics: metrics, Prefix: cfg.SubjectPrefix,
+	})
+	if err != nil {
+		return err
+	}
+
 	ops, err := serveOps(s.OpsAddr, metricsHandler, log)
 	if err != nil {
 		return err
@@ -126,7 +134,23 @@ func runWorker(ctx context.Context, s settings, log *slog.Logger, getenv func(st
 		entitlements.RunRelay(runCtx, st.Pool, bus, cfg.SubjectPrefix, log, entitlements.RelayRetry{})
 	}()
 
-	r := &runner{s: s, log: log, books: st.Books, writer: writer, replayer: replayer, expirer: expirer}
+	// What a worker joins after the payment loops are running fails together with them: the same fault (a prefix the bus will not take)
+	// stops all of them, and the operator is told every subscription that could not be joined, the low-balance one included.
+	abort := func(err error) error {
+		stop()
+		<-relayDone
+		return errors.Join(err, <-paid)
+	}
+
+	// Messages the bus gave up on are parked, never dropped, and paged (FR-043). Only this process sweeps them: a worker that cannot
+	// join is one whose dead letters would pile up in a stream nobody reads, so it does not run.
+	sweeper, err := dead.Subscribe(runCtx)
+	if err != nil {
+		return abort(fmt.Errorf("join the dead-letter subjects %s.dlq.>: %w", cfg.SubjectPrefix, err))
+	}
+	defer func() { _ = sweeper.Close() }()
+
+	r := &runner{s: s, log: log, books: st.Books, writer: writer, replayer: replayer, expirer: expirer, deadLetters: dead}
 	err = r.run(runCtx)
 	stop()
 	<-relayDone

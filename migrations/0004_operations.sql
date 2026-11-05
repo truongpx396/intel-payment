@@ -54,16 +54,46 @@ CREATE TABLE reconcile_findings (
 );
 CREATE INDEX reconcile_findings_scope_idx ON reconcile_findings (realm, scope_kind, scope_id, created_at DESC);
 
+-- A message that used its delivery budget, parked whole and never dropped (FR-043). The bus delivers a dead-letter envelope at least
+-- once, so (subject, source_id) — the subject it failed on and the bus's id for that delivery — is the letter's identity: parking
+-- the same envelope twice is one letter, and the page fires once per parking. The payload is BYTEA, not JSONB: a message nobody
+-- could read is the one an operator most needs to see, and it is kept as it arrived.
 CREATE TABLE dead_letters (
-    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    realm       TEXT        NOT NULL DEFAULT 'default',
-    subject     TEXT        NOT NULL,
-    payload     JSONB       NOT NULL,
-    attempts    INT         NOT NULL DEFAULT 0,
-    last_error  TEXT,
-    parked_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    replayed_at TIMESTAMPTZ
+    id                   UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    realm                TEXT        NOT NULL DEFAULT 'default',
+    subject              TEXT        NOT NULL,
+    source_id            TEXT        NOT NULL,
+    payload              BYTEA       NOT NULL,
+    attempts             INT         NOT NULL DEFAULT 0,
+    last_error           TEXT,
+    parked_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- A replay takes the letter for a lease, publishes, then sets replayed_at. A holder killed between the two lets the lease
+    -- lapse, and the next replay completes the work.
+    replay_claimed_until TIMESTAMPTZ,
+    replayed_at          TIMESTAMPTZ,
+    UNIQUE (subject, source_id)
 );
+CREATE INDEX dead_letters_open_idx ON dead_letters (realm) WHERE replayed_at IS NULL;
+
+-- Parked, never dropped: what a letter says about the failure is written once, and only a replay moves it, forward.
+CREATE FUNCTION dead_letters_keep() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        RAISE EXCEPTION 'dead letters are never deleted: a parked message is kept (FR-043)'
+            USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    IF ROW(NEW.id, NEW.realm, NEW.subject, NEW.source_id, NEW.payload, NEW.attempts, NEW.last_error, NEW.parked_at)
+       IS DISTINCT FROM ROW(OLD.id, OLD.realm, OLD.subject, OLD.source_id, OLD.payload, OLD.attempts, OLD.last_error, OLD.parked_at) THEN
+        RAISE EXCEPTION 'a dead letter is kept as it was parked; only its replay changes (FR-043)'
+            USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    IF OLD.replayed_at IS NOT NULL AND NEW.replayed_at IS DISTINCT FROM OLD.replayed_at THEN
+        RAISE EXCEPTION 'a replayed dead letter stays replayed (FR-043)' USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    RETURN NEW;
+END $$;
+CREATE TRIGGER dead_letters_keep BEFORE UPDATE OR DELETE ON dead_letters
+    FOR EACH ROW EXECUTE FUNCTION dead_letters_keep();
 
 -- Every privileged action: a grant not from a verified webhook, an override, a manual reconcile or
 -- rehydrate, a freeze, a rate-card publication, a plan or limit change.

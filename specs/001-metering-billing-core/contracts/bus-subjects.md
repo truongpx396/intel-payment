@@ -59,7 +59,7 @@ Switching is a `cmd/` wiring change. No subject, payload, handler or invariant d
 | `billing.entitlement.<tag>` | subscription change · override write · grace expiry | entitlement caches (each replica under a group of its own — see [entitlement-ports.md § The cache](./entitlement-ports.md#the-cache)); outbound events (`entitlements.changed`) | `{realm, scope:{kind,id}, reason}`, `reason` = `subscription` \| `grace_expired` \| `override` — evicts cached grants, so a customer who just paid does not wait out a TTL |
 | `billing.config.<realm>` | the config relay (`ConfigRelay`: Postgres `LISTEN intelpay_config`, run by `payment-worker`) | every process caching cards, limits, pools, plans, entitlements | `{table, realm}` — so configuration changes need no deploy and no TTL wait. A table that belongs to no realm is announced as realm `(global)`, which every cache reads as "everything"; a notification the relay cannot read is announced as `(global)` too |
 | `billing.webhook.received` | webhook ingress, after persisting a verified delivery | the webhook processor | `{event_id}` — a latency hint only; the inbox sweep is the guarantee |
-| `billing.dlq.<subject>` | any consumer after `MaxAttempts` | the DLQ sweeper | the original message + attempts. **Never dropped** |
+| `billing.dlq.<subject>` | any consumer after `MaxAttempts` | the dead-letter sweeper (`payment-worker`, group `dead-letter-sweeper`) | the original message + attempts. **Never dropped** — see [Dead letters](#dead-letters) |
 
 ### Scheduled ticks
 
@@ -137,6 +137,17 @@ type Message struct {
 
 The writer reads intents through a narrower port of the same adapter — `IntentStream.Read(shard, count, minIdle)` (entries un-acked past `minIdle` are reclaimed first, oldest first, then new ones) / `Ack(shard, ids)` / `Stats(shard)` / `Trim(shard, keep)` — because it needs per-shard ownership and in-order batches, not a generic subscription.
 
+## Dead letters
+
+A message that fails `MaxAttempts` times is the **Bus's** to redeliver until then, with backoff, and to publish whole to `<prefix>.dlq.<subject>` at the cap (above). What happens next is `payment-worker`'s sweeper (`app.DeadLetters`, consumer group `dead-letter-sweeper`, subject `<prefix>.dlq.>`), and it is the same on both adapters because it speaks only to the `Bus` port and to a store:
+
+- **Park.** Each envelope is written to `dead_letters` — subject, payload byte for byte, attempts, the last error, the realm its payload names (`(global)` when it names none, as a tick's does) — and **an envelope that is not an envelope** (it does not parse, or names no subject or id) is parked as it arrived, under the dead-letter subject it arrived on: a message nobody can read is the one an operator most needs to see. The letter's identity is `(subject, source id)` — the subject it failed on and the Bus's id for that delivery — so an envelope delivered twice, or swept by two replicas at once, is **one letter and one page**. A failure to park is returned to the Bus, which delivers the envelope again: it is in the stream until it is in the store.
+- **Page.** `metering_dead_lettered_total{realm}` counts once per parking, and `metering_dead_letters{realm}` is the number nobody has replayed, read from the store so it survives the process that parked them. The page is written against the gauge.
+- **Never delivered again.** Nothing automatic re-publishes a parked message: redelivery below the cap is the Bus's, and at the cap the message is parked. The only way back is an operator's **replay**, which claims the letter for a lease, re-publishes the payload to its original subject, and records that it did. Two replays at once publish once; a publish that fails gives the claim back, so the next replay tries again at once; a replay killed between the publish and the record lets its lease lapse, and the next replay publishes again — a duplicate delivery, which every handler of a bus subject is built to absorb (below). A replayed letter is **kept**, marked with when, and never claimed again; if the replayed message fails again it is a new envelope, a new letter and a new page. A letter that is not an envelope has no subject to go back to and is refused a replay (`invalid`).
+- **Nothing is ever deleted.** The database refuses a `DELETE` of a letter and any rewrite of what it says about the failure (`dead_letters_keep`), so this does not rest on the application.
+
+The replay route (`POST /v1/admin/dead-letters/{id}/replay`, [rest-api.md](./rest-api.md)) is the door to `Replay`.
+
 ## Rules
 
 - **At-least-once, idempotent handlers.** Every effect is an idempotent claim (`credit_idem`, `usage_idem`, a lease, a conditional `UPDATE`). Correctness never rests on "only one replica runs" or "the broker delivers once".
@@ -154,7 +165,7 @@ The writer reads intents through a narrower port of the same adapter — `Intent
 
 - A consumer killed mid-handler has its in-flight entry **redelivered**, not lost — `XAUTOCLAIM` on Redis, ack-wait on JetStream.
 - Two schedulers publishing the same `billing.reconcile.tick` produce exactly one reconcile for the shard.
-- A parked DLQ message under the attempt cap is re-driven and applied at most once; at the cap it lands in `dead_letters`, alerts, and is never re-driven again.
+- A message under the attempt cap is redelivered by the Bus and applied at most once; at the cap it lands in `dead_letters`, pages once however often its envelope is delivered, and is never delivered again except by an operator's replay, which delivers it once (`DeadLetterContract`, run over the in-memory store and PostgreSQL, and a property over any interleaving of failures, duplicate envelopes, replays — racing, failing and killed midway — in `metering/app`).
 - Publishing to realm A's subject never affects anything in realm B.
 - **Trim never removes an un-acked entry**, even when the stream is over its length target.
 - `Pending` reports a non-zero oldest-age within one ack-wait of a stalled consumer.
