@@ -155,7 +155,7 @@ A derived rollup backing the burn rate, series and breakdown; never a billing in
 A run per shard (`incremental` or `full`) with **counts** — checked, in sync, deferred, cold, regressions, drifted — and `abs_drift` (Σ |drift|, never a net figure, so a +100 and a −100 on two scopes are two findings, not zero). A finding per scope and pool that disagreed at the **same** sequence number, with the hot and expected balances and whether it was healed and paged.
 
 ### `dead_letters`
-Messages that exhausted their retry budget; parked, never dropped.
+Messages that exhausted their retry budget; parked, never dropped ([bus-subjects.md § Dead letters](./contracts/bus-subjects.md#dead-letters)). `(subject, source_id)` is unique — the subject a message failed on and the bus's id for that delivery — so an envelope delivered twice is one letter. The payload is `BYTEA`, kept as it arrived. A database trigger refuses a `DELETE` and any change to what a letter says about its failure; only `replay_claimed_until` (the lease a replay holds while it publishes) and `replayed_at` (set once, never cleared) move.
 
 ### `audit_log`
 Every privileged action and **every configuration write**, with `actor` (the API user via `intelpay.actor`, or `db:<role>` for a direct SQL write), `action`, `subject_kind`, `subject_id`, `before`, `after`, `reason`.

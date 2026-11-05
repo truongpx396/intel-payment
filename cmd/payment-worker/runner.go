@@ -24,6 +24,8 @@ type runner struct {
 	replayer *app.JournalReplayer
 	expirer  *app.Expirer
 
+	deadLetters *app.DeadLetters
+
 	owned map[domain.Shard]*ownership // touched only by the ownership loop
 	wg    sync.WaitGroup              // every goroutine it starts
 }
@@ -39,6 +41,7 @@ func (r *runner) run(ctx context.Context) error {
 	r.start(ctx, "journal replay", r.s.JournalReplayInterval, r.replay)
 	r.start(ctx, "transfer re-drive", r.s.TransferRedrive/2, r.redrive)
 	r.start(ctx, "gauges", 15*time.Second, func(ctx context.Context) error { return r.writer.ExportGauges(ctx) })
+	r.start(ctx, "dead letter gauges", 15*time.Second, r.deadLetters.ExportGauges)
 	r.start(ctx, "credit expiry", time.Minute, func(ctx context.Context) error { _, err := r.expirer.Tick(ctx, 100); return err })
 
 	r.manageOwnership(ctx) // returns when ctx is done

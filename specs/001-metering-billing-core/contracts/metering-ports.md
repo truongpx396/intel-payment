@@ -1544,6 +1544,8 @@ Invariant 15 requires that every terminal state be observable, which means the m
 | `metering_correction_orphan_total` | counter (`realm`) | a correction was booked that closed no suspense entry: it was already closed, or never existed |
 | `metering_correction_stale_total` | counter (`realm`) | an open suspense entry older than `HotIdemTTL`: re-issuing its correction could apply twice, so it is left for a human |
 | `metering_recover_parked_total` | counter (`shard`) | intents a recovery parked because they sat behind a sequence gap that can no longer fill — each is a movement to investigate |
+| `metering_dead_lettered_total` | counter (`realm`) | a message used its delivery budget and was parked in `dead_letters` — one increment per parking, however often the bus delivers the envelope (FR-043) |
+| `metering_dead_letters` | gauge (`realm`) | parked messages nobody has replayed: read from the store, so it survives the process that parked them. The page is written against this |
 | `billing_webhook_received_total` | counter (`provider`, `result`) | verified deliveries by outcome: `new`, a `duplicate` acknowledged again, or `parked` because verification was unavailable. `provider` is a registered provider, resolved before anything is counted — never what an unauthenticated route typed |
 | `billing_webhook_verify_failed_total` | counter (`provider`) | a signature failure is a **security** event (see [payment-provider-ports.md](./payment-provider-ports.md)) |
 | `billing_webhook_processed_total` | counter (`provider`, `outcome`) | inbox events the processor finished: `processed`, or `ignored` by design |

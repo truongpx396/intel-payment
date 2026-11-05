@@ -34,6 +34,8 @@ const (
 	MetricCorrectionOrphan = "metering_correction_orphan_total" // counter (realm)
 	MetricCorrectionStale  = "metering_correction_stale_total"  // counter (realm)
 	MetricRecoverParked    = "metering_recover_parked_total"    // counter (shard)
+	MetricDeadLettered     = "metering_dead_lettered_total"     // counter (realm)
+	MetricDeadLetters      = "metering_dead_letters"            // gauge (realm)
 )
 
 // MetricKind is how a metric is aggregated.
@@ -83,4 +85,6 @@ var Catalog = []MetricDef{
 	{MetricCorrectionOrphan, KindCounter, []string{"realm"}, "{event}", "A correction closed no suspense entry"},
 	{MetricCorrectionStale, KindCounter, []string{"realm"}, "{entry}", "Open suspense past the hot guard's lifetime: a human's problem"},
 	{MetricRecoverParked, KindCounter, []string{"shard"}, "{entry}", "Intents parked by a recovery: they sat behind a gap that cannot fill"},
+	{MetricDeadLettered, KindCounter, []string{"realm"}, "{message}", "A message used its delivery budget and was parked: each is one page"},
+	{MetricDeadLetters, KindGauge, []string{"realm"}, "{message}", "Parked messages nobody has replayed"},
 }
