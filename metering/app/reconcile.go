@@ -101,6 +101,29 @@ func (w *Writer) Reconcile(ctx context.Context, shard domain.Shard, kind domain.
 	return run, nil
 }
 
+// ReconcileDue reports whether a reconcile of this kind would have anything to check: an incremental one has work only when a scope was
+// booked since the last, and a full sweep whenever the shard holds a scope at all. A reconcile that finds nothing still records its run, by
+// design — so the tick handler asks first, and a tick with nothing due writes nothing.
+func (w *Writer) ReconcileDue(ctx context.Context, shard domain.Shard, kind domain.ReconcileKind) (bool, error) {
+	var since time.Time
+	switch kind {
+	case domain.ReconcileFull:
+	case domain.ReconcileIncremental:
+		last, err := w.d.Books.LastReconcile(ctx, shard, kind)
+		if err != nil {
+			return false, err
+		}
+		since = last
+	default:
+		return false, fmt.Errorf("%w: reconcile kind %q", domain.ErrInvalid, kind)
+	}
+	page, err := w.d.Books.ScopesSince(ctx, shard, since, nil, 1)
+	if err != nil {
+		return false, err
+	}
+	return len(page) > 0, nil
+}
+
 // checkScope reads the hot account and the books for one scope and classifies them. The two reads
 // happen at different instants, so a sequence skew is re-read a couple of times before it is
 // believed: a charge landing between the reads makes the hot tier look ahead (lag) or the books look

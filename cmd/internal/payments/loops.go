@@ -134,6 +134,36 @@ func (l *Loops) loop(ctx context.Context, name string, every time.Duration, run 
 	}
 }
 
+// graceSweeper is the part of the processor that announces ended grace windows; the concrete Processor has it.
+type graceSweeper interface {
+	SweepGrace(ctx context.Context) (int, error)
+}
+
+// Webhook is the work of `billing.webhook.tick`: the inbox is worked, and parked deliveries are verified again. Neither counts what it
+// did, so a caller cannot tell an idle tick from a busy one; neither writes anything when nothing is due.
+func (l *Loops) Webhook(ctx context.Context) error {
+	return errors.Join(l.d.Processor.Tick(ctx), l.d.Ingress.Retry(ctx))
+}
+
+// Dunning is the work of `billing.dunning.tick`: it announces, once each, the grace windows that have ended, so entitlement caches evict
+// at that instant. It returns how many it announced.
+func (l *Loops) Dunning(ctx context.Context) (int, error) {
+	g, ok := l.d.Processor.(graceSweeper)
+	if !ok {
+		return 0, errors.New("payments: this processor cannot sweep ended grace windows")
+	}
+	return g.SweepGrace(ctx)
+}
+
+// PurgeInbox deletes the processed webhook events kept past their retention and returns how many.
+func (l *Loops) PurgeInbox(ctx context.Context) (int, error) {
+	n, err := l.d.Inbox.Purge(ctx, l.d.Clock.Now().Add(-l.d.Retention))
+	if err != nil {
+		return 0, fmt.Errorf("purge processed webhook events: %w", err)
+	}
+	return n, nil
+}
+
 func (l *Loops) purge(ctx context.Context) error {
 	n, err := l.d.Inbox.Purge(ctx, l.d.Clock.Now().Add(-l.d.Retention))
 	if err != nil {

@@ -36,6 +36,7 @@ const (
 	MetricRecoverParked    = "metering_recover_parked_total"    // counter (shard)
 	MetricDeadLettered     = "metering_dead_lettered_total"     // counter (realm)
 	MetricDeadLetters      = "metering_dead_letters"            // gauge (realm)
+	MetricTick             = "metering_tick_total"              // counter (tick, outcome)
 )
 
 // MetricKind is how a metric is aggregated.
@@ -87,4 +88,5 @@ var Catalog = []MetricDef{
 	{MetricRecoverParked, KindCounter, []string{"shard"}, "{entry}", "Intents parked by a recovery: they sat behind a gap that cannot fill"},
 	{MetricDeadLettered, KindCounter, []string{"realm"}, "{message}", "A message used its delivery budget and was parked: each is one page"},
 	{MetricDeadLetters, KindGauge, []string{"realm"}, "{message}", "Parked messages nobody has replayed"},
+	{MetricTick, KindCounter, []string{"tick", "outcome"}, "{tick}", "Scheduled ticks by outcome: ran, idle (nothing was due), skipped (another run held the claim) or failed"},
 }

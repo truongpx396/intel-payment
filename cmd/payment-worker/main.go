@@ -31,9 +31,17 @@ func main() {
 
 // run returns the process exit code: 0 a clean stop, 1 it ran and failed or refused to start against what it
 // found, 2 usage or configuration.
-func run(ctx context.Context, args []string, getenv func(string) string, _, stderr io.Writer) int {
+func run(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "tick" {
+		s, err := parseSettings(getenv)
+		if err != nil {
+			fmt.Fprintf(stderr, "payment-worker %s: %v\n", version, err)
+			return 2
+		}
+		return publishTick(ctx, s, args[1:], stdout, stderr)
+	}
 	if len(args) > 0 {
-		fmt.Fprintf(stderr, "usage: payment-worker   (payment-worker %s; configured by PAYMENT_* variables)\n", version)
+		fmt.Fprintf(stderr, "usage: payment-worker | payment-worker tick <name> [payload]   (payment-worker %s; configured by PAYMENT_* variables)\n", version)
 		return 2
 	}
 	return serve(ctx, getenv, stderr)

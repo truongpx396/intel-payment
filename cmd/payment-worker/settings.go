@@ -17,6 +17,8 @@ type settings struct {
 	Payments envcfg.Payments
 	Events   envcfg.Events
 
+	BusRetention time.Duration // PAYMENT_BUS_RETENTION: how long acknowledged history is kept before a trim tick may remove it
+
 	DrainInterval         time.Duration // how long a shard with nothing to book waits before it looks again
 	OwnershipRetry        time.Duration // how often unowned shards are tried, and held ones checked
 	TransferRedrive       time.Duration // a transfer in transit longer than this is re-driven
@@ -47,6 +49,7 @@ func parseSettings(getenv func(string) string) (settings, error) {
 	r.PositiveDuration("PAYMENT_TRANSFER_REDRIVE", &s.TransferRedrive, "a transfer in transit would be re-driven the instant it started")
 	r.PositiveDuration("PAYMENT_JOURNAL_REPLAY_INTERVAL", &s.JournalReplayInterval, "journalled usage would be replayed in a tight loop")
 	r.PositiveDuration("PAYMENT_SHUTDOWN_TIMEOUT", &s.ShutdownTimeout, "a stop that waits for nothing abandons the batch in hand")
+	s.BusRetention = bus.Retention
 	s.OpsAddr = r.StrOr("PAYMENT_WORKER_ADDR", ":9091")
 	if !strings.HasPrefix(s.OpsAddr, "unix:") {
 		if _, _, err := net.SplitHostPort(s.OpsAddr); err != nil {
