@@ -211,9 +211,26 @@ without auto top-up.
 
 ## Alert: outbound deliveries failing
 
-**Means:** a host endpoint is refusing or timing out. Deliveries retry for 72 h, then go `dead`; the
-host can always backfill from `GET /v1/events`. Re-drive a dead delivery with
-`POST /v1/admin/event-deliveries/{id}/redeliver`.
+**Means:** a host endpoint is refusing or timing out. A delivery is retried for 72 h (1 m, 5 m, 30 m, 2 h, then every 6 h) and then goes
+`dead`: `events_delivery_failed_total{realm,endpoint}` moves once for each, and `events_dead_deliveries` is the number nobody has
+re-driven. The host can always backfill from `GET /v1/events` — the event is in the log whatever became of its webhook.
+
+```sql
+SELECT ep.id AS endpoint, ep.url, count(*) AS dead, max(d.last_status) AS last_status, max(d.last_error) AS last_error
+  FROM event_deliveries d JOIN event_endpoints ep ON ep.id = d.endpoint_id
+ WHERE d.status = 'dead' GROUP BY ep.id, ep.url ORDER BY dead DESC;
+```
+
+1. **`last_status`** says what the host answered; **0 with an error** is no answer at all. A destination the SSRF guard refused reads
+   `destination address is not allowed`: the URL points at a private, loopback or link-local address, or at a name that resolves to one
+   (set `PAYMENT_EVENTS_ALLOW_PRIVATE_ENDPOINTS` only in development). `cannot resolve the signing secret` is a `secret_ref` whose
+   variable or file is missing on the worker — nothing is sent unsigned, and it is retried until the secret is back.
+2. **A `3xx` is a failure**: a redirect is not followed. Register the final URL.
+3. Fix the endpoint, and the retries that are still inside their window succeed on their own. A delivery already dead is re-driven by
+   `Dispatcher.Redeliver`; **the admin route for it (`POST /v1/admin/event-deliveries/{id}/redeliver`) is designed and not served yet**,
+   and the host can take what it missed from the feed with its last event id.
+4. An endpoint is a row: to stop the pages from a host that is gone, set `event_endpoints.active = false`. Its owed deliveries end at
+   the window, and are counted once.
 
 ## Alert: stream length approaching the cap
 

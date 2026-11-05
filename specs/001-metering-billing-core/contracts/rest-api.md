@@ -82,6 +82,15 @@ deliberate: 64-bit integers are JSON **numbers**, not the strings proto3 JSON wo
 |--------|------|---------|
 | GET | `/v1/events` | The event feed: `?after=<id>&types=&limit=` → `{data: [envelope…], next}` ([outbound-events.md](./outbound-events.md)) |
 
+Served by `paymentd` behind the credential with the `record` privilege (`events/adapters/driving/eventshttp`; marked `x-served-by: events` in
+the OpenAPI document). The feed is read for **every realm the credential covers**, and `?realm=` narrows it (a realm outside the credential is
+`403 realm_mismatch`; a credential that covers every realm must name one, `400`). `after` is an event id (anything else is `400`), exclusive;
+`limit` is 1 to 500 (default 100; `0` is `400`, not the default); `types` is at most 20 comma-separated types, each of the shape `a.b`, and a
+well-formed type this deployment does not emit matches nothing. Events are in `id` order and **every event is in exactly one page of a
+consumer that resumes from the last id it saw**. `next` is the last event of the page, or the `after` the caller gave when nothing is new
+(`null` for a consumer that has never had an event). Each element is the envelope, byte for byte what the webhook carries. Every answer is
+`Cache-Control: no-store`.
+
 ## Configuration (`admin` privilege)
 
 Configuration is data ([D13](../design-decisions.md)), and this is its supported interface. **Every write names a person and a reason** — `actor` and `reason` in the body (query parameters on a `DELETE`), both required, non-blank — and is refused without them: the database's audit row is how anyone later answers "who changed the price, and why". The write runs in one transaction with `intelpay.actor` and `intelpay.reason` set, so the database's own trigger writes an audit row that names them (and the service credential it came through), and every process caching configuration is invalidated by the database's own notification — no deploy, no TTL wait. A direct SQL write still works and is still audited, attributed to the database role that made it, but skips validation; use it only in an emergency. The realm is the credential's; `?realm=` names it when the credential spans several. A configuration write has no `Idempotency-Key`: it is idempotent by its natural key (a `PUT` by name; a card by version).
@@ -103,8 +112,8 @@ Configuration is data ([D13](../design-decisions.md)), and this is its supported
 | GET | `/v1/admin/provider-accounts` | The accounts that serve a realm the credential covers, inactive ones included |
 | GET / PUT | `/v1/admin/provider-accounts/{id}` | Provider accounts: `{actor, reason, provider, realms, mode: live\|test, secret_ref, webhook_secret_ref, active}` — the whole account, so `active` is required. **Secrets by reference only** (`env:NAME`, `file:/absolute/path`; only the schemes the deployment resolves, so a raw key or `vault:` is `400`), and the `provider` must be an adapter the deployment runs and never changes once the account exists. Every realm named, and every realm the account serves now, must be one the credential covers (`403 realm_mismatch`); an account of no realm the credential covers is `404`, not `403` |
 | GET / PUT | `/v1/admin/customers` | `GET ?scope_kind=&scope_id=&account=` and `PUT {actor, reason, scope, account, provider_customer_id, billing_email?}` — link a scope to a provider customer that already exists (a customer brought across from an earlier billing system; checkout makes its own). A link is **never re-pointed** and a provider customer belongs to one scope (`409`): either would send a payment into the wrong books. Only the email moves. The database has no trigger on this table, so the link writes its own audit row |
-| GET / POST / PATCH / DELETE | `/v1/admin/event-endpoints[/{id}]` | Outbound webhook endpoints; `POST …/{id}/test` sends a signed test event |
-| POST | `/v1/admin/event-deliveries/{id}/redeliver` | Re-drive a dead delivery |
+| GET / POST / PATCH / DELETE | `/v1/admin/event-endpoints[/{id}]` | Outbound webhook endpoints; `POST …/{id}/test` sends a signed test event. **Designed, not served:** endpoints are `event_endpoints` rows today, audited by the database |
+| POST | `/v1/admin/event-deliveries/{id}/redeliver` | Re-drive a dead delivery. **Designed, not served** |
 
 ## Operations (`admin` privilege)
 

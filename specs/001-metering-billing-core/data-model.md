@@ -161,7 +161,7 @@ Messages that exhausted their retry budget; parked, never dropped ([bus-subjects
 Every privileged action and **every configuration write**, with `actor` (the API user via `intelpay.actor`, or `db:<role>` for a direct SQL write), `action`, `subject_kind`, `subject_id`, `before`, `after`, `reason`.
 
 ### `event_endpoints` · `outbound_events` · `event_deliveries`
-How hosts hear what happened ([outbound-events.md](./contracts/outbound-events.md)): subscribed `https` endpoints with a signing-secret reference; the event log that also backs `GET /v1/events`; one delivery per (event, endpoint) with backoff state.
+How hosts hear what happened ([outbound-events.md](./contracts/outbound-events.md)): subscribed `https` endpoints with a signing-secret reference; the event log that also backs `GET /v1/events`; one delivery per (event, endpoint) with backoff state. An event is **insert-only** (a trigger refuses an update) and unique per `source` — the bus message or fact it came from — so an at-least-once bus records it once; its id is a UUID v7 issued under an advisory lock, strictly after the newest, so ids sort in the order events became visible. A delivery is owed to each active endpoint of the event's realm that subscribes to its type, in the same transaction as the event; `next_attempt_at` doubles as the lease a sender holds while it sends.
 
 ---
 

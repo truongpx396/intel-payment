@@ -1546,6 +1546,11 @@ Invariant 15 requires that every terminal state be observable, which means the m
 | `metering_recover_parked_total` | counter (`shard`) | intents a recovery parked because they sat behind a sequence gap that can no longer fill — each is a movement to investigate |
 | `metering_dead_lettered_total` | counter (`realm`) | a message used its delivery budget and was parked in `dead_letters` — one increment per parking, however often the bus delivers the envelope (FR-043) |
 | `metering_dead_letters` | gauge (`realm`) | parked messages nobody has replayed: read from the store, so it survives the process that parked them. The page is written against this |
+| `events_recorded_total` | counter (`type`) | events appended to the outbound log — one per fact, however often the bus delivers the announcement behind it |
+| `events_delivery_total` | counter (`outcome`) | webhook attempts: `delivered` (a 2xx), `retry` (anything else, within the 72 h window) or `dead` (the retries ended) |
+| `events_delivery_failed_total` | counter (`realm`, `endpoint`) | deliveries marked dead after the 72 h retry window — **one page each**, naming the endpoint that failed. The host always has the event in `GET /v1/events` — see [outbound-events.md](./outbound-events.md) |
+| `events_dead_deliveries` | gauge (`realm`) | dead deliveries nobody has re-driven, read from the database: the number the page is written against |
+| `events_delivery_lag_seconds` | histogram (`realm`) | seconds from an event being recorded to the 2xx that delivered it |
 | `billing_webhook_received_total` | counter (`provider`, `result`) | verified deliveries by outcome: `new`, a `duplicate` acknowledged again, or `parked` because verification was unavailable. `provider` is a registered provider, resolved before anything is counted — never what an unauthenticated route typed |
 | `billing_webhook_verify_failed_total` | counter (`provider`) | a signature failure is a **security** event (see [payment-provider-ports.md](./payment-provider-ports.md)) |
 | `billing_webhook_processed_total` | counter (`provider`, `outcome`) | inbox events the processor finished: `processed`, or `ignored` by design |
@@ -1556,7 +1561,6 @@ Invariant 15 requires that every terminal state be observable, which means the m
 | `billing_webhook_inbox_age_seconds` | gauge | the oldest unprocessed verified webhook — a payment someone made that has not been fulfilled yet |
 | `billing_grant_applied_total` | counter (`realm`, `reason`) | reconciles against the provider's own payout report |
 | `billing_autorecharge_total` | counter (`result`) | what a low-balance trigger came to: `charged` (a slot was taken and the saved method charged), `resumed` (the same slot again — a duplicated trigger), `ignored` (nothing to do: no instruction, a disabled one, another pool's watch, or a balance that is not below the threshold), `refused` (the day's `max_per_day` is spent), `declined` (the provider refused the charge and it counts toward switching the instruction off), `failed` (the instruction could not buy what it names: a plan nobody sells, an account that is off, no customer), `disabled` (a failure that switched the instruction off), `error` (the outcome is not known; the message is delivered again). A rising `declined` or `disabled` is customers whose cards need updating |
-| `events_delivery_failed_total` | counter (`realm`, `endpoint`) | an outbound webhook to a host that is failing — see [outbound-events.md](./outbound-events.md) |
 
 Health endpoints: `/healthz` (process up) and `/readyz` (hot store reachable, durable store reachable, migrations at head, `hot_config.shards` equal to the configured count). `/readyz` MUST fail when migrations are behind — a service that serves money against a half-migrated schema is worse than one that is down.
 

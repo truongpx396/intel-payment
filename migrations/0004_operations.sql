@@ -175,16 +175,28 @@ CREATE TABLE event_endpoints (
 CREATE TRIGGER event_endpoints_audit AFTER INSERT OR UPDATE OR DELETE ON event_endpoints
     FOR EACH ROW EXECUTE FUNCTION audit_config_change();
 
+-- The id is a UUID v7 the application issues UNDER A LOCK (events.Store.Append), strictly after the newest id in the log, so ids sort in
+-- the order events became visible and a feed's cursor never skips one. `source` is the bus message (or the fact) the event came from:
+-- recording it twice is one event, which is what makes the recorder idempotent under an at-least-once bus. An event never changes.
 CREATE TABLE outbound_events (
-    id          UUID        PRIMARY KEY,       -- UUID v7 from the application: time-ordered cursor
+    id          UUID        PRIMARY KEY,
     realm       TEXT        NOT NULL DEFAULT 'default',
     type        TEXT        NOT NULL,          -- e.g. credits.low, payment.succeeded
     scope_kind  TEXT,
     scope_id    TEXT,
     payload     JSONB       NOT NULL,
+    source      TEXT        NOT NULL UNIQUE,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX outbound_events_feed_idx ON outbound_events (realm, id);
+
+CREATE FUNCTION outbound_events_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'outbound events never change: a host that has the event must be able to trust it (% on %)', TG_OP, TG_TABLE_NAME
+        USING ERRCODE = 'integrity_constraint_violation';
+END $$;
+CREATE TRIGGER outbound_events_immutable BEFORE UPDATE ON outbound_events
+    FOR EACH ROW EXECUTE FUNCTION outbound_events_immutable();
 
 CREATE TABLE event_deliveries (
     id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),

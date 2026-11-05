@@ -23,9 +23,11 @@ import (
 	billingports "github.com/truongpx396/intel-payment/billing/ports"
 	"github.com/truongpx396/intel-payment/cmd/internal/entitlements"
 	"github.com/truongpx396/intel-payment/cmd/internal/envcfg"
+	eventsd "github.com/truongpx396/intel-payment/cmd/internal/events"
 	"github.com/truongpx396/intel-payment/cmd/internal/payments"
 	"github.com/truongpx396/intel-payment/cmd/internal/wiring"
 	entports "github.com/truongpx396/intel-payment/entitlement/ports"
+	"github.com/truongpx396/intel-payment/events"
 	"github.com/truongpx396/intel-payment/metering"
 	pgarchive "github.com/truongpx396/intel-payment/metering/adapters/driven/archive/postgres"
 	otelmetrics "github.com/truongpx396/intel-payment/metering/adapters/driven/otel"
@@ -159,7 +161,7 @@ func wire(ctx context.Context, s settings, log *slog.Logger, getenv func(string)
 	}
 	svc.closers = append(svc.closers, closeBus)
 
-	metrics, metricsHandler, err := otelmetrics.NewPrometheus(otelmetrics.WithDefs(slices.Concat(billingports.MetricCatalog, entports.MetricCatalog)...))
+	metrics, metricsHandler, err := otelmetrics.NewPrometheus(otelmetrics.WithDefs(slices.Concat(billingports.MetricCatalog, entports.MetricCatalog, events.MetricCatalog)...))
 	if err != nil {
 		return nil, err
 	}
@@ -227,12 +229,16 @@ func wire(ctx context.Context, s settings, log *slog.Logger, getenv func(string)
 	if err != nil {
 		return nil, err
 	}
+	feedRoutes, err := eventsd.FeedRoutes(st.Pool, system.Clock{}, log)
+	if err != nil {
+		return nil, err
+	}
 
 	handler, err := resthandler.New(resthandler.Config{
 		Meter: engine, Balance: engine, Credits: engine, Ledger: st.Books, Transfers: st.Books, Admin: admin,
 		Auth: s.Authenticator, Clock: system.Clock{}, Logger: log, Legacy429ForLimits: s.Legacy429,
 		Ready: readiness{db: st.DB, ms: st.Migrations, books: st.Books, shards: cfg.Shards}, Metrics: metricsHandler,
-		Extra: slices.Concat([]resthandler.Route{{Method: http.MethodPost, Path: webhookhttp.Path, Surface: resthandler.Webhook, Handler: door}}, hostRoutes, entRoutes),
+		Extra: slices.Concat([]resthandler.Route{{Method: http.MethodPost, Path: webhookhttp.Path, Surface: resthandler.Webhook, Handler: door}}, hostRoutes, entRoutes, feedRoutes),
 	})
 	if err != nil {
 		return nil, err
