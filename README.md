@@ -20,7 +20,7 @@ across rate cards over three disjoint unit spaces, so that is a test result rath
 
 > **Status, stated honestly.** The **metering core**, the **payment pipeline** and the **entitlements** are built, verified
 > in CI and served by two binaries, `paymentd` and `payment-worker`. **The rest of the operational surface (admin operations, the
-> usage rollup, the subscription drift sweep) and the credits UI are designed, not built**; twelve of the thirteen scheduled ticks, outbound events (signed webhooks and a cursor feed) and the parking of
+> subscription drift sweep, the credits snapshot's burn rate, series and breakdown) and the credits UI are designed, not built**; thirteen of the fourteen scheduled ticks, the usage rollup (not yet read by the credits snapshot), outbound events (signed webhooks and a cursor feed) and the parking of
 > messages the bus gave up on are built, and **post-paid invoicing**
 > ([Phase 2](specs/002-postpaid-invoicing/)) is designed, not built. The provider adapters have met their sandboxes
 > once ([docs/sandbox.md](docs/sandbox.md)): not a buyer approving a PayPal order, a paid Polar order, or a live account.
@@ -638,7 +638,7 @@ design-system/         the credits screen design (the UI itself is not built)
 
 - **An admin API for entitlements.** Keys, plan entitlements, the free tier and overrides are SQL rows today — each write audited by the database, and an override refused without a reason and an actor, whichever way it is written. `Overrides.Put` exists as a use case (it validates, writes and announces) and nothing serves it yet.
 - **An admin API for event endpoints.** Outbound events are built (a signed, retried webhook per subscribed endpoint, and `GET /v1/events`), but an endpoint is an `event_endpoints` row for now, and a dead delivery or a parked message is re-driven by a use case nothing serves yet.
-- **The rest of the operational surface** (admin operations, the `usage_daily` rollup, the subscription drift sweep — `billing.subdrift.tick` is not consumed) **and the credits UI.**
+- **The rest of the operational surface** (admin operations, the subscription drift sweep — `billing.subdrift.tick` is not consumed — and the credits snapshot's burn rate, series and breakdown, which the built `usage_daily` rollup would feed) **and the credits UI.**
 - **Post-paid invoicing** ([Phase 2](specs/002-postpaid-invoicing/)), including coupons, discounts, trials, quantity subscriptions and invoice generation. Phase 1 collects payments; it issues no invoices.
 - **A saved payment method captured automatically** from a `setup` checkout. The host passes `payment_method_ref` to `PUT /v1/auto-recharge` itself.
 - **The JetStream intent path in the binary.** It exists in the engine; `payment-worker` drains the Redis outbox only.
