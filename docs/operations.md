@@ -246,6 +246,7 @@ cadence or a manual run, and publishes through the worker's own binary — it ne
 payment-worker tick audit '{"shard":0}'            # one per shard; a per-shard tick that names no shard is refused
 payment-worker tick reconcile '{"shard":3,"kind":"full"}'
 payment-worker tick partitions                     # journal, transfer, expiry, webhook, outbound, dunning, idem.purge, events.purge, trim
+payment-worker tick usage.rollup '{"days":90}'     # recompute the last 90 days of the daily usage rollup (a backfill); with no payload, the days still open to a late row
 ```
 
 Publishing a tick twice is harmless: the second is `skipped` at the claim. `metering_tick_total{tick,outcome}` says what became of each:

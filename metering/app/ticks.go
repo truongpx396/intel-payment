@@ -12,12 +12,13 @@ import (
 	"github.com/truongpx396/intel-payment/metering/ports"
 )
 
-// TickNames are the scheduled ticks (bus-subjects.md § Scheduled ticks), in the order of its table. A tick is published as
+// TickNames are the scheduled ticks (bus-subjects.md § Scheduled ticks), in the order of its table. The last, `usage.rollup`, recomputes the
+// usage_daily rollup. A tick is published as
 // `<prefix>.<name>.tick` by whatever schedules deployments' periodic work — a cron, a CronJob, `payment-worker tick` — and delivered to
 // one replica of the worker group.
 var TickNames = []string{
 	"reconcile", "audit", "transfer", "journal", "webhook", "outbound", "expiry", "dunning", "subdrift",
-	"partitions", "idem.purge", "events.purge", "trim",
+	"partitions", "idem.purge", "events.purge", "trim", "usage.rollup",
 }
 
 // TickGroup is the consumer group of every tick handler: each tick is delivered to one replica. It is part of the deployment, as the
@@ -214,4 +215,28 @@ func ParseShard(payload []byte, shards int) (ShardPayload, error) {
 		p.Kind = string(domain.ReconcileIncremental)
 	}
 	return p, nil
+}
+
+// MaxRollupDays is the longest backfill one usage.rollup tick will take on.
+const MaxRollupDays = 3660
+
+// ParseRollupDays reads the optional `{"days": N}` of a usage.rollup tick: how many days back from today to recompute, for a backfill. With
+// none the worker recomputes the days still open to late events (the usage dedup window and a day).
+func ParseRollupDays(payload []byte) (days int, ok bool, err error) {
+	if len(payload) == 0 {
+		return 0, false, nil
+	}
+	var p struct {
+		Days *int `json:"days"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return 0, false, fmt.Errorf("%w: the payload is not JSON: %w", domain.ErrInvalid, err)
+	}
+	switch {
+	case p.Days == nil:
+		return 0, false, nil
+	case *p.Days < 1 || *p.Days > MaxRollupDays:
+		return 0, false, fmt.Errorf("%w: days is 1 to %d, got %d", domain.ErrInvalid, MaxRollupDays, *p.Days)
+	}
+	return *p.Days, true, nil
 }

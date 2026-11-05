@@ -33,6 +33,10 @@ import (
 // the same one together.
 const housekeepingEvery = time.Hour
 
+// rollupEvery is how often the usage_daily rollup is recomputed: it is derived data, a few minutes behind is a burn rate, and an unchanged
+// window writes nothing.
+const rollupEvery = 5 * time.Minute
+
 // serve parses the settings, wires the writer to its stores and runs it until ctx is done.
 func serve(ctx context.Context, getenv func(string) string, stderr io.Writer) int {
 	s, err := parseSettings(getenv)
@@ -182,7 +186,7 @@ func runWorker(ctx context.Context, s settings, log *slog.Logger, getenv func(st
 	r := &runner{s: s, log: log, books: st.Books, writer: writer, replayer: replayer, expirer: expirer, deadLetters: dead}
 	work := &tickWork{
 		s: s, log: log, clock: system.Clock{}, r: r, writer: writer, replayer: replayer, expirer: expirer, books: st.Books,
-		maint: pgadapter.NewMaintenance(st.Pool), stream: stream, bus: bus, pay: pay, out: out, met: metrics,
+		maint: pgadapter.NewMaintenance(st.Pool), usage: pgadapter.NewUsage(st.Pool), stream: stream, bus: bus, pay: pay, out: out, met: metrics,
 	}
 	ticks, err := app.NewTicks(app.TicksDeps{Claims: pgadapter.NewClaims(st.Pool), Metrics: metrics, Prefix: cfg.SubjectPrefix, Handlers: work.handlers()})
 	if err != nil {
@@ -197,8 +201,8 @@ func runWorker(ctx context.Context, s settings, log *slog.Logger, getenv func(st
 
 	// Housekeeping with no other driver: partitions are made four days ahead and would run out, the usage guard would never be dropped, and the
 	// bus would never be trimmed. They are the same ticks, under the same claim, so a scheduler that also publishes them does no harm.
-	for _, name := range []string{"partitions", "idem.purge", "trim"} {
-		r.start(runCtx, name+" tick", housekeepingEvery, func(ctx context.Context) error {
+	for name, every := range map[string]time.Duration{"partitions": housekeepingEvery, "idem.purge": housekeepingEvery, "trim": housekeepingEvery, "usage.rollup": rollupEvery} {
+		r.start(runCtx, name+" tick", every, func(ctx context.Context) error {
 			_, err := ticks.Do(ctx, name, nil)
 			return err
 		})
