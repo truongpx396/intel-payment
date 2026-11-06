@@ -101,15 +101,14 @@ func NewAdminOperations(d AdminOperationsDeps) (*AdminOperations, error) {
 		ports.AdminReplay:    {Kind: ports.AdminReplay, Parse: func(_ string, p json.RawMessage) (json.RawMessage, error) { return parseReplay(p) }},
 	}
 	for _, k := range d.Kinds {
-		switch {
-		case k.Kind == "" || k.Parse == nil:
+		if k.Kind == "" || k.Parse == nil {
 			errs = append(errs, fmt.Errorf("the kind %q needs a name and a parser", k.Kind))
-		default:
-			if _, dup := kinds[k.Kind]; dup {
-				errs = append(errs, fmt.Errorf("the kind %q is already defined", k.Kind))
-			}
-			kinds[k.Kind] = k
+			continue
 		}
+		if _, dup := kinds[k.Kind]; dup {
+			errs = append(errs, fmt.Errorf("the kind %q is already defined", k.Kind))
+		}
+		kinds[k.Kind] = k
 	}
 	if err := errors.Join(errs...); err != nil {
 		return nil, fmt.Errorf("metering admin operations: %w", err)
@@ -124,20 +123,25 @@ func NewAdminOperations(d AdminOperationsDeps) (*AdminOperations, error) {
 // what someone will read when they ask why a shard was recovered.
 func (a *AdminOperations) Submit(ctx context.Context, rq ports.AdminRequest) (ports.AdminOperation, bool, error) {
 	actor, reason, key := strings.TrimSpace(rq.Actor), strings.TrimSpace(rq.Reason), strings.TrimSpace(rq.Key)
-	switch {
-	case actor == "":
+	if actor == "" {
 		return ports.AdminOperation{}, false, fmt.Errorf("%w: actor is required: an operation is the act of a person", domain.ErrInvalid)
-	case len(actor) > MaxAdminActor:
+	}
+	if len(actor) > MaxAdminActor {
 		return ports.AdminOperation{}, false, fmt.Errorf("%w: actor is at most %d bytes", domain.ErrInvalid, MaxAdminActor)
-	case reason == "":
+	}
+	if reason == "" {
 		return ports.AdminOperation{}, false, fmt.Errorf("%w: reason is required: an operation is kept with why it was done", domain.ErrInvalid)
-	case len(reason) > MaxAdminReason:
+	}
+	if len(reason) > MaxAdminReason {
 		return ports.AdminOperation{}, false, fmt.Errorf("%w: reason is at most %d bytes", domain.ErrInvalid, MaxAdminReason)
-	case key == "":
+	}
+	if key == "" {
 		return ports.AdminOperation{}, false, fmt.Errorf("%w: an idempotency key is required: it is this operation's identity, and a retry carries the same one", domain.ErrInvalid)
-	case len(key) > MaxAdminKey || strings.ContainsFunc(key, unicode.IsControl):
+	}
+	if len(key) > MaxAdminKey || strings.ContainsFunc(key, unicode.IsControl) {
 		return ports.AdminOperation{}, false, fmt.Errorf("%w: an idempotency key is at most %d bytes and has no control characters", domain.ErrInvalid, MaxAdminKey)
-	case rq.Realm == "":
+	}
+	if rq.Realm == "" {
 		return ports.AdminOperation{}, false, fmt.Errorf("%w: realm is required", domain.ErrInvalid)
 	}
 	if err := domain.Realm(rq.Realm).Validate(); err != nil {
@@ -176,10 +180,10 @@ func decodeStrict(raw json.RawMessage, v any) error {
 }
 
 func checkShard(shard *int, shards int) (int, error) {
-	switch {
-	case shard == nil:
+	if shard == nil {
 		return 0, fmt.Errorf("%w: shard is required: {\"shard\": N}", domain.ErrInvalid)
-	case *shard < 0 || *shard >= shards:
+	}
+	if *shard < 0 || *shard >= shards {
 		return 0, fmt.Errorf("%w: shard %d is not one of this deployment's %d", domain.ErrInvalid, *shard, shards)
 	}
 	return *shard, nil
