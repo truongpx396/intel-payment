@@ -385,6 +385,64 @@ BEGIN
   PERFORM pg_temp.ok('a dead letter keeps its payload byte for byte');
 END $$;
 
+-- ------------------------------------------------ an operator's request is kept as made, worked once, and audited (R112)
+DO $$
+DECLARE op uuid;
+BEGIN
+  INSERT INTO admin_operations (realm, kind, params, actor, reason, key)
+  VALUES ('verify', 'recover', '{"shard":2}', 'alice@example.com', 'INC-4412', 'k-1') RETURNING admin_operations.id INTO op;
+  IF (SELECT count(*) FROM audit_log WHERE subject_kind = 'admin_operations' AND subject_id = op::text
+        AND action = 'admin.recover.requested' AND actor = 'alice@example.com' AND reason = 'INC-4412') <> 1 THEN
+    RAISE EXCEPTION 'FAIL: a request was not audited by the database in its own transaction'; END IF;
+  PERFORM pg_temp.ok('a request is audited by the database, with the person and the reason, in the transaction that made it');
+  BEGIN
+    INSERT INTO admin_operations (realm, kind, params, actor, reason, key) VALUES ('verify', 'recover', '{"shard":2}', 'alice@example.com', 'INC-4412', 'k-1');
+    RAISE EXCEPTION 'FAIL: a key was used twice in one realm';
+  EXCEPTION WHEN unique_violation THEN NULL;
+  END;
+  PERFORM pg_temp.ok('a key is unique per realm: a retry cannot make a second operation');
+  BEGIN
+    INSERT INTO admin_operations (realm, kind, params, actor, reason, key) VALUES ('verify', 'recover', '{}', ' ', 'why', 'k-2');
+    RAISE EXCEPTION 'FAIL: a request without a person was accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO admin_operations (realm, kind, params, actor, reason, key) VALUES ('verify', 'recover', '{}', 'bob', '', 'k-3');
+    RAISE EXCEPTION 'FAIL: a request without a reason was accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  PERFORM pg_temp.ok('a request without a person or without a reason is refused by the table');
+  BEGIN
+    UPDATE admin_operations SET actor = 'mallory' WHERE admin_operations.id = op;
+    RAISE EXCEPTION 'FAIL: who asked was rewritten';
+  EXCEPTION WHEN integrity_constraint_violation THEN NULL;
+  END;
+  BEGIN
+    UPDATE admin_operations SET params = '{"shard":3}' WHERE admin_operations.id = op;
+    RAISE EXCEPTION 'FAIL: what was asked was rewritten';
+  EXCEPTION WHEN integrity_constraint_violation THEN NULL;
+  END;
+  BEGIN
+    DELETE FROM admin_operations WHERE admin_operations.id = op;
+    RAISE EXCEPTION 'FAIL: an operation was deleted';
+  EXCEPTION WHEN integrity_constraint_violation THEN NULL;
+  END;
+  PERFORM pg_temp.ok('what was asked, by whom and why cannot be rewritten, and an operation cannot be deleted');
+  UPDATE admin_operations SET status = 'running', attempts = 1, started_at = now() WHERE admin_operations.id = op;
+  IF (SELECT count(*) FROM audit_log WHERE subject_id = op::text) <> 1 THEN
+    RAISE EXCEPTION 'FAIL: a claim was audited as if it were an action'; END IF;
+  UPDATE admin_operations SET status = 'failed', error = 'the shard is not ours', finished_at = now() WHERE admin_operations.id = op;
+  IF (SELECT count(*) FROM audit_log WHERE subject_id = op::text AND action = 'admin.recover.failed') <> 1 THEN
+    RAISE EXCEPTION 'FAIL: an outcome was not audited'; END IF;
+  PERFORM pg_temp.ok('an outcome is audited once, a claim not at all');
+  BEGIN
+    UPDATE admin_operations SET status = 'pending' WHERE admin_operations.id = op;
+    RAISE EXCEPTION 'FAIL: a finished operation was reopened';
+  EXCEPTION WHEN integrity_constraint_violation THEN NULL;
+  END;
+  PERFORM pg_temp.ok('an outcome is final');
+END $$;
+
 -- ------------------------------------------------ an outbound event is recorded once and never changes (FR-048)
 DO $$
 BEGIN

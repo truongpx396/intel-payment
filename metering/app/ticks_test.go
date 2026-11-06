@@ -465,3 +465,18 @@ func TestAUsageRollupTickMayAskForADaysBackfillWithinRange(t *testing.T) {
 		}
 	}
 }
+
+// R112: an operator who asks for a reconcile gets one whether or not anything was booked since the last; the scheduled tick does not
+// carry the flag and so keeps asking whether there is anything due.
+func TestAShardPayloadMayAskForTheWorkToBeForcedAndOnlyDoesSoWhenItSaysSo(t *testing.T) {
+	t.Parallel()
+	for payload, want := range map[string]bool{`{"shard":1}`: false, `{"shard":1,"force":false}`: false, `{"shard":1,"kind":"full","force":true}`: true} {
+		sp, err := app.ParseShard([]byte(payload), 8)
+		if err != nil || sp.Force != want {
+			t.Errorf("%s: force %v, err %v, want %v", payload, sp.Force, err, want)
+		}
+	}
+	if _, err := app.ParseShard([]byte(`{"shard":1,"force":"yes"}`), 8); !errors.Is(err, domain.ErrInvalid) {
+		t.Errorf("a force that is not a boolean: %v", err)
+	}
+}
