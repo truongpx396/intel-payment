@@ -144,4 +144,11 @@ type Subs interface {
 	// MarkGraceLapsed records that the end of sub's grace was announced, only while it is still the grace that
 	// ended (a newer state clears it). It reports whether it recorded.
 	MarkGraceLapsed(ctx context.Context, sub domain.Sub, at time.Time) (bool, error)
+	// LiveAccounts lists, by id and once each, the provider accounts that hold a live subscription (Sub.Live): the accounts the drift
+	// sweep has work in. An account whose subscriptions have all ended is not one.
+	LiveAccounts(ctx context.Context) ([]string, error)
+	// LiveOf lists an account's live subscriptions in the order of their provider ids, those that sort after `after` (empty: from the
+	// start), at most limit of them: a keyset page, so a sweep that changes what it reads cannot skip or repeat one. A page shorter than
+	// limit is the last.
+	LiveOf(ctx context.Context, account, after string, limit int) ([]domain.Sub, error)
 }

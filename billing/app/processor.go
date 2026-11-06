@@ -50,6 +50,8 @@ type ProcessorDeps struct {
 
 	Batch    int           // events leased per tick (default DefaultBatch)
 	LeaseTTL time.Duration // how long a lease holds (default DefaultLeaseTTL)
+	// DriftPage is how many live subscriptions the drift sweep reads from the books at a time (default DefaultDriftPage).
+	DriftPage int
 	// Backoff is how long a failed event waits after its nth failed attempt (default: 15 s doubling, 30 min cap).
 	Backoff func(attempts int) time.Duration
 	// Grace is how long entitlements hold after a failed payment (default DefaultGrace; PAYMENT_DUNNING_GRACE_DAYS).
@@ -91,8 +93,8 @@ func NewProcessor(d ProcessorDeps) (*Processor, error) {
 	if d.Clock == nil {
 		errs = append(errs, errors.New("a Clock is required: the core reads no wall clock"))
 	}
-	if d.Batch < 0 || d.LeaseTTL < 0 || d.Grace < 0 {
-		errs = append(errs, errors.New("the Batch, LeaseTTL and Grace cannot be negative"))
+	if d.Batch < 0 || d.LeaseTTL < 0 || d.Grace < 0 || d.DriftPage < 0 {
+		errs = append(errs, errors.New("the Batch, LeaseTTL, Grace and DriftPage cannot be negative"))
 	}
 	if err := errors.Join(errs...); err != nil {
 		return nil, fmt.Errorf("billing processor: %w", err)
@@ -111,6 +113,9 @@ func NewProcessor(d ProcessorDeps) (*Processor, error) {
 	}
 	if d.Grace == 0 {
 		d.Grace = DefaultGrace
+	}
+	if d.DriftPage == 0 {
+		d.DriftPage = DefaultDriftPage
 	}
 	if d.SubjectPrefix == "" {
 		d.SubjectPrefix = DefaultSubjectPrefix

@@ -37,6 +37,15 @@ const housekeepingEvery = time.Hour
 // window writes nothing.
 const rollupEvery = 5 * time.Minute
 
+// driftEvery is how often the worker sweeps every live subscription against its provider, and driftWithin how long one sweep may take: the
+// sweep is the backstop for a webhook that never arrived, so hours of delay in finding one is the cost of not calling a provider for every
+// subscription every minute. It is a read per subscription; the first run is one interval after start, never at start, so a restart is not
+// a burst of provider calls.
+const (
+	driftEvery  = 6 * time.Hour
+	driftWithin = time.Hour
+)
+
 // serve parses the settings, wires the writer to its stores and runs it until ctx is done.
 func serve(ctx context.Context, getenv func(string) string, stderr io.Writer) int {
 	s, err := parseSettings(getenv)
@@ -207,6 +216,11 @@ func runWorker(ctx context.Context, s settings, log *slog.Logger, getenv func(st
 			return err
 		})
 	}
+
+	r.startWithin(runCtx, "subdrift tick", driftEvery, driftWithin, func(ctx context.Context) error {
+		_, err := ticks.Do(ctx, "subdrift", nil)
+		return err
+	})
 
 	err = r.run(runCtx)
 	stop()

@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"time"
 
+	bdomain "github.com/truongpx396/intel-payment/billing/domain"
 	pgadapter "github.com/truongpx396/intel-payment/metering/adapters/driven/postgres"
 	"github.com/truongpx396/intel-payment/metering/app"
 	"github.com/truongpx396/intel-payment/metering/domain"
@@ -19,8 +23,8 @@ import (
 // app.Ticks: the claim keeps two runs of one tick from working at once, and the work is the same code the worker's own timers run, which
 // is idempotent by construction — so a run killed midway is finished by the next, and a tick with nothing due writes nothing.
 //
-// Not served: `subdrift`. The sweep that asks each provider for the current state of every locally active subscription — the backstop
-// for a missed webhook — is designed and not built, so a process does not claim to serve it; a tick published for it is not consumed.
+// `subdrift` is the sweep that asks each provider for the current state of every locally live subscription — the backstop for a missed
+// webhook (R110a). It is served like the others; a worker also runs it on its own timer (driftEvery), because nothing else would.
 type tickWork struct {
 	s        settings
 	log      *slog.Logger
@@ -107,6 +111,13 @@ func (w *tickWork) handlers() []app.TickHandler {
 		}},
 		{Name: "expiry", Key: app.NoPayload, Run: func(ctx context.Context, _ []byte) (int, error) { return w.expirer.Tick(ctx, 100) }},
 		{Name: "dunning", Key: app.NoPayload, Run: func(ctx context.Context, _ []byte) (int, error) { return w.pay.Dunning(ctx) }},
+		{Name: "subdrift", Key: driftTickKey, Run: func(ctx context.Context, p []byte) (int, error) {
+			account, err := parseDriftAccount(p)
+			if err != nil {
+				return 0, err
+			}
+			return w.pay.Subdrift(ctx, account)
+		}},
 		{Name: "partitions", Key: app.NoPayload, Run: func(ctx context.Context, _ []byte) (int, error) {
 			created, err := w.maint.EnsurePartitions(ctx, partitionMonthsAhead, partitionDaysAhead)
 			if err != nil {
@@ -184,3 +195,33 @@ func (w *tickWork) onShard(ctx context.Context, sh domain.Shard, run func() (int
 	}()
 	return run()
 }
+
+// parseDriftAccount reads the optional `{"account": "..."}` of a subdrift tick: the one account to sweep, or none for every account that
+// has a live subscription. A payload it cannot read is refused and never taken to mean "every account", which is a provider call for every
+// subscription there is; so is a field it does not know, an empty account, and one no provider account could be called.
+func parseDriftAccount(payload []byte) (string, error) {
+	if len(bytes.TrimSpace(payload)) == 0 {
+		return "", nil
+	}
+	var p struct {
+		Account *string `json:"account"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(payload))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&p); err != nil {
+		return "", fmt.Errorf("%w: a subdrift payload is {\"account\": \"...\"} or nothing: %w", domain.ErrInvalid, err)
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return "", fmt.Errorf("%w: a subdrift payload is one JSON object", domain.ErrInvalid)
+	}
+	if p.Account == nil {
+		return "", nil
+	}
+	if err := bdomain.ValidAccountID(*p.Account); err != nil {
+		return "", err
+	}
+	return *p.Account, nil
+}
+
+// driftTickKey is the claim of a subdrift tick: the account it names, so two accounts are swept side by side and one is swept one at a time.
+func driftTickKey(payload []byte) (string, error) { return parseDriftAccount(payload) }

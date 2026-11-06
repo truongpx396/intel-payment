@@ -129,6 +129,48 @@ func (s *Subs) DueForGraceExpiry(ctx context.Context, now time.Time) ([]domain.S
 	return out, rows.Err()
 }
 
+// liveStatuses are the statuses of Sub.Live: the ones that count toward the one-live-subscription-per-scope rule.
+const liveStatuses = `('trialing','active','past_due','paused')`
+
+// LiveAccounts implements ports.Subs: the accounts that hold a live subscription, by id.
+func (s *Subs) LiveAccounts(ctx context.Context) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT s.provider_account FROM subscriptions s WHERE s.status IN `+liveStatuses+` GROUP BY s.provider_account ORDER BY s.provider_account COLLATE "C"`)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: accounts with a live subscription: %w", mapErr(err))
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("postgres: accounts with a live subscription: %w", mapErr(err))
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// LiveOf implements ports.Subs: a keyset page of an account's live subscriptions. The order and the comparison are both bytewise, so a
+// cursor means the same thing whatever collation the database was made with.
+func (s *Subs) LiveOf(ctx context.Context, account, after string, limit int) ([]domain.Sub, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+subColumns+subFrom+` WHERE s.provider_account = $1 AND s.status IN `+liveStatuses+`
+		AND s.provider_subscription_id COLLATE "C" > $2::text COLLATE "C" ORDER BY s.provider_subscription_id COLLATE "C" LIMIT NULLIF($3::int, 0)`,
+		account, after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: live subscriptions of %s: %w", account, mapErr(err))
+	}
+	defer rows.Close()
+	var out []domain.Sub
+	for rows.Next() {
+		sub, err := scanSub(rows)
+		if err != nil {
+			return nil, fmt.Errorf("postgres: live subscriptions of %s: %w", account, err)
+		}
+		out = append(out, sub)
+	}
+	return out, rows.Err()
+}
+
 // MarkGraceLapsed implements ports.Subs: it records the announcement only while it is still the grace that ended — a
 // newer state clears the window or moves it, and then there is nothing to record.
 func (s *Subs) MarkGraceLapsed(ctx context.Context, sub domain.Sub, at time.Time) (bool, error) {

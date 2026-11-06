@@ -29,13 +29,23 @@ func (a ProviderAccount) Serves(realm Realm) bool {
 	return false
 }
 
+// ValidAccountID refuses an id that a provider account could not be called, so a request that names one — a tick, an admin route — is
+// refused where it is read and not after a round trip.
+func ValidAccountID(id string) error {
+	if !accountIDPattern.MatchString(id) {
+		return fmt.Errorf("%w: provider account id %q must match %s", md.ErrInvalid, id, accountIDPattern)
+	}
+	return nil
+}
+
 // Validate refuses an account that could not be addressed on the webhook route, that names no realm, or whose
 // secrets are not references: a row that stored a provider key would put it in every backup and every audit
 // row (invariant 10), so a value with no scheme — `sk_live_…`, `whsec_…` — is refused outright.
 func (a ProviderAccount) Validate() error {
+	if err := ValidAccountID(a.ID); err != nil {
+		return err
+	}
 	switch {
-	case !accountIDPattern.MatchString(a.ID):
-		return fmt.Errorf("%w: provider account id %q must match %s", md.ErrInvalid, a.ID, accountIDPattern)
 	case !providerPattern.MatchString(string(a.Provider)):
 		return fmt.Errorf("%w: provider %q must match %s", md.ErrInvalid, a.Provider, providerPattern)
 	case len(a.Realms) == 0:
