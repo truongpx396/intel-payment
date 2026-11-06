@@ -71,8 +71,8 @@ func DriftCases() []DriftCase {
 			if got.Status != domain.Canceled || !got.LastEventAt.Equal(t1) {
 				t.Fatalf("the books say %+v after the sweep; the provider cancelled it at %v", got, t1)
 			}
-			if rep.Checked != 1 || rep.Repaired != 1 || rep.Unchanged != 0 || rep.Failed != 0 {
-				t.Fatalf("report = %+v, want one checked and one repaired", rep)
+			if rep.Accounts != 1 || rep.Checked != 1 || rep.Repaired != 1 || rep.Unchanged != 0 || rep.Failed != 0 {
+				t.Fatalf("report = %+v, want one account, one checked and one repaired", rep)
 			}
 			if n := count(entitlementReasons(h, h.Scope), "subscription"); n != 1 {
 				t.Fatalf("the entitlement layer was told %d times, want once", n)
@@ -211,6 +211,9 @@ func DriftCases() []DriftCase {
 			if rep.Checked != 5 || rep.Repaired != 5 {
 				t.Fatalf("report = %+v, want all five of them, two to a page", rep)
 			}
+			if n := count(h.Log.Calls(), "subs.LiveOf"); n != 3 {
+				t.Fatalf("the books were read %d times for five subscriptions two to a page, want 3: a page shorter than a page is the last", n)
+			}
 			for i := range 5 {
 				if got := h.Subs.Row(fmt.Sprintf("sub-p%d", i)); got.Status != domain.Canceled {
 					t.Fatalf("sub-p%d was left behind: %+v", i, got)
@@ -267,18 +270,42 @@ func DriftCases() []DriftCase {
 			held(h, h.Scope, AccountID, "sub-a", domain.Active, Start, domain.Canceled, t1)
 			held(h, h.Scope2, OtherAccountID, "sub-b", domain.Active, Start, domain.Canceled, t1)
 			held(h, sc3, InactiveID, "sub-c", domain.Active, Start, domain.Canceled, t1)
+			sc4 := h.Scope
+			sc4.ID = "w4"
+			held(h, sc4, AccountID, "sub-d", domain.Active, Start, domain.Active, Start) // already in agreement
+			sc5 := h.Scope
+			sc5.ID = "w5"
+			r := held(h, sc5, OtherAccountID, "sub-e", domain.Active, Start, domain.Canceled, t1)
+			r.PlanCode = "" // a plan the catalogue does not sell
+			h.Provider.SetSubscription("sub-e", r, t1)
 			rep, err := d.SweepAllSubscriptions(Ctx())
 			if err != nil {
 				t.Fatal(err)
 			}
-			if rep.Accounts != 2 || rep.Checked != 2 || rep.Repaired != 2 {
-				t.Fatalf("report = %+v, want two accounts, two subscriptions, two repaired", rep)
+			if rep.Accounts != 2 || rep.Checked != 4 || rep.Repaired != 2 || rep.Unchanged != 1 || rep.Skipped != 1 || rep.Failed != 0 {
+				t.Fatalf("report = %+v, want two accounts and four subscriptions: two repaired, one left alone and one skipped", rep)
 			}
 			if h.Subs.Row("sub-a").Status != domain.Canceled || h.Subs.Row("sub-b").Status != domain.Canceled {
 				t.Fatal("a live account was left unswept")
 			}
-			if got := h.Subs.Row("sub-c"); got.Status != domain.Active || fetches(h) != 2 {
+			if got := h.Subs.Row("sub-c"); got.Status != domain.Active || fetches(h) != 4 {
 				t.Fatalf("a switched-off account was swept (%d provider calls): %+v", fetches(h), got)
+			}
+		}},
+		{"an account whose sweep fails does not stop the next one, and is named in the error", func(t testing.TB, mk DriftFactory) {
+			h := NewHarness()
+			d := mk(t, h, 100)
+			h.Subs.Put(domain.Sub{Scope: h.Scope, PlanCode: ProCode, Account: AccountID, ProviderSubscriptionID: "sub-a", Status: domain.Active, LastEventAt: Start})
+			held(h, h.Scope2, OtherAccountID, "sub-b", domain.Active, Start, domain.Canceled, t1) // the provider has no object for sub-a
+			rep, err := d.SweepAllSubscriptions(Ctx())
+			if err == nil || !strings.Contains(err.Error(), "account "+AccountID) || !strings.Contains(err.Error(), "sub-a") {
+				t.Fatalf("err = %v, want the account and the subscription that could not be swept to be named", err)
+			}
+			if rep.Accounts != 2 || rep.Failed != 1 || rep.Repaired != 1 {
+				t.Fatalf("report = %+v, want two accounts visited, one failure and one repair", rep)
+			}
+			if got := h.Subs.Row("sub-b"); got.Status != domain.Canceled {
+				t.Fatalf("a failing account stopped the sweep: %+v", got)
 			}
 		}},
 		{"a sweep with nothing live is idle: no provider call, no write", func(t testing.TB, mk DriftFactory) {

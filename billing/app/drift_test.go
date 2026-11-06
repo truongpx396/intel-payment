@@ -1,15 +1,19 @@
 package app_test
 
 import (
+	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/truongpx396/intel-payment/billing/app"
 	"github.com/truongpx396/intel-payment/billing/contracts"
+	"github.com/truongpx396/intel-payment/billing/domain"
 	"github.com/truongpx396/intel-payment/billing/ports"
 )
 
@@ -107,4 +111,88 @@ func TestAPageOfSubscriptionsCannotBeNegative(t *testing.T) {
 	if _, err := app.NewProcessor(driftDeps(h, 0)); err != nil {
 		t.Fatalf("the default page was refused: %v", err)
 	}
+}
+
+// cursorless is a store that answers every page from the start, whatever it was asked to read after.
+type cursorless struct{ ports.Subs }
+
+func (c cursorless) LiveOf(ctx context.Context, account, _ string, limit int) ([]domain.Sub, error) {
+	return c.Subs.LiveOf(ctx, account, "", limit)
+}
+
+// A store that does not move its cursor would hold a sweep on one page for ever, and the provider with it, a call per subscription per
+// lap. The sweep ends with an error that says so.
+func TestASweepOverAStoreThatDoesNotMoveItsCursorEndsInsteadOfLooping(t *testing.T) {
+	t.Parallel()
+	h := contracts.NewHarness()
+	for i, id := range []string{"sub-1", "sub-2", "sub-3"} {
+		sc := h.Scope
+		sc.ID = "c" + string(rune('a'+i))
+		h.Subs.Put(domain.Sub{Scope: sc, PlanCode: contracts.ProCode, Account: contracts.AccountID, ProviderSubscriptionID: id, Status: domain.Active, LastEventAt: contracts.Start})
+		h.GivenProviderSub(id, domain.Active, contracts.Start)
+	}
+	deps := driftDeps(h, 2)
+	deps.Subs = cursorless{h.Subs}
+	p, err := app.NewProcessor(deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.SweepSubscriptions(t.Context(), contracts.AccountID)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "the cursor did not move") {
+			t.Fatalf("err = %v, want it to say the cursor did not move", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the sweep is still reading the same page")
+	}
+}
+
+// unreadable is a store whose books cannot be read.
+type unreadable struct {
+	ports.Subs
+	err error
+}
+
+func (u unreadable) LiveOf(context.Context, string, string, int) ([]domain.Sub, error) {
+	return nil, u.err
+}
+func (u unreadable) LiveAccounts(context.Context) ([]string, error) { return nil, u.err }
+
+// A sweep that cannot read the books has swept nothing, and says so: an error is the difference between "nothing was drifting" and
+// "nothing was looked at".
+func TestASweepThatCannotReadTheBooksSaysSoAndAsksTheProviderNothing(t *testing.T) {
+	t.Parallel()
+	h := contracts.NewHarness()
+	h.GivenProviderSub("sub-1", domain.Canceled, contracts.Start)
+	boom := errors.New("the database is down")
+	deps := driftDeps(h, 2)
+	deps.Subs = unreadable{h.Subs, boom}
+	p, err := app.NewProcessor(deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.SweepSubscriptions(t.Context(), contracts.AccountID); !errors.Is(err, boom) || !strings.Contains(err.Error(), contracts.AccountID) {
+		t.Fatalf("a sweep of an account: %v, want the failure, naming the account", err)
+	}
+	if _, err := p.SweepAllSubscriptions(t.Context()); !errors.Is(err, boom) {
+		t.Fatalf("a sweep of everything: %v, want the failure", err)
+	}
+	if n := count(h.Log.Calls(), "provider.FetchSubscription"); n != 0 {
+		t.Fatalf("the provider was asked %d times about subscriptions nobody could read", n)
+	}
+}
+
+func count(calls []string, want string) int {
+	n := 0
+	for _, c := range calls {
+		if c == want {
+			n++
+		}
+	}
+	return n
 }
