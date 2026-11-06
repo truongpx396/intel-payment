@@ -124,6 +124,13 @@ groups:
           summary: A scheduled tick failed; the bus redelivers it and then parks it in dead_letters.
           runbook: docs/operations.md#alert-a-scheduled-tick-failing
 
+      - alert: MeteringAdminOperationWaiting
+        expr: max(metering_admin_operations_oldest_wait_seconds) > 300
+        labels: {severity: ticket}
+        annotations:
+          summary: An operator's request has waited over five minutes and no worker has taken it; payment-worker is not running, or cannot reach the database.
+          runbook: docs/operations.md#alert-an-operator-request-is-not-being-worked
+
   - name: intel-payment-payments
     rules:
       - alert: BillingWebhookVerificationFailures

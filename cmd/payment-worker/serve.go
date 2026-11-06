@@ -46,6 +46,14 @@ const (
 	driftWithin = time.Hour
 )
 
+// adminPollEvery is how often the worker looks for an operator's request, and adminWithin how long one may take: a full reconcile or a recovery
+// of a large shard is minutes, and the claim on a request holds as long as the limit does, so a second worker does not start what the first is at.
+const (
+	adminPollEvery  = time.Second
+	adminGaugeEvery = 15 * time.Second
+	adminWithin     = 30 * time.Minute
+)
+
 // serve parses the settings, wires the writer to its stores and runs it until ctx is done.
 func serve(ctx context.Context, getenv func(string) string, stderr io.Writer) int {
 	s, err := parseSettings(getenv)
@@ -216,6 +224,25 @@ func runWorker(ctx context.Context, s settings, log *slog.Logger, getenv func(st
 			return err
 		})
 	}
+
+	// The operator's requests (R112): paymentd records them, and this worker — the one with the sole durable writer — does them.
+	adminWorker, err := app.NewAdminWorker(app.AdminWorkerDeps{
+		Store: pgadapter.NewAdminOps(st.Pool, system.Clock{}), Executors: work.adminExecutors(ticks, dead, pgadapter.NewDeadLetters(st.Pool, system.Clock{})),
+		Metrics: metrics, Log: log, Lease: adminWithin,
+	})
+	if err != nil {
+		return abort(err)
+	}
+	r.startWithin(runCtx, "operator requests", adminPollEvery, adminWithin, func(ctx context.Context) error {
+		for range 20 { // a burst of requests is worked through; the rest wait for the next look
+			did, err := adminWorker.RunOne(ctx)
+			if err != nil || !did {
+				return err
+			}
+		}
+		return nil
+	})
+	r.start(runCtx, "operator request gauges", adminGaugeEvery, adminWorker.ExportGauges)
 
 	r.startWithin(runCtx, "subdrift tick", driftEvery, driftWithin, func(ctx context.Context) error {
 		_, err := ticks.Do(ctx, "subdrift", nil)

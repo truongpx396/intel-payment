@@ -156,6 +156,79 @@ BEGIN
     END LOOP;
 END $$;
 
+-- ------------------------------------------------- operator requests (R112) --
+-- What an operator asks of the engine — reconcile a shard, recover it, rebuild an account, replay a dead letter, sweep a provider account —
+-- is recorded here before anything is done, with the person and the reason, and worked afterwards by the payment-worker that holds the sole
+-- durable writer. paymentd has no writer, so it cannot do these itself; and a record outlives both the process that asked and the worker that
+-- dies halfway through. (realm, key) is the Idempotency-Key: a retry is the same row, and a key reused for a different request is refused by
+-- the application. seq orders requests made in the same instant; ids are random.
+CREATE TABLE admin_operations (
+    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    seq         BIGINT      GENERATED ALWAYS AS IDENTITY,
+    realm       TEXT        NOT NULL,
+    kind        TEXT        NOT NULL CHECK (kind IN ('reconcile','recover','rehydrate','replay','subdrift','unblock','adjust')),
+    params      JSONB       NOT NULL,
+    actor       TEXT        NOT NULL CHECK (btrim(actor) <> ''),
+    reason      TEXT        NOT NULL CHECK (btrim(reason) <> ''),
+    key         TEXT        NOT NULL CHECK (btrim(key) <> ''),
+    via         TEXT        NOT NULL DEFAULT '',
+    status      TEXT        NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','succeeded','failed')),
+    result      JSONB,
+    error       TEXT,
+    attempts    INT         NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    lease_until TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    started_at  TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    UNIQUE (realm, key)
+);
+CREATE INDEX admin_operations_queue_idx ON admin_operations (created_at, seq) WHERE status IN ('pending', 'running');
+
+-- What was asked, by whom and why is the record of a privileged action: the database refuses to let it change, whoever holds the
+-- connection, and refuses to forget it. An outcome is final; a claim moves a request from pending to running and may be taken over.
+CREATE FUNCTION admin_operations_keep() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        RAISE EXCEPTION 'an operator request is never deleted: it is the record of who asked for what, and why'
+            USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    IF NEW.id <> OLD.id OR NEW.seq <> OLD.seq OR NEW.realm <> OLD.realm OR NEW.kind <> OLD.kind OR NEW.params <> OLD.params
+       OR NEW.actor <> OLD.actor OR NEW.reason <> OLD.reason OR NEW.key <> OLD.key OR NEW.via <> OLD.via OR NEW.created_at <> OLD.created_at THEN
+        RAISE EXCEPTION 'what an operator asked, who asked and why never change'
+            USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    IF OLD.status IN ('succeeded', 'failed') THEN
+        RAISE EXCEPTION 'an outcome is final'
+            USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    IF NEW.status = 'pending' AND OLD.status <> 'pending' THEN
+        RAISE EXCEPTION 'a request that has been claimed is never made pending again'
+            USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    RETURN NEW;
+END $$;
+CREATE TRIGGER admin_operations_keep BEFORE UPDATE OR DELETE ON admin_operations
+    FOR EACH ROW EXECUTE FUNCTION admin_operations_keep();
+
+-- Audited by the database, in the transaction that made the change (D37): a request when it is made, an outcome when it is recorded. A
+-- claim is bookkeeping and is not an action. The actor is the person the request names, on whose behalf the worker acted; a row written
+-- in SQL, without the API, is audited the same way.
+CREATE FUNCTION admin_operations_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        INSERT INTO audit_log (realm, actor, action, subject_kind, subject_id, after, reason)
+        VALUES (NEW.realm, NEW.actor, 'admin.' || NEW.kind || '.requested', 'admin_operations', NEW.id::text,
+                jsonb_build_object('kind', NEW.kind, 'params', NEW.params, 'key', NEW.key, 'via', NEW.via), NEW.reason);
+    ELSIF NEW.status IN ('succeeded', 'failed') AND OLD.status NOT IN ('succeeded', 'failed') THEN
+        INSERT INTO audit_log (realm, actor, action, subject_kind, subject_id, after, reason)
+        VALUES (NEW.realm, NEW.actor, 'admin.' || NEW.kind || '.' || NEW.status, 'admin_operations', NEW.id::text,
+                jsonb_build_object('status', NEW.status, 'result', NEW.result, 'error', NEW.error, 'attempts', NEW.attempts), NEW.reason);
+    END IF;
+    RETURN NULL;
+END $$;
+CREATE TRIGGER admin_operations_audit AFTER INSERT OR UPDATE ON admin_operations
+    FOR EACH ROW EXECUTE FUNCTION admin_operations_audit();
+
 -- ------------------------------------------------------- outbound events ---
 -- How a host hears about what happened, without ever touching this service's Redis (D35). Events
 -- are appended here by the worker; each subscribed endpoint gets a signed, retried delivery; and

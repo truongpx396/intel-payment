@@ -26,10 +26,13 @@ type Config struct {
 	// Credits backs GET /v1/credits, the whole CreditsSnapshot in one round trip.
 	Credits ports.CreditsReader
 	// Admin backs /v1/admin/*: configuration writes with a person and a reason, behind the `admin` privilege.
-	Admin  ports.Admin
-	Auth   auth.Authenticator
-	Clock  ports.Clock
-	Logger *slog.Logger
+	Admin ports.Admin
+	// Operations backs the operator's routes (/v1/admin/reconcile, …/recover, …/rehydrate, …/dead-letters/{id}/replay, …/subdrift and
+	// GET /v1/admin/operations/{id}): each is recorded and done by the worker. A deployment without it serves none of them.
+	Operations ports.AdminOperations
+	Auth       auth.Authenticator
+	Clock      ports.Clock
+	Logger     *slog.Logger
 
 	// Ready backs /readyz and Metrics backs /metrics; each route exists only with its source. /healthz always
 	// exists and calls nothing. ReadyTimeout bounds a readiness check (default 2s): a probe must answer.
@@ -106,6 +109,19 @@ func BuildRegistry(cfg Config) (*Registry, error) {
 			{Method: http.MethodDelete, Path: "/v1/admin/limits/{name}", Handler: h.deleteLimit},
 			{Method: http.MethodGet, Path: "/v1/admin/pools/{name}", Handler: h.getPool},
 			{Method: http.MethodPut, Path: "/v1/admin/pools/{name}", Handler: h.putPool},
+		} {
+			r.Surface, r.Privilege = V1, auth.Admin
+			reg.Add(r)
+		}
+	}
+	if cfg.Operations != nil {
+		for _, r := range []Route{
+			{Method: http.MethodPost, Path: "/v1/admin/reconcile", Handler: h.opReconcile},
+			{Method: http.MethodPost, Path: "/v1/admin/shards/{shard}/recover", Handler: h.opRecover},
+			{Method: http.MethodPost, Path: "/v1/admin/rehydrate", Handler: h.opRehydrate},
+			{Method: http.MethodPost, Path: "/v1/admin/dead-letters/{id}/replay", Handler: h.opReplay},
+			{Method: http.MethodPost, Path: "/v1/admin/subdrift", Handler: h.opSubdrift},
+			{Method: http.MethodGet, Path: "/v1/admin/operations/{id}", Handler: h.getOperation},
 		} {
 			r.Surface, r.Privilege = V1, auth.Admin
 			reg.Add(r)

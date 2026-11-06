@@ -270,6 +270,28 @@ then ran is not a fault. The `tick` label says which.
 4. **`trim`**: if it keeps failing the streams are never trimmed ([Alert: stream length approaching the cap](#alert-stream-length-approaching-the-cap)).
 5. A parked tick is harmless to leave once the cause is fixed: the next one does the work.
 
+## Alert: an operator request is not being worked
+
+**Means:** `metering_admin_operations_oldest_wait_seconds` is over five minutes: a request an operator made through `POST /v1/admin/reconcile`,
+`…/shards/{shard}/recover`, `…/rehydrate`, `…/dead-letters/{id}/replay` or `…/subdrift` is recorded and no worker has taken it. `paymentd` has no
+writer, so it records the request and answers `202`; the `payment-worker` that holds the sole durable writer does the work, and it looks for a
+request every second. A queue that is not drained means no worker is running, or none can reach PostgreSQL.
+
+```sql
+SELECT id, kind, status, actor, reason, attempts, created_at, lease_until
+  FROM admin_operations WHERE status IN ('pending', 'running') ORDER BY created_at, seq;
+```
+
+1. **Is `payment-worker` running?** A request waits for as long as there is no worker, and is done in order when one starts.
+2. **`running` with `lease_until` in the past** is a worker that died holding the request (`attempts` says how many have tried): the next
+   worker takes it over. Every operation is safe to do again, so nothing needs undoing first.
+3. **`failed` is not waiting** and never alerts: it is the record of what went wrong, in `error`, and it is not tried again. Ask again, under
+   a new `Idempotency-Key`, once the cause is fixed.
+4. An operation takes minutes only for a full reconcile or a recovery of a large shard; the claim on a request holds for thirty minutes, so a
+   second worker does not start what the first is still at.
+
+---
+
 ## Alert: stream length approaching the cap
 
 **Means:** the trim tick is not running, or a consumer group is so far behind that nothing is
@@ -435,9 +457,9 @@ SELECT encode(payload, 'escape') FROM dead_letters WHERE id = '<id>';  -- the me
 2. **Fix the cause first.** A replayed message that fails again is a new letter and a new page.
 3. **Replay it.** The replay is `app.DeadLetters.Replay`: it claims the letter for a minute, publishes the payload to its
    original subject and marks it replayed (the row stays). Two replays at once publish once; a publish that fails can be retried
-   at once; one killed midway is completed by the next after the minute. **The admin route for it
-   (`POST /v1/admin/dead-letters/{id}/replay`) is designed and not served yet** ([rest-api.md](../specs/001-metering-billing-core/contracts/rest-api.md)):
-   until it is, a replay is a call from a Go program that holds the bus and the store.
+   at once; one killed midway is completed by the next after the minute. Ask for it with
+   `POST /v1/admin/dead-letters/{id}/replay` (`actor`, `reason`, an `Idempotency-Key`): it is recorded, answered `202`, done by the worker, and
+   `GET /v1/admin/operations/{id}` says how it went. A letter of another realm is not yours to replay.
 4. A parked **tick** (`….tick`) is harmless to leave: the next scheduled tick does the work.
 
 ---

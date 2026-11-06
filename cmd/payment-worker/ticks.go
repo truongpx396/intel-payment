@@ -65,11 +65,16 @@ func (w *tickWork) handlers() []app.TickHandler {
 			}
 			sh, kind := domain.Shard(*sp.Shard), domain.ReconcileKind(sp.Kind)
 			return w.onShard(ctx, sh, func() (int, error) {
-				due, err := w.writer.ReconcileDue(ctx, sh, kind)
-				if err != nil || !due {
-					return 0, err
+				if !sp.Force { // an operator asked for the run; a scheduler's tick asks whether anything is due
+					due, err := w.writer.ReconcileDue(ctx, sh, kind)
+					if err != nil || !due {
+						return 0, err
+					}
 				}
 				run, err := w.writer.Reconcile(ctx, sh, kind)
+				if sp.Force {
+					return max(run.Checked, 1), err // a run that was asked for is a run, of however few scopes
+				}
 				return run.Checked, err
 			})
 		}},
