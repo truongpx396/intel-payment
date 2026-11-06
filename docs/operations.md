@@ -7,7 +7,8 @@ this runbook is written from that reasoning and has **not yet been exercised in 
 T131/T133 rehearse it before release.
 
 Keys and streams below use a shard's hash tag, e.g. `{s42}`. To find a scope's shard:
-`fnv1a64("<realm>/<kind>:<id>") mod PAYMENT_SHARDS`, or `GET /v1/admin/drift?scope_kind=&scope_id=`.
+`fnv1a64("<realm>/<kind>:<id>") mod PAYMENT_SHARDS`. (`GET /v1/admin/drift` is **designed and not built**: read `reconcile_runs` and
+`reconcile_findings` in PostgreSQL.)
 
 ---
 
@@ -98,7 +99,9 @@ FROM reconcile_findings f WHERE f.outcome = 'drift' ORDER BY f.created_at DESC L
 
 Either way, find the intents around `hot_seq` in the ledger and suspense for that scope. If the
 **books** are wrong — rarer, and a real bug — correct them with an audited
-`POST /v1/admin/adjustments`, never by editing a row.
+`POST /v1/admin/adjustments`, never by editing a row. (**That route is designed and not built yet**; until it is, the correction is a signed
+grant made through `POST /v1/grant`: its `reason` becomes the ledger row's operation type, a negative one is subject to the negative-balance
+policy, and nothing marks it as an operator's — cite the ticket in `reason`.)
 
 ---
 
@@ -123,8 +126,13 @@ Recovery is automatic — freeze → drain → bump generation → unfreeze — 
 Force the procedure by hand, with a reason, if detection missed a failover you know happened:
 
 ```bash
-curl -X POST localhost:8080/v1/admin/shards/42/recover -d '{"reason":"manual failover 2026-09-28"}'
+curl -X POST 'localhost:8080/v1/admin/shards/42/recover?realm=acme' -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Idempotency-Key: INC-4412-recover-42' \
+  -d '{"actor":"alice@example.com","reason":"manual failover 2026-09-28"}'
+# 202 {"created":true,"operation":{"id":"…","status":"pending",…}} — read how it went from the Location header
 ```
+
+The request is recorded and the worker does it: [Operator requests](#operator-requests).
 
 ---
 
@@ -252,7 +260,8 @@ payment-worker tick usage.rollup '{"days":90}'     # recompute the last 90 days 
 Publishing a tick twice is harmless: the second is `skipped` at the claim. `metering_tick_total{tick,outcome}` says what became of each:
 `ran` (work was done), `idle` (nothing was due, nothing was written), `skipped` (another run held the claim, or the shard belongs to another
 worker), `failed` (the bus redelivers it, then parks it in `dead_letters` and pages — see [Alert: DLQ dead count](#alert-dlq-dead-count)).
-A tick that stops arriving shows as a counter that stops moving. `billing.subdrift.tick` is **not served**: nothing consumes it.
+A tick that stops arriving shows as a counter that stops moving. `billing.subdrift.tick` is served like the others, and the worker also runs it every six hours
+on its own: `billing_subdrift_total{outcome="repaired"}` moving means a webhook never arrived and the sweep repaired what it left behind.
 
 ## Alert: a scheduled tick failing
 
@@ -289,6 +298,38 @@ SELECT id, kind, status, actor, reason, attempts, created_at, lease_until
    a new `Idempotency-Key`, once the cause is fixed.
 4. An operation takes minutes only for a full reconcile or a recovery of a large shard; the claim on a request holds for thirty minutes, so a
    second worker does not start what the first is still at.
+
+---
+
+## Operator requests
+
+What an operator asks of the engine — reconcile a shard, recover it, rebuild an account, replay a dead letter, sweep a provider account — is a
+request to the worker that holds the sole durable writer. `paymentd` has no writer, so it **records** the request and answers `202`; the
+`payment-worker` does it, and the record says how it went. Every call needs the `admin` privilege, an `Idempotency-Key` header, and `actor` and
+`reason` in the body; `?realm=` names the realm when the credential spans several.
+
+| Ask | Route | Arguments |
+|---|---|---|
+| Reconcile a shard now (runs even when nothing was booked since the last run, under the scheduled tick's claim) | `POST /v1/admin/reconcile` | `shard`, `kind` (`incremental` or `full`) |
+| Recover a shard: freeze, drain, bump the generation, unfreeze | `POST /v1/admin/shards/{shard}/recover` | — |
+| Rebuild a scope's hot account from the books (only if it is missing or stale) | `POST /v1/admin/rehydrate` | `scope: {kind, id}` |
+| Publish a parked message again (once; a letter of another realm is not yours) | `POST /v1/admin/dead-letters/{id}/replay` | — |
+| Sweep a provider account's subscriptions against the provider | `POST /v1/admin/subdrift` | `account` |
+| Read how a request went | `GET /v1/admin/operations/{id}` | — |
+
+An operation is `pending`, then `running` while a worker has it, then `succeeded` (with a `result`) or `failed` (with an `error`). **A failed
+operation is not tried again**: ask again, under a new key, once the cause is fixed. The same request under the same key is the same operation
+(`created: false`), whatever order its JSON keys are in, and is done once; the key reused for a different request is `409
+idempotency_conflict`. A worker that dies holding a request leaves it to the next one (`attempts` says how many tried), so every operation is
+safe to do again.
+
+Every request and every outcome is written to `audit_log` by the database in the transaction that made it, with the person and the reason:
+
+```sql
+SELECT created_at, actor, action, reason FROM audit_log WHERE subject_kind = 'admin_operations' ORDER BY created_at DESC LIMIT 20;
+```
+
+**Not built yet:** `POST /v1/admin/unblock`, `POST /v1/admin/adjustments` and `GET /v1/admin/drift`.
 
 ---
 
@@ -402,9 +443,9 @@ COMMIT;
 A planned operation, for when the shard count itself is too small:
 
 1. Announce a short window; `Admit` will apply the fail policy while shards are frozen, and usage will journal.
-2. `POST /v1/admin/shards/*/recover` with `{"reason":"reshard", "new_shards": 1024}` — freezes every
-   shard, drains every stream, records the new count in `hot_config`, bumps every generation, and
-   unfreezes. Restart every `paymentd` and `payment-worker` with `PAYMENT_SHARDS=1024` as part of it
+2. Recover every shard and record the new count in `hot_config` — freezes every
+   shard, drains every stream, bumps every generation, and unfreezes. (**Not served by the route yet:**
+   `POST /v1/admin/shards/{shard}/recover` recovers one shard and takes no `new_shards`; a reshard is still done by hand.) Restart every `paymentd` and `payment-worker` with `PAYMENT_SHARDS=1024` as part of it
    (they refuse to start otherwise).
 3. Expect: lazy rebuilds from the books; window counters restarted (a daily ceiling admits up to one
    extra window's worth today); hot idempotency guards gone (late replays are caught by the writer).
@@ -434,8 +475,8 @@ rebuilt from the books.
 
 ## Recovery: a missed webhook
 
-The drift sweep repairs subscriptions automatically; force it with
-`POST /v1/admin/subdrift {"account":"stripe-live"}`. For a payment, redeliver from the provider's
+The drift sweep repairs subscriptions automatically, every six hours; force it with
+`POST /v1/admin/subdrift {"account":"stripe-live","actor":"…","reason":"…"}` (with an `Idempotency-Key`; see [Operator requests](#operator-requests)). For a payment, redeliver from the provider's
 dashboard — safe by construction: the inbox dedups it, and the permanent grant guard makes a second
 grant impossible.
 

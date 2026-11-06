@@ -157,6 +157,9 @@ A run per shard (`incremental` or `full`) with **counts** — checked, in sync, 
 ### `dead_letters`
 Messages that exhausted their retry budget; parked, never dropped ([bus-subjects.md § Dead letters](./contracts/bus-subjects.md#dead-letters)). `(subject, source_id)` is unique — the subject a message failed on and the bus's id for that delivery — so an envelope delivered twice is one letter. The payload is `BYTEA`, kept as it arrived. A database trigger refuses a `DELETE` and any change to what a letter says about its failure; only `replay_claimed_until` (the lease a replay holds while it publishes) and `replayed_at` (set once, never cleared) move.
 
+### `admin_operations`
+What an operator asked of the engine ([rest-api.md § Operations](./contracts/rest-api.md#operations-admin-privilege)), kept as asked: `kind` (`reconcile`, `recover`, `rehydrate`, `replay`, `subdrift`; `unblock` and `adjust` are admitted by the table and not yet served), `params` (canonical JSON), `actor`, `reason`, `via` (the credential), and `key`, unique per `realm` — the `Idempotency-Key`, so a retry is the same row. `paymentd` inserts it and `payment-worker` works it: `status` goes `pending` → `running` (a claim, `FOR UPDATE SKIP LOCKED`, with a `lease_until` that lapses when the worker dies and `attempts` counting the claims) → `succeeded` with a `result`, or `failed` with an `error`. The table refuses to let what was asked change or be deleted and an outcome be altered, and its triggers write `audit_log` for every request (`admin.<kind>.requested`) and every outcome (`admin.<kind>.succeeded|failed`) in the same transaction — for a row written in SQL too.
+
 ### `audit_log`
 Every privileged action and **every configuration write**, with `actor` (the API user via `intelpay.actor`, or `db:<role>` for a direct SQL write), `action`, `subject_kind`, `subject_id`, `before`, `after`, `reason`.
 
@@ -172,7 +175,7 @@ How hosts hear what happened ([outbound-events.md](./contracts/outbound-events.m
 | `0001_metering_core.sql` | partition helpers, `hot_config`, `hot_shards`, `credit_pools`, `account_credits`, `account_watermarks`, `credit_ledger` (+ partitions), `ledger_checkpoints`, `credit_idem`, `usage_idem` (+ partitions), `credit_suspense`, `credit_transfers`, `credit_outbox_dead`, `spend_journal`, `usage_events` (+ partitions), `rate_cards` / `rate_card_entries` (+ insert-only trigger), `limits`, `balance_watches` |
 | `0002_payments.sql` | `provider_accounts`, `plans`, `plan_prices`, `plan_provider_prices`, `billing_customers`, `subscriptions`, `payments`, `payment_events`, `auto_recharge` |
 | `0003_entitlements.sql` | `entitlement_keys`, `plan_entitlements`, `realm_defaults`, `entitlement_overrides` |
-| `0004_operations.sql` | `usage_daily`, `reconcile_runs`, `reconcile_findings`, `dead_letters`, `audit_log` + the configuration audit trigger, `event_endpoints`, `outbound_events`, `event_deliveries` |
+| `0004_operations.sql` | `usage_daily`, `reconcile_runs`, `reconcile_findings`, `dead_letters`, `admin_operations`, `audit_log` + the configuration audit trigger, `event_endpoints`, `outbound_events`, `event_deliveries` |
 | `0005_credit_lots.sql` | `credit_lots` — applied always, used only under `lots_fefo` |
 
 The Phase 2 schema is a **draft** kept with its spec ([002 draft-migrations](../002-postpaid-invoicing/draft-migrations/)), verified in CI on top of this baseline and shipped only with Phase 2's code ([D38](./design-decisions.md)).
