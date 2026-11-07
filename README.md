@@ -1,4 +1,4 @@
-# 💳 intel-payment — Metering, Credits and Payments Engine
+# 💳 Intel Payment — Metering, Credits and Payments Engine
 
 ### A reusable credit-metering and payments service: refuse-before-spend on Redis, the books on Postgres, money in from Stripe, Polar and PayPal
 
