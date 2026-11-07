@@ -124,3 +124,19 @@ func TestIgnoredIsAFirstClassTypeNotAnError(t *testing.T) {
 		t.Error("an empty or unknown type is not valid")
 	}
 }
+
+// R110a: a tick or a route that names an account says it by the id a webhook route is addressed by, and an id that could not be one is
+// refused where it is read, not after a round trip to a provider.
+func TestAnAccountIDIsWhatAWebhookRouteCanAddress(t *testing.T) {
+	t.Parallel()
+	for _, ok := range []string{"a", "acct", "acct-2", "acct_2", "0abc", strings.Repeat("a", 63)} {
+		if err := domain.ValidAccountID(ok); err != nil {
+			t.Errorf("%q was refused: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"", "Acct", "a b", "-a", "_a", "a/b", "a.b", strings.Repeat("a", 64), "acct\n"} {
+		if err := domain.ValidAccountID(bad); !errors.Is(err, mdomain.ErrInvalid) {
+			t.Errorf("%q: %v, want %v", bad, err, mdomain.ErrInvalid)
+		}
+	}
+}

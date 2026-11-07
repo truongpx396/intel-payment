@@ -197,6 +197,9 @@ func NoPayload([]byte) (string, error) { return "", nil }
 type ShardPayload struct {
 	Shard *int   `json:"shard"`
 	Kind  string `json:"kind"`
+	// Force runs a reconcile whether or not a scope was booked since the last one: an operator asked for it. A scheduler's tick does not
+	// carry it, and so keeps asking whether anything is due.
+	Force bool `json:"force"`
 }
 
 // ParseShard reads and checks a per-shard payload against the number of shards.

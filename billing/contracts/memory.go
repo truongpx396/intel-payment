@@ -801,6 +801,14 @@ type MemSubs struct {
 	NoOrder bool
 	// NoLapseMark makes MarkGraceLapsed record nothing, so an expired grace is due on every sweep.
 	NoLapseMark bool
+	// ListsEveryAccount makes LiveOf ignore the account it was asked about, so a sweep reaches another account's subscriptions.
+	ListsEveryAccount bool
+	// ListsEnded makes LiveOf include subscriptions that have ended, so a sweep asks the provider about what is over.
+	ListsEnded bool
+	// ListsOnePage makes LiveOf answer only the first page: a sweep that reads on from its cursor finds nothing there.
+	ListsOnePage bool
+	// ListsEndedAccounts makes LiveAccounts include an account whose subscriptions have all ended.
+	ListsEndedAccounts bool
 
 	log  *CallLog
 	mu   sync.Mutex
@@ -867,6 +875,50 @@ func (m *MemSubs) DueForGraceExpiry(_ context.Context, now time.Time) ([]domain.
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ProviderSubscriptionID < out[j].ProviderSubscriptionID })
+	return out, nil
+}
+
+// LiveAccounts implements ports.Subs: the accounts that hold a live subscription, by id.
+func (m *MemSubs) LiveAccounts(_ context.Context) ([]string, error) {
+	m.log.Add("subs.LiveAccounts")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	seen := map[string]bool{}
+	for _, s := range m.rows {
+		if s.Live() || m.ListsEndedAccounts {
+			seen[s.Account] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for a := range seen {
+		out = append(out, a)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// LiveOf implements ports.Subs: an account's live subscriptions whose provider id sorts after `after`, in that order, at most limit.
+func (m *MemSubs) LiveOf(_ context.Context, account, after string, limit int) ([]domain.Sub, error) {
+	m.log.Add("subs.LiveOf")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ListsOnePage && after != "" {
+		return nil, nil
+	}
+	var out []domain.Sub
+	for _, s := range m.rows {
+		switch {
+		case s.Account != account && !m.ListsEveryAccount:
+		case !s.Live() && !m.ListsEnded:
+		case s.ProviderSubscriptionID <= after:
+		default:
+			out = append(out, s)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ProviderSubscriptionID < out[j].ProviderSubscriptionID })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
 	return out, nil
 }
 

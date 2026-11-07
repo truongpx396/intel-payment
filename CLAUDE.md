@@ -22,10 +22,12 @@ events are built and served too: `payment-worker` records what the engine announ
 webhooks (`events/adapters/driven/httpsend`, behind an SSRF guard) and purges it, `paymentd` serves `GET /v1/events`
 (`events/adapters/driving/eventshttp`, mounted by `cmd/internal/events`), and `payment-worker` parks every message the bus gave up on
 in `dead_letters` and pages once. Event endpoints are SQL rows (no admin API), a replay of a dead letter and a re-drive of a dead
-delivery are use cases nothing serves yet, and only the event types in `outbound-events.md § What is built` are emitted. `payment-worker` serves thirteen of the fourteen
-scheduled ticks (`app.Ticks`, claimed through `ports.Claimer`; `payment-worker tick <name>` publishes one; `billing.subdrift.tick` is not
-served because the sweep is not built), including `usage.rollup`, which keeps the `usage_daily` rollup (and a member-scoped `Breakdown`
-read) current — `GET /v1/credits` does not read it yet. There are no admin operations yet, and there is no UI. The provider adapters have met their sandboxes once
+delivery are use cases nothing serves yet (a dead letter's replay is served: see below), and only the event types in `outbound-events.md § What is built` are emitted. `payment-worker` serves all fourteen
+scheduled ticks (`app.Ticks`, claimed through `ports.Claimer`; `payment-worker tick <name>` publishes one), including `subdrift`, the sweep that asks each
+provider for the current state of every live subscription and repairs a webhook that never arrived (it also runs every six hours), and `usage.rollup`, which keeps the `usage_daily` rollup (and a member-scoped `Breakdown`
+read) current — `GET /v1/credits` does not read it yet. An operator's reconcile, shard recovery, account rehydrate, dead-letter replay and subscription drift sweep are served as `POST /v1/admin/…`: `paymentd` has no writer, so
+it records the request (the person, the reason, an `Idempotency-Key`; `admin_operations`, audited by the database) and answers `202`, and `payment-worker` does it and
+records how it went (`GET /v1/admin/operations/{id}`). **Unblock, adjustments and the drift read are not built**, and there is no UI. The provider adapters have met their sandboxes once
 ([docs/sandbox.md](docs/sandbox.md)), not a buyer approving a PayPal order, a paid Polar order or a live account. Do not write code,
 docs or comments that imply more or less than that.
 

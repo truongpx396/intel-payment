@@ -155,6 +155,29 @@ func (l *Loops) Dunning(ctx context.Context) (int, error) {
 	return g.SweepGrace(ctx)
 }
 
+// Subdrift is the work of `billing.subdrift.tick` (R110a): every live subscription is read from its provider and any divergence repaired,
+// for the one account named or, with none, for every account that has one. It returns how many subscriptions it repaired: a sweep that found
+// the books and the providers agreeing wrote nothing and so counts as idle. A failure on one subscription does not stop the rest; the sweep
+// returns its failures together, and the bus delivers the tick again.
+func (l *Loops) Subdrift(ctx context.Context, account string) (int, error) {
+	d, ok := l.d.Processor.(ports.SubscriptionDrift)
+	if !ok {
+		return 0, errors.New("payments: this processor cannot sweep subscriptions against their providers")
+	}
+	var rep ports.DriftReport
+	var err error
+	if account == "" {
+		rep, err = d.SweepAllSubscriptions(ctx)
+	} else {
+		rep, err = d.SweepSubscriptions(ctx, account)
+	}
+	if rep.Repaired > 0 || err != nil {
+		l.d.Log.Info("payments: the subscription drift sweep", "accounts", rep.Accounts, "checked", rep.Checked, "repaired", rep.Repaired,
+			"unchanged", rep.Unchanged, "skipped", rep.Skipped, "failed", rep.Failed)
+	}
+	return rep.Repaired, err
+}
+
 // PurgeInbox deletes the processed webhook events kept past their retention and returns how many.
 func (l *Loops) PurgeInbox(ctx context.Context) (int, error) {
 	n, err := l.d.Inbox.Purge(ctx, l.d.Clock.Now().Add(-l.d.Retention))

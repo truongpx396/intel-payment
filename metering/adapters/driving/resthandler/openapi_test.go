@@ -2,12 +2,14 @@ package resthandler_test
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
@@ -149,7 +151,7 @@ func fullHandler(t *testing.T, name string, m *stubMeter, r *stubReads, c *stubC
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		_, _ = io.WriteString(w, "# HELP metering_admit_denied_total Admissions refused.\n# TYPE metering_admit_denied_total counter\n")
 	})
-	return newAPI(t, m, apiOpts{ledger: r, transfers: r, credits: c, admin: a, ready: ready, metrics: metrics})
+	return newAPI(t, m, apiOpts{ledger: r, transfers: r, credits: c, admin: a, ops: &stubOps{created: true, op: sampleOperation()}, ready: ready, metrics: metrics})
 }
 
 func TestEveryOperationsRequestsAndResponsesValidateAgainstTheDocument(t *testing.T) {
@@ -210,6 +212,13 @@ func TestEveryOperationsRequestsAndResponsesValidateAgainstTheDocument(t *testin
 				return domain.TransferReceipt{}, domain.ErrInsufficient
 			}
 		}},
+		{"reconcile a shard", "admin", "POST", "/v1/admin/reconcile?realm=acme", `{"actor":"alice","reason":"INC-1","shard":3,"kind":"full"}`, key, 202, nil},
+		{"recover a shard", "admin", "POST", "/v1/admin/shards/5/recover?realm=acme", `{"actor":"alice","reason":"INC-1"}`, key, 202, nil},
+		{"rehydrate an account", "admin", "POST", "/v1/admin/rehydrate?realm=acme", `{"actor":"alice","reason":"INC-1","scope":{"kind":"workspace","id":"w1"}}`, key, 202, nil},
+		{"replay a dead letter", "admin", "POST", "/v1/admin/dead-letters/5b0e6f2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b/replay?realm=acme", `{"actor":"alice","reason":"INC-1"}`, key, 202, nil},
+		{"sweep an account's subscriptions", "admin", "POST", "/v1/admin/subdrift?realm=acme", `{"actor":"alice","reason":"INC-1","account":"stripe-live"}`, key, 202, nil},
+		{"read an operation", "admin", "GET", "/v1/admin/operations/5b0e6f2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b?realm=acme", "", nil, 200, nil},
+		{"an operator request without a key", "admin", "POST", "/v1/admin/reconcile?realm=acme", `{"actor":"alice","reason":"INC-1","shard":3}`, nil, 400, nil},
 		{"balance", "record", "GET", "/v1/balance?scope_kind=workspace&scope_id=w1", "", nil, 200, nil},
 		{"ledger", "record", "GET", "/v1/ledger?scope_kind=workspace&scope_id=w1&limit=2", "", nil, 200, func(_ *stubMeter, r *stubReads, _ *stubCredits, _ *stubAdmin) {
 			r.rows = func(_ context.Context, q ports.LedgerQuery) (ports.LedgerPage, error) {
@@ -342,4 +351,15 @@ func tmplMatches(tmpl, path string) bool {
 		}
 	}
 	return true
+}
+
+// sampleOperation is an operation with every field a client may read, so what the document says is checked against all of them.
+func sampleOperation() ports.AdminOperation {
+	at := time.Date(2026, 11, 6, 9, 0, 0, 0, time.UTC)
+	started, done := at.Add(time.Second), at.Add(3*time.Second)
+	return ports.AdminOperation{
+		ID: "5b0e6f2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b", Realm: "acme", Kind: ports.AdminReconcile, Params: json.RawMessage(`{"shard":3,"kind":"full"}`),
+		Actor: "alice", Reason: "INC-1", Key: "k-1", Via: "ops-tool", Status: ports.AdminSucceeded, Result: json.RawMessage(`{"outcome":"ran"}`),
+		Attempts: 1, CreatedAt: at, StartedAt: &started, FinishedAt: &done,
+	}
 }

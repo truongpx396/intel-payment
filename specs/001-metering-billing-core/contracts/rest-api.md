@@ -117,16 +117,24 @@ Configuration is data ([D13](../design-decisions.md)), and this is its supported
 
 ## Operations (`admin` privilege)
 
+An operator's request is **recorded, then done by the worker**: `paymentd` has no writer, and these act on it. Every call needs `Idempotency-Key`
+(the operation's identity: the same request under the same key is the same operation, the key reused for a different request is `409
+idempotency_conflict`), and `actor` and `reason` in the body; `?realm=` names the realm when the credential spans several. The answer is
+`202 {"created": bool, "operation": {…}}` with `Location: /v1/admin/operations/{id}`; the operation is `pending`, `running`, then `succeeded`
+(with a `result`) or `failed` (with an `error`, and it is not tried again). The database writes the audit row of the request and of its outcome in
+the transaction that records them ([operations.md](../../../docs/operations.md#operator-requests)).
+
 | Method | Path | Purpose |
 |--------|------|---------|
-| POST | `/v1/admin/reconcile` | `{shard, kind}` — idempotent under the tick's claim |
+| POST | `/v1/admin/reconcile` | `{shard, kind?: incremental\|full}` — runs whether or not anything was booked since the last run, under the reconcile tick's claim |
 | POST | `/v1/admin/shards/{shard}/recover` | Freeze → drain → bump generation → unfreeze, with a `reason` |
-| POST | `/v1/admin/rehydrate` | Rebuild one scope's hot account from the books |
-| GET | `/v1/admin/drift` | Recent reconcile runs and findings per shard |
-| POST | `/v1/admin/unblock` | Clear `block_and_flag` for a scope, with a `reason` |
-| POST | `/v1/admin/adjustments` | An investigated correction to the books: `{scope, pool, amount, reason}` → an `admin_adjustment` intent through the normal path, audited |
-| POST | `/v1/admin/dead-letters/{id}/replay` | Re-drive a parked intent or message |
-| POST | `/v1/admin/subdrift` | Force the subscription drift sweep for an account |
+| POST | `/v1/admin/rehydrate` | `{scope: {kind, id}}` — rebuild one scope's hot account from the books, if it is missing or stale |
+| POST | `/v1/admin/dead-letters/{id}/replay` | Publish a parked message again, once; a letter of another realm is `failed` as not found |
+| POST | `/v1/admin/subdrift` | `{account}` — the subscription drift sweep for one provider account |
+| GET | `/v1/admin/operations/{id}` | How a request went |
+| GET | `/v1/admin/drift` | Recent reconcile runs and findings per shard. **Designed, not served** |
+| POST | `/v1/admin/unblock` | Clear `block_and_flag` for a scope, with a `reason`. **Designed, not served** |
+| POST | `/v1/admin/adjustments` | An investigated correction to the books: `{scope, pool, amount, reason}` → an `admin_adjustment` intent through the normal path, audited. **Designed, not served** |
 | POST | `/webhooks/{provider}/{account}` | Provider webhook ingress — **verified by signature**; raw body; size-limited; no CORS |
 
 ---

@@ -1230,6 +1230,173 @@ paths:
           content:
             text/plain:
               schema: { type: string }
+  /v1/admin/reconcile:
+    post:
+      operationId: reconcileShard
+      tags: [admin]
+      summary: "Reconcile a shard now."
+      description: "Compares each recently booked scope's hot account with the books at the same sequence number; with `kind: full`, every scope. It runs whether or not anything was booked since the last run, under the same claim as the scheduled tick. Asking records the request — with `actor`, `reason` and the `Idempotency-Key` — and returns `202`; the worker that holds the sole durable writer does it, and `GET /v1/admin/operations/{id}` (the `Location` header) says how it went. The same request under the same key is the same operation (`created: false`); the key reused for a different request is `409`."
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Realm"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReconcileOperationRequest" }
+      responses:
+        "202": { $ref: "#/components/responses/OperationAccepted" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/admin/shards/{shard}/recover:
+    parameters:
+      - name: shard
+        in: path
+        required: true
+        schema: { type: integer, minimum: 0 }
+    post:
+      operationId: recoverShard
+      tags: [admin]
+      summary: "Recover a shard."
+      description: "Freeze, drain, bump the generation, unfreeze: after a total loss of the hot tier, a rollback or a reshard. Asking records the request — with `actor`, `reason` and the `Idempotency-Key` — and returns `202`; the worker that holds the sole durable writer does it, and `GET /v1/admin/operations/{id}` (the `Location` header) says how it went. The same request under the same key is the same operation (`created: false`); the key reused for a different request is `409`."
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Realm"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OperatorRequest" }
+      responses:
+        "202": { $ref: "#/components/responses/OperationAccepted" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/admin/rehydrate:
+    post:
+      operationId: rehydrateAccount
+      tags: [admin]
+      summary: "Rebuild one scope's hot account from the books."
+      description: "Installs booked credits and open suspense into an account that is missing or stale; a current account is left alone. Asking records the request — with `actor`, `reason` and the `Idempotency-Key` — and returns `202`; the worker that holds the sole durable writer does it, and `GET /v1/admin/operations/{id}` (the `Location` header) says how it went. The same request under the same key is the same operation (`created: false`); the key reused for a different request is `409`."
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Realm"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RehydrateOperationRequest" }
+      responses:
+        "202": { $ref: "#/components/responses/OperationAccepted" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/admin/dead-letters/{id}/replay:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: replayDeadLetter
+      tags: [admin]
+      summary: "Publish a parked message again."
+      description: "Publishes the dead letter to the subject it failed on, once however often it is asked: a letter already replayed is reported as such and not published again. A letter of another realm is not this realm's to replay. Asking records the request — with `actor`, `reason` and the `Idempotency-Key` — and returns `202`; the worker that holds the sole durable writer does it, and `GET /v1/admin/operations/{id}` (the `Location` header) says how it went. The same request under the same key is the same operation (`created: false`); the key reused for a different request is `409`."
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Realm"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OperatorRequest" }
+      responses:
+        "202": { $ref: "#/components/responses/OperationAccepted" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/admin/subdrift:
+    post:
+      operationId: sweepSubscriptions
+      tags: [admin]
+      summary: "Sweep an account's subscriptions against its provider."
+      description: "Asks the provider for the current object of every live subscription of the account and repairs a divergence — the backstop for a webhook that never arrived. A state the books already hold is not written. Asking records the request — with `actor`, `reason` and the `Idempotency-Key` — and returns `202`; the worker that holds the sole durable writer does it, and `GET /v1/admin/operations/{id}` (the `Location` header) says how it went. The same request under the same key is the same operation (`created: false`); the key reused for a different request is `409`."
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Realm"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubdriftOperationRequest" }
+      responses:
+        "202": { $ref: "#/components/responses/OperationAccepted" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/admin/operations/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - $ref: "#/components/parameters/Realm"
+    get:
+      operationId: getOperation
+      tags: [admin]
+      summary: "How an operator request went."
+      description: "A request waits as `pending`, is `running` while a worker has it, and ends `succeeded` (with its `result`) or `failed` (with its `error`). A failed request is not tried again; asking again is a new key."
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The operation.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminOperation" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
 components:
   securitySchemes:
     bearerAuth:
@@ -1397,6 +1564,14 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    OperationAccepted:
+      description: "The request was recorded; the worker will do it. `Location` is where its record is read. `created` is false when this was a retry of a request already recorded."
+      headers:
+        Location:
+          schema: { type: string }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/AdminOperationAccepted" }
   schemas:
     Error:
       type: object
@@ -2169,3 +2344,65 @@ components:
         problems:
           type: array
           items: { type: string }
+    AdminOperation:
+      type: object
+      required: [id, kind, status, realm, params, actor, reason, idempotency_key, attempts, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [reconcile, recover, rehydrate, replay, subdrift] }
+        status: { type: string, enum: [pending, running, succeeded, failed] }
+        realm: { type: string }
+        params: { type: object, description: "The arguments, in the one form they are stored in." }
+        actor: { type: string }
+        reason: { type: string }
+        idempotency_key: { type: string }
+        result: { type: object, description: "What a succeeded operation reports." }
+        error: { type: string, description: "Why a failed operation failed." }
+        attempts: { type: integer, description: "How many times a worker has claimed it; more than one means a worker died holding it." }
+        created_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+    AdminOperationAccepted:
+      type: object
+      required: [created, operation]
+      properties:
+        created: { type: boolean }
+        operation: { $ref: "#/components/schemas/AdminOperation" }
+    OperatorRequest:
+      type: object
+      required: [actor, reason]
+      additionalProperties: false
+      properties:
+        actor: { type: string, minLength: 1, description: "The person asking." }
+        reason: { type: string, minLength: 1, description: "Why; kept with the operation." }
+    ReconcileOperationRequest:
+      type: object
+      required: [actor, reason, shard]
+      additionalProperties: false
+      properties:
+        actor: { type: string, minLength: 1 }
+        reason: { type: string, minLength: 1 }
+        shard: { type: integer, minimum: 0 }
+        kind: { type: string, enum: [incremental, full], description: "Default incremental." }
+    RehydrateOperationRequest:
+      type: object
+      required: [actor, reason, scope]
+      additionalProperties: false
+      properties:
+        actor: { type: string, minLength: 1 }
+        reason: { type: string, minLength: 1 }
+        scope:
+          type: object
+          required: [kind, id]
+          additionalProperties: false
+          properties:
+            kind: { type: string }
+            id: { type: string }
+    SubdriftOperationRequest:
+      type: object
+      required: [actor, reason, account]
+      additionalProperties: false
+      properties:
+        actor: { type: string, minLength: 1 }
+        reason: { type: string, minLength: 1 }
+        account: { type: string, description: "The provider account to sweep." }

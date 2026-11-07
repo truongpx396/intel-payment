@@ -33,6 +33,64 @@ func TestMemorySubscriptionsHonourTheSubsContract(t *testing.T) {
 	contracts.SubsContract(t, func(testing.TB) ports.Subs { return contracts.NewMemSubs(&contracts.CallLog{}) })
 }
 
+// The listing the drift sweep reads from is held to its rules: it passes an honest store and rejects, by name, one that lists another
+// account's subscriptions, one that lists what has ended, one that cannot be read past its first page, and one that lists an account with
+// nothing live.
+func TestSubsContractRejectsEveryBrokenListingByName(t *testing.T) {
+	t.Parallel()
+	const (
+		paged    = "the live subscriptions of an account are listed by provider id, a page at a time, and none twice"
+		scoped   = "an ended subscription is not listed, and another account's is not either"
+		accounts = "the accounts that hold a live subscription are listed once each, and one with only ended ones is not"
+	)
+	broken := []struct {
+		name     string
+		defect   func(*contracts.MemSubs)
+		caughtBy []string
+	}{
+		{"lists every account's subscriptions", func(s *contracts.MemSubs) { s.ListsEveryAccount = true }, []string{scoped}},
+		{"lists subscriptions that have ended", func(s *contracts.MemSubs) { s.ListsEnded = true }, []string{scoped}},
+		{"answers only the first page", func(s *contracts.MemSubs) { s.ListsOnePage = true }, []string{paged}},
+		{"lists an account whose subscriptions have all ended", func(s *contracts.MemSubs) { s.ListsEndedAccounts = true }, []string{accounts}},
+	}
+	for _, b := range broken {
+		t.Run(b.name, func(t *testing.T) {
+			t.Parallel()
+			var rejected []string
+			for _, c := range contracts.SubsCases() {
+				mk := func(testing.TB) ports.Subs {
+					s := contracts.NewMemSubs(&contracts.CallLog{})
+					b.defect(s)
+					return s
+				}
+				if failed, _ := contracts.Probe(30*time.Second, func(t testing.TB) { c.Run(t, mk) }); failed {
+					rejected = append(rejected, c.Name)
+				}
+			}
+			for _, want := range b.caughtBy {
+				if !slices.Contains(rejected, want) {
+					t.Errorf("the contract PASSED a store that %s on %q (rejected only by %q)", b.name, want, rejected)
+				}
+			}
+		})
+	}
+}
+
+func TestEverySubsCaseHasAUniqueNameAndTheHonestStorePassesThemAll(t *testing.T) {
+	t.Parallel()
+	seen := map[string]bool{}
+	for _, c := range contracts.SubsCases() {
+		if seen[c.Name] {
+			t.Fatalf("two cases are called %q", c.Name)
+		}
+		seen[c.Name] = true
+		mk := func(testing.TB) ports.Subs { return contracts.NewMemSubs(&contracts.CallLog{}) }
+		if failed, said := contracts.Probe(30*time.Second, func(t testing.TB) { c.Run(t, mk) }); failed {
+			t.Errorf("the honest store fails %q: %v", c.Name, said)
+		}
+	}
+}
+
 func TestMemoryCustomersHonourTheCustomersContract(t *testing.T) {
 	t.Parallel()
 	contracts.CustomersContract(t, func(testing.TB) ports.Customers { return contracts.NewMemCustomers(&contracts.CallLog{}) })

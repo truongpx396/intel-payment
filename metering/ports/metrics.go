@@ -30,13 +30,16 @@ const (
 	MetricDefaultPartition  = "metering_default_partition_rows"          // gauge (table)
 
 	// Terminal states the writer reaches that no other metric shows (invariant 15).
-	MetricEffectFailed     = "metering_effect_failed_total"     // counter (kind)
-	MetricCorrectionOrphan = "metering_correction_orphan_total" // counter (realm)
-	MetricCorrectionStale  = "metering_correction_stale_total"  // counter (realm)
-	MetricRecoverParked    = "metering_recover_parked_total"    // counter (shard)
-	MetricDeadLettered     = "metering_dead_lettered_total"     // counter (realm)
-	MetricDeadLetters      = "metering_dead_letters"            // gauge (realm)
-	MetricTick             = "metering_tick_total"              // counter (tick, outcome)
+	MetricEffectFailed     = "metering_effect_failed_total"                  // counter (kind)
+	MetricCorrectionOrphan = "metering_correction_orphan_total"              // counter (realm)
+	MetricCorrectionStale  = "metering_correction_stale_total"               // counter (realm)
+	MetricRecoverParked    = "metering_recover_parked_total"                 // counter (shard)
+	MetricDeadLettered     = "metering_dead_lettered_total"                  // counter (realm)
+	MetricDeadLetters      = "metering_dead_letters"                         // gauge (realm)
+	MetricAdminOperations  = "metering_admin_operations_total"               // counter (kind, outcome: succeeded|failed)
+	MetricAdminWaiting     = "metering_admin_operations_waiting"             // gauge: requests nobody has in hand
+	MetricAdminOldestWait  = "metering_admin_operations_oldest_wait_seconds" // gauge: how long the longest-waiting has waited
+	MetricTick             = "metering_tick_total"                           // counter (tick, outcome)
 )
 
 // MetricKind is how a metric is aggregated.
@@ -88,5 +91,8 @@ var Catalog = []MetricDef{
 	{MetricRecoverParked, KindCounter, []string{"shard"}, "{entry}", "Intents parked by a recovery: they sat behind a gap that cannot fill"},
 	{MetricDeadLettered, KindCounter, []string{"realm"}, "{message}", "A message used its delivery budget and was parked: each is one page"},
 	{MetricDeadLetters, KindGauge, []string{"realm"}, "{message}", "Parked messages nobody has replayed"},
+	{MetricAdminOperations, KindCounter, []string{"kind", "outcome"}, "{operation}", "Operator requests the worker finished, by kind and whether they succeeded"},
+	{MetricAdminWaiting, KindGauge, nil, "{operation}", "Operator requests nobody has in hand: pending, or running under a lease whose worker died"},
+	{MetricAdminOldestWait, KindGauge, nil, "s", "How long the longest-waiting operator request has waited: a worker that has stopped shows here"},
 	{MetricTick, KindCounter, []string{"tick", "outcome"}, "{tick}", "Scheduled ticks by outcome: ran, idle (nothing was due), skipped (another run held the claim) or failed"},
 }

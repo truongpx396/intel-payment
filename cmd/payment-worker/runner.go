@@ -218,6 +218,12 @@ func (r *runner) sweep(ctx context.Context, sh domain.Shard, what string, f func
 // start runs f every interval until ctx is done. A failure is logged and tried again next time: every sweep is
 // idempotent, and a worker that stopped on one would leave the rest of its work undone.
 func (r *runner) start(ctx context.Context, what string, every time.Duration, f func(context.Context) error) {
+	r.startWithin(ctx, what, every, r.s.ShutdownTimeout, f)
+}
+
+// startWithin is start with its own limit on how long one run may take, for a sweep whose length is the size of the data and not of a
+// shutdown: cut off at the shutdown timeout it would start from the same place every time and never reach the end.
+func (r *runner) startWithin(ctx context.Context, what string, every, within time.Duration, f func(context.Context) error) {
 	if every <= 0 {
 		every = time.Second
 	}
@@ -232,7 +238,7 @@ func (r *runner) start(ctx context.Context, what string, every time.Duration, f 
 				return
 			case <-t.C:
 			}
-			c, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.s.ShutdownTimeout)
+			c, cancel := context.WithTimeout(context.WithoutCancel(ctx), within)
 			if err := f(c); err != nil && !errors.Is(err, context.Canceled) {
 				r.log.Error(what+" failed", "error", err.Error())
 			}

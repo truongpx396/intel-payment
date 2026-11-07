@@ -48,6 +48,12 @@ func publishTick(ctx context.Context, s settings, args []string, stdout, stderr 
 			return 2
 		}
 	}
+	if name == "subdrift" {
+		if _, err := parseDriftAccount(payload); err != nil {
+			fmt.Fprintf(stderr, "payment-worker tick: %v\n", err)
+			return 2
+		}
+	}
 	if name == "usage.rollup" {
 		if _, _, err := app.ParseRollupDays(payload); err != nil {
 			fmt.Fprintf(stderr, "payment-worker tick: %v\n", err)
