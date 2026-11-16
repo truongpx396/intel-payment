@@ -271,6 +271,20 @@ local function heal(keys, args)
   return {'OK'}
 end
 
+--[[ ip_unblock — clear block_and_flag in a live hot account: an operator's unblock, after the books have been cleared.
+KEYS: meta, acct
+Returns {'OK', 1} when the account held the block and no longer does, {'OK', 0} when there was none to clear — the account is live
+and held none, or it is absent or was built in an older generation, and a rebuild reads the books, which are already clear — or
+{status}: a shard that is cold or frozen is refused, as everywhere. Nothing but the block is touched: not `seq`, not a balance. ]]
+local function unblock(keys, _)
+  local gen, st = live(keys[1], keys[2])
+  if not gen then
+    if st == 'COLD_SCOPE' then return {'OK', 0} end
+    return {st}
+  end
+  return {'OK', redis.call('HDEL', keys[2], 'blocked')}
+end
+
 --[[ ip_shard — shard lifecycle, driven from hot_shards in Postgres.
 KEYS: meta
 ARGV: open <gen>     install only if absent (first boot, or total loss)
@@ -303,4 +317,5 @@ redis.register_function('ip_transfer_out', transfer_out)
 redis.register_function('ip_apply_delta', apply_delta)
 redis.register_function('ip_rehydrate', rehydrate)
 redis.register_function('ip_heal', heal)
+redis.register_function('ip_unblock', unblock)
 redis.register_function('ip_shard', shard)

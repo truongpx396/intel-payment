@@ -63,6 +63,10 @@ type (
 	ReplayParams struct {
 		ID string `json:"id"`
 	}
+	// UnblockParams: the scope whose block_and_flag an operator clears, in the books and then in the hot account.
+	UnblockParams struct {
+		Scope ScopeParams `json:"scope"`
+	}
 )
 
 // AdminOperationsDeps are what taking a request needs.
@@ -98,6 +102,7 @@ func NewAdminOperations(d AdminOperationsDeps) (*AdminOperations, error) {
 		ports.AdminReconcile: {Kind: ports.AdminReconcile, Parse: func(_ string, p json.RawMessage) (json.RawMessage, error) { return parseReconcile(p, d.Shards) }},
 		ports.AdminRecover:   {Kind: ports.AdminRecover, Parse: func(_ string, p json.RawMessage) (json.RawMessage, error) { return parseRecover(p, d.Shards) }},
 		ports.AdminRehydrate: {Kind: ports.AdminRehydrate, Parse: parseRehydrate},
+		ports.AdminUnblock:   {Kind: ports.AdminUnblock, Parse: parseUnblock},
 		ports.AdminReplay:    {Kind: ports.AdminReplay, Parse: func(_ string, p json.RawMessage) (json.RawMessage, error) { return parseReplay(p) }},
 	}
 	for _, k := range d.Kinds {
@@ -240,6 +245,24 @@ func parseRehydrate(realm string, raw json.RawMessage) (json.RawMessage, error) 
 		return nil, err
 	}
 	return json.Marshal(RehydrateParams{Scope: *in.Scope})
+}
+
+// parseUnblock reads the one scope an unblock names. The realm is the request's and never the arguments': an operator of one realm cannot
+// name a scope of another, and a scope with a realm of its own in the arguments is refused as a field nobody knows.
+func parseUnblock(realm string, raw json.RawMessage) (json.RawMessage, error) {
+	var in struct {
+		Scope *ScopeParams `json:"scope"`
+	}
+	if err := decodeStrict(raw, &in); err != nil {
+		return nil, err
+	}
+	if in.Scope == nil {
+		return nil, fmt.Errorf("%w: scope is required: {\"scope\": {\"kind\": ..., \"id\": ...}}", domain.ErrInvalid)
+	}
+	if err := (domain.Scope{Realm: domain.Realm(realm), Kind: in.Scope.Kind, ID: in.Scope.ID}).Validate(); err != nil {
+		return nil, err
+	}
+	return json.Marshal(UnblockParams{Scope: *in.Scope})
 }
 
 // A dead letter's id is a lower-case UUID: anything else is not an id this deployment issued.

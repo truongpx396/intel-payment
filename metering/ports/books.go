@@ -222,8 +222,20 @@ type BookedState struct {
 	Suspense  map[domain.Pool]domain.Credits // Σ open suspense deltas
 }
 
+// BookUnblocker clears block_and_flag where the books hold it (account_watermarks.blocked): half of an operator's unblock (R112a), the
+// other half being the hot account (HotUnblocker). The books go first, so a crash between the two is repaired by asking again.
+type BookUnblocker interface {
+	// ClearBlocked clears the scope's block under the scope's transaction lock — the lock a booking takes, so a booking in progress
+	// finishes first and the clear lands on what it wrote. It reports whether there was a block to clear: a scope that is not blocked, and
+	// one the books have no watermark for, are false and nil, and nothing is written for either. Only the block moves: not the applied
+	// sequence, not the generation. A scope that is not a scope is domain.ErrInvalid.
+	ClearBlocked(ctx context.Context, scope domain.Scope) (bool, error)
+}
+
 // BookStore is the writer's Postgres port.
 type BookStore interface {
+	BookUnblocker
+
 	// InTx runs fn in one transaction holding scope's advisory lock. An error from fn rolls back.
 	InTx(ctx context.Context, scope domain.Scope, fn func(ctx context.Context, tx BookTx) error) error
 

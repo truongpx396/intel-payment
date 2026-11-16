@@ -1313,6 +1313,32 @@ paths:
         "413": { $ref: "#/components/responses/TooLarge" }
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/admin/unblock:
+    post:
+      operationId: unblockAccount
+      tags: [admin]
+      summary: "Clear block_and_flag for one scope."
+      description: "An account held by `block_and_flag` (a write-off under that policy) stays held however much is paid into it, until an operator clears it. The shard is drained first, so a write-off the writer has not yet booked cannot set the block again; then the block is cleared in the books and after that in the hot account the admission gate reads, so a crash between the two is repaired by asking again. The operation's `result` says where the block was held: `books` and `hot`, each true only if it held one and no longer does. Asking for a scope that is not blocked succeeds and says both are false. Asking records the request — with `actor`, `reason` and the `Idempotency-Key` — and returns `202`; the worker that holds the sole durable writer does it, and `GET /v1/admin/operations/{id}` (the `Location` header) says how it went. The same request under the same key is the same operation (`created: false`); the key reused for a different request is `409`."
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Realm"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UnblockOperationRequest" }
+      responses:
+        "202": { $ref: "#/components/responses/OperationAccepted" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
   /v1/admin/dead-letters/{id}/replay:
     parameters:
       - name: id
@@ -2349,7 +2375,7 @@ components:
       required: [id, kind, status, realm, params, actor, reason, idempotency_key, attempts, created_at]
       properties:
         id: { type: string, format: uuid }
-        kind: { type: string, enum: [reconcile, recover, rehydrate, replay, subdrift] }
+        kind: { type: string, enum: [reconcile, recover, rehydrate, replay, subdrift, unblock] }
         status: { type: string, enum: [pending, running, succeeded, failed] }
         realm: { type: string }
         params: { type: object, description: "The arguments, in the one form they are stored in." }
@@ -2395,6 +2421,21 @@ components:
           type: object
           required: [kind, id]
           additionalProperties: false
+          properties:
+            kind: { type: string }
+            id: { type: string }
+    UnblockOperationRequest:
+      type: object
+      required: [actor, reason, scope]
+      additionalProperties: false
+      properties:
+        actor: { type: string, minLength: 1 }
+        reason: { type: string, minLength: 1 }
+        scope:
+          type: object
+          required: [kind, id]
+          additionalProperties: false
+          description: "The scope whose block is cleared, in the request's realm."
           properties:
             kind: { type: string }
             id: { type: string }

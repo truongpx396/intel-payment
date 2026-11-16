@@ -144,10 +144,20 @@ type ShardState struct {
 	Reason string
 }
 
+// HotUnblocker clears block_and_flag in the hot account — the flag the admission gate reads — once the books are clear (R112a).
+type HotUnblocker interface {
+	// ClearBlocked removes the block from a live account and reports whether it held one. An account that is absent, or was built in an
+	// older shard generation, has nothing to clear (false, nil): it is rebuilt from the books, which are cleared first. A frozen shard is
+	// domain.ErrShardFrozen and a shard that was never opened domain.ErrColdShard, and nothing is touched. Only the block moves: not the
+	// sequence, not a balance.
+	ClearBlocked(ctx context.Context, s domain.Scope) (bool, error)
+}
+
 // BalanceStore is the hot-tier adapter (Redis Functions on the shard-tagged key layout). Beyond the
 // Ledger the Meter uses, it carries the operations only the writer, reconcile and recovery need.
 type BalanceStore interface {
 	Ledger
+	HotUnblocker
 
 	// ApplyDelta issues a writer hot mutation (transfer_in, correction, expiry) in the scope's slot.
 	ApplyDelta(ctx context.Context, d HotDelta) (domain.Receipt, error)

@@ -133,7 +133,7 @@ the transaction that records them ([operations.md](../../../docs/operations.md#o
 | POST | `/v1/admin/subdrift` | `{account}` — the subscription drift sweep for one provider account |
 | GET | `/v1/admin/operations/{id}` | How a request went |
 | GET | `/v1/admin/drift` | Recent reconcile runs and findings per shard. **Designed, not served** |
-| POST | `/v1/admin/unblock` | Clear `block_and_flag` for a scope, with a `reason`. **Designed, not served** |
+| POST | `/v1/admin/unblock` | `{scope: {kind, id}}` — clear `block_and_flag` for a scope of the request's realm: the shard is drained, then the books are cleared, then the hot account the gate reads (so a crash between the last two is repaired by asking again). The operation's `result` is `{scope, books, hot}`, each true only if it held the block and no longer does; a scope that is not blocked succeeds with both false |
 | POST | `/v1/admin/adjustments` | An investigated correction to the books: `{scope, pool, amount, reason}` → an `admin_adjustment` intent through the normal path, audited. **Designed, not served** |
 | POST | `/webhooks/{provider}/{account}` | Provider webhook ingress — **verified by signature**; raw body; size-limited; no CORS |
 

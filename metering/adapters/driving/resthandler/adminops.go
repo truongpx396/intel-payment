@@ -168,6 +168,23 @@ func (h *handler) opSubdrift(w http.ResponseWriter, r *http.Request) {
 	}{req.Account})
 }
 
+func (h *handler) opUnblock(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		who
+		Scope *struct {
+			Kind string `json:"kind"`
+			ID   string `json:"id"`
+		} `json:"scope"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		h.fail(w, r, "unblock", err)
+		return
+	}
+	h.submit(w, r, "unblock", ports.AdminUnblock, req.who, struct {
+		Scope any `json:"scope"`
+	}{req.Scope})
+}
+
 func (h *handler) getOperation(w http.ResponseWriter, r *http.Request) {
 	p, ok := h.caller(w, r)
 	if !ok {

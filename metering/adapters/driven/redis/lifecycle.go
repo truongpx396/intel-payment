@@ -74,6 +74,32 @@ func (s *Store) Heal(ctx context.Context, sc domain.Scope, observedSeq int64, ta
 	return false, statusError(r.status())
 }
 
+// ClearBlocked removes block_and_flag from a live hot account (ip_unblock) and reports whether it held one. The books are cleared first, so
+// whatever rebuilds an account — a rehydrate after a recovery — finds no block to put back; an absent or stale account is therefore
+// (false, nil). Only the block moves. It is not made durable before it returns: a flag lost with the hot tier's tail is rebuilt from the
+// books, which are already clear.
+func (s *Store) ClearBlocked(ctx context.Context, sc domain.Scope) (bool, error) {
+	if err := sc.Validate(); err != nil {
+		return false, err
+	}
+	sc = sc.Normalized()
+	ctx, cancel := s.withTimeout(ctx, s.cfg.RecordTimeout)
+	defer cancel()
+	sh := s.shard(sc)
+	r, err := s.call(ctx, "ip_unblock", false, []string{metaKey(sh), acctKey(sh, sc)})
+	if err != nil {
+		return false, err
+	}
+	if r.status() != "OK" {
+		return false, statusError(r.status())
+	}
+	n, err := r.num(1)
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
 func sortedPools(m map[domain.Pool]domain.Credits) []domain.Pool {
 	out := make([]domain.Pool, 0, len(m))
 	for p := range m {

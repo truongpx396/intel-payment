@@ -27,7 +27,7 @@ type Config struct {
 	Credits ports.CreditsReader
 	// Admin backs /v1/admin/*: configuration writes with a person and a reason, behind the `admin` privilege.
 	Admin ports.Admin
-	// Operations backs the operator's routes (/v1/admin/reconcile, …/recover, …/rehydrate, …/dead-letters/{id}/replay, …/subdrift and
+	// Operations backs the operator's routes (/v1/admin/reconcile, …/recover, …/rehydrate, …/dead-letters/{id}/replay, …/subdrift, …/unblock and
 	// GET /v1/admin/operations/{id}): each is recorded and done by the worker. A deployment without it serves none of them.
 	Operations ports.AdminOperations
 	Auth       auth.Authenticator
@@ -121,6 +121,7 @@ func BuildRegistry(cfg Config) (*Registry, error) {
 			{Method: http.MethodPost, Path: "/v1/admin/rehydrate", Handler: h.opRehydrate},
 			{Method: http.MethodPost, Path: "/v1/admin/dead-letters/{id}/replay", Handler: h.opReplay},
 			{Method: http.MethodPost, Path: "/v1/admin/subdrift", Handler: h.opSubdrift},
+			{Method: http.MethodPost, Path: "/v1/admin/unblock", Handler: h.opUnblock},
 			{Method: http.MethodGet, Path: "/v1/admin/operations/{id}", Handler: h.getOperation},
 		} {
 			r.Surface, r.Privilege = V1, auth.Admin

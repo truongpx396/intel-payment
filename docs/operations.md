@@ -315,6 +315,7 @@ request to the worker that holds the sole durable writer. `paymentd` has no writ
 | Rebuild a scope's hot account from the books (only if it is missing or stale) | `POST /v1/admin/rehydrate` | `scope: {kind, id}` |
 | Publish a parked message again (once; a letter of another realm is not yours) | `POST /v1/admin/dead-letters/{id}/replay` | — |
 | Sweep a provider account's subscriptions against the provider | `POST /v1/admin/subdrift` | `account` |
+| Clear `block_and_flag` for a scope (the shard is drained, then the books are cleared, then the hot account; asking again finishes an unblock that stopped between the last two) | `POST /v1/admin/unblock` | `scope: {kind, id}` |
 | Read how a request went | `GET /v1/admin/operations/{id}` | — |
 
 An operation is `pending`, then `running` while a worker has it, then `succeeded` (with a `result`) or `failed` (with an `error`). **A failed
@@ -329,7 +330,18 @@ Every request and every outcome is written to `audit_log` by the database in the
 SELECT created_at, actor, action, reason FROM audit_log WHERE subject_kind = 'admin_operations' ORDER BY created_at DESC LIMIT 20;
 ```
 
-**Not built yet:** `POST /v1/admin/unblock`, `POST /v1/admin/adjustments` and `GET /v1/admin/drift`.
+### Unblocking an account
+
+Under `PAYMENT_NEGATIVE_BALANCE_POLICY=block_and_flag`, a write-off (a chargeback or a refund larger than the balance) holds the account:
+admission answers `403 account_blocked` however much is paid in afterwards, until an operator clears it. Find out why first — a held account
+is a signal that someone took credits the customer had already spent — then `POST /v1/admin/unblock` with `{"scope": {…}, "actor": …, "reason": …}`.
+The operation's `result` is `{"scope": …, "books": true|false, "hot": true|false}`: whether the books, and the hot account, held the block and
+no longer do. `books: false, hot: true` is the second half of an unblock that stopped between the two tiers, now finished; `false, false` is an
+account that was not blocked. The worker that takes the request needs the shard's lease (as for a recovery): if another worker owns the shard,
+the operation fails and says so in `error`, and is not tried again — ask again under a new key, which any worker may take. With one worker,
+which owns every shard, this does not arise.
+
+**Not built yet:** `POST /v1/admin/adjustments` and `GET /v1/admin/drift`.
 
 ---
 

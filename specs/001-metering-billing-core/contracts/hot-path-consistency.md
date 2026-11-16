@@ -310,6 +310,17 @@ zero), healed **on the hot side** by `ip_heal`, which is a compare-and-set on `s
 charge is never overwritten, and paged when `|drift| > ReconcileTolerance`. **Reconcile never writes a
 ledger row.** The books are corrected only by an investigated, audited `admin_adjustment`.
 
+**Unblock.** `block_and_flag` is held in two places: the books' watermark (`account_watermarks.blocked`, durable, and what a rehydrate
+installs) and the hot account's `blocked` field (what `ip_admit` reads). Only an operator clears it — a later top-up does not — and the
+order is fixed: the shard is **drained** first, so that a write-off the hot tier issued and the writer has not yet booked cannot set the block
+in the books after it was cleared; then the **books** are cleared, under the scope's transaction lock (the lock a booking takes, so one in
+progress finishes first and the clear lands on what it wrote); then the **hot account**, by `ip_unblock`, which removes the one field and
+reports whether it held it. A crash between the last two leaves the books clear and the hot account blocked, and asking again finishes it:
+the books then report nothing to clear and the hot account reports the block it held. In the other order a crash would leave the hot
+account open and the books blocked, and the next rehydrate would put the block back. `ip_unblock` on an account that is absent or was built
+in an older generation is `{OK, 0}` — it is rebuilt from the books, which are already clear — and on a frozen or never-opened shard it
+refuses, as every function does. It never touches `seq` or a balance.
+
 **Deep audit** (`billing.audit.tick`, off-peak) verifies `booked == checkpoint + Σ ledger since the
 checkpoint` per scope, then advances `ledger_checkpoints`. Checkpoints are what let old ledger
 partitions be **detached and archived** without losing the ability to prove a balance, since
@@ -337,6 +348,8 @@ mode**, loads [`reference/hot_path.lua`](./reference/hot_path.lua), and asserts,
 - a frozen shard and a stale generation refuse every mutation; rehydrate installs state once, and
   only while the account is stale;
 - `ip_heal` refuses when `seq` moved since it was read;
+- `ip_unblock` clears the block and nothing else (not `seq`, not a balance), reports whether the account held one, finds nothing to clear in
+  an account that is absent or stale, and refuses a frozen or never-opened shard;
 - a transfer refuses to overdraw and never touches another slot;
 - each mutation increments `seq` by exactly one and emits exactly one intent;
 - `clamp_to_zero` floors the pool and reports the writeoff; `block_and_flag` also blocks the account.

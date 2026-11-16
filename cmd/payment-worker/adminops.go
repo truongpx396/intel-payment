@@ -84,6 +84,30 @@ func (w *tickWork) adminExecutors(ticks *app.Ticks, dead *app.DeadLetters, lette
 			}
 			return json.Marshal(map[string]any{"outcome": outcome, "subject": l.Subject})
 		},
+		// Clear block_and_flag in the books, then in the hot account, on the shard's lease: the writer drains the shard first, so a
+		// write-off it has not booked yet cannot set the block again after this has cleared it. The caller's operation is run again if
+		// this worker dies, and is safe to: a second run finds the books clear and finishes the hot account.
+		ports.AdminUnblock: func(ctx context.Context, op ports.AdminOperation) (json.RawMessage, error) {
+			var p app.UnblockParams
+			if err := json.Unmarshal(op.Params, &p); err != nil {
+				return nil, fmt.Errorf("read the arguments: %w", err)
+			}
+			sc := domain.Scope{Realm: domain.Realm(op.Realm), Kind: p.Scope.Kind, ID: p.Scope.ID}
+			sh := sc.Normalized().Shard(w.s.Engine.Shards)
+			var res app.UnblockResult
+			_, err := w.onShard(ctx, sh, func() (int, error) {
+				var uerr error
+				res, uerr = w.writer.Unblock(ctx, sc)
+				return 0, uerr
+			})
+			if err != nil {
+				if errors.Is(err, app.ErrTickSkipped) {
+					return nil, fmt.Errorf("shard %d is owned by another worker, which must unblock it: %w", sh, err)
+				}
+				return nil, err
+			}
+			return json.Marshal(map[string]any{"scope": p.Scope, "books": res.Books, "hot": res.Hot})
+		},
 		// Called directly and not through the tick: an operator who mistypes an account is not a scheduled tick failing, and must not page as
 		// one. The write is conditional on being newer, so a sweep that overlaps the scheduled one repairs once.
 		ports.AdminSubdrift: func(ctx context.Context, op ports.AdminOperation) (json.RawMessage, error) {
