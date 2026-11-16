@@ -388,6 +388,11 @@ describe("a snapshot that cannot be shown is refused loudly, not half-drawn", ()
     refuses(() => derivePanel(snapshot({ limits: [limit({ key: "same" }), limit({ key: "same" })] })), "invalid_limit");
   });
 
+  test("a window the view has no word for is refused — its window text would be blank, and a blank is a silent state", () => {
+    for (const window of ["weekly", "", "Day", "balance"]) refuses(() => derivePanel(snapshot({ limits: [limit({ window: window as never })] })), "invalid_limit");
+    for (const window of ["period", "day", "hour", "job", "call", "none"] as const) expect(() => derivePanel(snapshot({ limits: [limit({ window })] }))).not.toThrow();
+  });
+
   test("a negative use or cap, and a threshold outside 0–100, are not ceilings", () => {
     refuses(() => derivePanel(snapshot({ limits: [limit({ used: q(-1) })] })), "invalid_limit");
     refuses(() => derivePanel(snapshot({ limits: [limit({ cap: q(-1) })] })), "invalid_limit");
