@@ -10,6 +10,28 @@ import (
 	"github.com/truongpx396/intel-payment/metering/ports"
 )
 
+// rendezvous is what makes a non-atomic read-then-write observable however the machine is loaded: a caller that has read waits — briefly,
+// and not for ever — until another has read too, and only then writes. Two callers who both saw the block is exactly what a clearer that is
+// not atomic does; a fixed sleep shows it only when the callers happen to overlap.
+type rendezvous struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (r *rendezvous) wait() {
+	r.mu.Lock()
+	r.n++
+	r.mu.Unlock()
+	for deadline := time.Now().Add(250 * time.Millisecond); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		r.mu.Lock()
+		n := r.n
+		r.mu.Unlock()
+		if n >= 2 {
+			return
+		}
+	}
+}
+
 // MemBooksUnblockDefects are the deliberate faults a MemBooksUnblock can be given. BooksUnblockContract is shown to reject each by name
 // (unblock_test.go): a clearer that clears a neighbour, or says it cleared what it did not, has not been shown to be tested.
 type MemBooksUnblockDefects struct {
@@ -27,6 +49,7 @@ type MemBooksUnblockDefects struct {
 type MemBooksUnblock struct {
 	Defects MemBooksUnblockDefects
 	mu      sync.Mutex
+	seen    rendezvous
 	marks   map[domain.Scope]ports.Watermark
 }
 
@@ -69,7 +92,7 @@ func (m *MemBooksUnblock) ClearBlocked(ctx context.Context, s domain.Scope) (boo
 	}
 	if m.Defects.NotAtomic {
 		m.mu.Unlock()
-		time.Sleep(2 * time.Millisecond)
+		m.seen.wait()
 		m.mu.Lock()
 	}
 	defer m.mu.Unlock()
@@ -131,6 +154,7 @@ type memHotAccount struct {
 type MemHotUnblock struct {
 	Defects MemHotUnblockDefects
 	mu      sync.Mutex
+	seen    rendezvous
 	acct    map[domain.Scope]*memHotAccount
 	stale   map[domain.Scope]bool
 	frozen  map[domain.Scope]bool
@@ -172,7 +196,7 @@ func (m *MemHotUnblock) ClearBlocked(_ context.Context, s domain.Scope) (bool, e
 	held := a.blocked
 	if m.Defects.NotAtomic {
 		m.mu.Unlock()
-		time.Sleep(2 * time.Millisecond)
+		m.seen.wait()
 		m.mu.Lock()
 	}
 	defer m.mu.Unlock()
