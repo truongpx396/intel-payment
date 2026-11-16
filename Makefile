@@ -6,7 +6,7 @@ MODULE  := github.com/truongpx396/intel-payment
 
 .DEFAULT_GOAL := help
 .PHONY: help build test test-integration fuzz mutation mutation-diff verify-red-green verify-tdd-gates verify-equivalence verify-clients lint arch-lint check-plan-branches verify-portability \
-        ui-install ui-lint verify-ui-boundary verify-boundary verify-schema verify-hot-path verify-deploy e2e e2e-install up up-jetstream down down-volumes logs \
+        ui-install ui-lint ui-test ui-build verify-ui-boundary verify-boundary verify-schema verify-hot-path verify-deploy e2e e2e-install up up-jetstream down down-volumes logs \
         migrate seed proto proto-tools proto-check fmt vuln secrets ci clean
 
 help: ## Show this help
@@ -80,6 +80,12 @@ ui-install: ## Install the UI workspace's dependencies (Node >= 22.12)
 ui-lint: ## ESLint (no-restricted-paths, framework-free .ts) + the scan: credits-ui names no unit and no colour of its own
 	cd ui && node_modules/.bin/eslint .
 	scripts/check-credits-ui.sh
+
+ui-build: ## Build the credits-ui package (dist/: ESM, declarations, theme.css)
+	cd ui && npm run build
+
+ui-test: ## Typecheck and test the credits-ui package and its reference binding (the binding consumes the built package, as a host would)
+	cd ui && npm run typecheck && npm test
 
 verify-ui-boundary: ## Plant one violation per UI boundary rule and assert the guards reject it, each for its own rule
 	scripts/verify-ui-boundary.sh

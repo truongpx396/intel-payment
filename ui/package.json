@@ -9,8 +9,8 @@
   ],
   "scripts": {
     "build": "npm run build -w @intel-payment/credits-ui",
-    "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm test --workspaces --if-present",
+    "typecheck": "npm run build && npm run typecheck --workspaces --if-present",
+    "test": "npm run build && npm test --workspaces --if-present",
     "lint": "eslint ."
   },
   "engines": {

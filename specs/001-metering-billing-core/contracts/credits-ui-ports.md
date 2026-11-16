@@ -273,7 +273,7 @@ const columns: LedgerColumn[] = [
 ];
 
 <CreditsPanel
-  source={new BffCreditsSource("/credits")}
+  source={new RestCreditsSource({ baseUrl: "/api/payments" })}   // the host's proxy: /v1/… one to one, behind its own session
   scope={{ kind: "workspace", id: workspaceId }}
   labels={labels}
   columns={columns}
@@ -309,7 +309,7 @@ The panel needs materially more than a balance figure, and it needs it in one sh
 | `ledger[]` + `idempotent` | `credit_ledger` | the `deduped` tag is how "charged at most once" becomes *observable to the person it protects*, rather than a claim in a spec |
 | `anchor` | resolved by the host | absent when this scope *is* the billing entity |
 
-**What is built today.** `balance.remaining` / `granted` / `pools`, `limits[]` and `ledger[]` are served by `GET /v1/credits` ([rest-api.md](./rest-api.md)); `balance.burnRatePerDay`, `series[]` and `breakdown[]` are absent — `breakdown` is an empty list — until the snapshot reads the `usage_daily` rollup. The rollup itself is built (`billing.usage.rollup.tick`; a member-scoped `Breakdown` read: [data-model.md](../data-model.md#usage_daily)); `GET /v1/credits` does not serve it yet. A limit view is the kernel's `Limit` with `window` mapped to the view's vocabulary in exactly one place (`app.Credits`); `warnAtPct` is the limit's own, as a whole percent; `resetsAt` is the instant the counter starts over, in the limit's own zone, and only a calendar window has one; and a balance's `used` is the overdraft it is into. `scopeHint` is set only in a member's view.
+**What is built today.** `balance.remaining` / `granted` / `pools`, `limits[]` and `ledger[]` are served by `GET /v1/credits` ([rest-api.md](./rest-api.md)); `balance.burnRatePerDay`, `series[]` and `breakdown[]` are absent — `breakdown` is an empty list — until the snapshot reads the `usage_daily` rollup. The rollup itself is built (`billing.usage.rollup.tick`; a member-scoped `Breakdown` read: [data-model.md](../data-model.md#usage_daily)); `GET /v1/credits` does not serve it yet. A limit view is the kernel's `Limit` with `window` mapped to the view's vocabulary in exactly one place (`app.Credits`); `warnAtPct` is the limit's own, as a whole percent; `resetsAt` is the instant the counter starts over, in the limit's own zone, and only a calendar window has one; and a balance's `used` is the overdraft it is into. `scopeHint` is set only in a member's view. `ledger[].idempotent` is not served: a replay writes no ledger row (it answers `applied: false`), so the snapshot has nothing to mark; the `deduped` tag renders when a host's source sets it.
 
 See [rest-api.md](./rest-api.md) for the full endpoint contract and [entitlement-ports.md](./entitlement-ports.md) for the admin gate on `breakdown[]`.
 
@@ -331,6 +331,7 @@ ui/credits-ui/                    # THE PACKAGE — publishable, zero host impor
 
 ui/examples/llm-credits/          # THE REFERENCE BINDING — every product specific
   RestCreditsSource.ts  labels.ts  columns.tsx  OrgPlanPointer.tsx
+  LlmCreditsScreen.tsx  tokens.css      # the product assembled; the token values the package's stylesheet reads
 ```
 
 Enforced by `import-x/no-restricted-paths` (`credits-ui/**` may not import `examples/**`, and a binding uses the package only through its entry point), by ESLint rules that keep every `.ts` file in the package free of React and of any transport or DOM global (a `.ts` file is the framework-free half; a `.tsx` file is where React binds), and by a static scan (`scripts/check-credits-ui.sh`) for a unit or a colour the package must be handed. `scripts/verify-ui-boundary.sh` plants a violation per rule and requires each to be rejected for its own reason. The litmus: **`npm pack` the package, install it in an unrelated app, `npm run build` — compiles with zero edits.**
