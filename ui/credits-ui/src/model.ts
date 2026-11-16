@@ -7,7 +7,7 @@
 // Arithmetic is BigInt wherever a product or a sum could leave the 53 bits a double keeps exactly: `used * 100` at the top of the
 // range is where a float lands a threshold on the wrong side. Anything that would leave the safe-integer range is REFUSED, not
 // wrapped or rounded — the same rule the books follow.
-import type { BalanceView, BillingAnchor, CreditsSnapshot, Int, LedgerRow, LimitView, Quantity, Scope, UnitLabels } from "./ports.js";
+import type { BalanceView, BillingAnchor, CreditsSnapshot, Int, LedgerRow, LimitView, PlanCatalog, PlanOffer, Quantity, Scope, UnitLabels } from "./ports.js";
 
 /** How many categorical colours the ramp has. Members past this fold into one Other row; the host supplies the tokens (--cu-series-1…). */
 export const SERIES_SLOTS = 6;
@@ -18,7 +18,9 @@ export type SnapshotErrorCode =
   | "precomputed_percentage"
   | "unknown_primary_limit"
   | "invalid_limit"
-  | "invalid_labels";
+  | "invalid_labels"
+  | "provider_identifier"
+  | "invalid_offer";
 
 /** A snapshot this package will not draw. Loud on purpose: a money screen that half-renders bad data is how a wrong figure is believed. */
 export class SnapshotError extends Error {
@@ -83,6 +85,36 @@ export function formatQuantity(q: Quantity, labels: UnitLabels): string {
 export function formatSigned(q: Quantity, labels: UnitLabels): string {
   const text = formatQuantity(q, labels);
   return q > 0 ? `+${text}` : text;
+}
+
+/** "seat" for exactly one displayed unit, "seats" otherwise — the host's words, and the host's plural. */
+export function unitName(q: Quantity, labels: UnitLabels): string {
+  const { scale } = display(labels);
+  const n = BigInt(quantity(q));
+  return (n < 0n ? -n : n) === scale ? labels.one : labels.unit;
+}
+
+/** A figure with its unit: "12,480 seats", or "12,480 cr" when compact and the host gave an abbreviation. */
+export function formatWithUnit(q: Quantity, labels: UnitLabels, options: { readonly compact?: boolean } = {}): string {
+  const name = options.compact === true && labels.abbr !== undefined ? labels.abbr : unitName(q, labels);
+  return `${formatQuantity(q, labels)} ${name}`;
+}
+
+/**
+ * A price in minor units, in its currency's own exponent (USD 2, JPY 0), with integer arithmetic: 1999 is "$19.99", never 1999 / 100.
+ * A currency Intl does not know is shown by its code rather than guessed at.
+ */
+export function formatMinor(minor: Int, currency: string): string {
+  let exponent = 2;
+  let symbol = `${currency} `;
+  try {
+    const f = new Intl.NumberFormat("en-US", { style: "currency", currency, currencyDisplay: "narrowSymbol" });
+    exponent = f.resolvedOptions().maximumFractionDigits ?? 2;
+    symbol = f.formatToParts(0).find((p) => p.type === "currency")?.value ?? symbol;
+  } catch {
+    // not a currency Intl knows: keep the code
+  }
+  return symbol + formatQuantity(quantity(minor, "price.minor"), { unit: "", one: "", scale: 10 ** exponent as Int, decimals: exponent as Int });
 }
 
 // ── the view ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -344,5 +376,107 @@ export function derivePanel(s: CreditsSnapshot): PanelView {
     }),
     anchor: s.anchor ?? null,
     notices: s.notices ?? [],
+  };
+}
+
+// ── the plan catalogue ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+export interface Link {
+  readonly label: string;
+  readonly href: string;
+}
+
+/**
+ * What an offer gets, decided here and not in a template. `blocked` has no checkout and no way to ask for one: the block exists to
+ * stop a change that would silently shrink someone else's budget (invariant 11). `checkout` with `inert` is a purchase that is
+ * valid for someone with authority, shown disabled to a viewer without it (invariant 12). `contact` is an offer that is not
+ * self-serve — a way to ask, never a disabled buy button.
+ */
+export type OfferAction =
+  | { readonly kind: "checkout"; readonly inert: boolean }
+  | { readonly kind: "contact" }
+  | { readonly kind: "current" }
+  | { readonly kind: "blocked"; readonly reason: string; readonly remedy: Link | null };
+
+export interface OfferModel {
+  readonly code: string;
+  readonly name: string;
+  readonly kind: PlanOffer["kind"];
+  readonly tagline?: string;
+  readonly price: PlanOffer["price"];
+  readonly interval?: "month" | "year";
+  readonly allotment: Quantity | null;
+  readonly features: NonNullable<PlanOffer["features"]>;
+  readonly action: OfferAction;
+}
+
+export interface CatalogModel {
+  readonly subscriptions: readonly OfferModel[];
+  readonly oneTime: readonly OfferModel[];
+  readonly canPurchase: boolean;
+  /** Present exactly when the viewer may browse but not buy: the reason, and where to ask. */
+  readonly viewerNotice: { readonly reason: string | null; readonly request: Link | null } | null;
+  readonly contact: Link | null;
+}
+
+// A provider's own vocabulary on an offer — a price id, a customer, a payment method, a vendor's name. The package has no use for any
+// of it and a UI that holds one is a UI that can leak one (invariant 13), so one arriving is refused rather than ignored.
+const PROVIDER_KEY = /stripe|polar|paypal|provider|price_?id|customer|payment_?method|card/i;
+// and a `code` that is itself one: a Stripe object id, a UUID (Polar's), a PayPal plan id. A host slug is none of these.
+const PROVIDER_ID = /^((price|prod|cus|pm|sub|cs|pi|ch)_[A-Za-z0-9]{14,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|P-[0-9A-Z]{18,})$/;
+
+function noProviderKeys(o: object, path: string): void {
+  for (const k of Object.keys(o)) {
+    if (PROVIDER_KEY.test(k)) throw new SnapshotError("provider_identifier", `${path}.${k}`, "a provider's identifier or card data reached the UI — it never belongs here");
+  }
+}
+
+const link = (l: { readonly label: string; readonly href: string } | undefined): Link | null => (l === undefined ? null : { label: l.label, href: l.href });
+
+/** The plan catalogue as a person is offered it. Refuses an offer the package must not draw (a provider's id, an unknown kind, a price that is not an integer). */
+export function deriveCatalog(c: PlanCatalog): CatalogModel {
+  const seen = new Set<string>();
+  const offers: OfferModel[] = c.offers.map((o, i) => {
+    const path = `offers[${i}]`;
+    noProviderKeys(o, path);
+    if (o.price !== null) noProviderKeys(o.price, `${path}.price`);
+    if (o.blocked !== undefined) noProviderKeys(o.blocked, `${path}.blocked`);
+    if (PROVIDER_ID.test(o.code)) throw new SnapshotError("provider_identifier", `${path}.code`, "a code is a host slug, and this one is a provider's identifier");
+    if (o.kind !== "subscription" && o.kind !== "one_time") throw new SnapshotError("invalid_offer", `${path}.kind`, `"${String(o.kind)}" is neither a subscription nor a one-time purchase`);
+    if (seen.has(o.code)) throw new SnapshotError("invalid_offer", `${path}.code`, `two offers share the code "${o.code}"`);
+    seen.add(o.code);
+    const allotment = o.creditAllotment === null ? null : quantity(o.creditAllotment, `${path}.creditAllotment`);
+    if (allotment !== null && allotment < 0) throw new SnapshotError("invalid_offer", `${path}.creditAllotment`, "an allotment cannot be negative");
+    if (o.price !== null) {
+      const minor = quantity(o.price.minor, `${path}.price.minor`);
+      if (minor < 0) throw new SnapshotError("invalid_offer", `${path}.price.minor`, "a price cannot be negative");
+      if (!/^[A-Z]{3}$/.test(o.price.currency)) throw new SnapshotError("invalid_offer", `${path}.price.currency`, "a currency is an upper-case ISO 4217 code");
+    }
+    const action: OfferAction =
+      o.blocked !== undefined
+        ? { kind: "blocked", reason: o.blocked.reason, remedy: link(o.blocked.remedy) }
+        : o.current === true
+          ? { kind: "current" }
+          : o.price === null
+            ? { kind: "contact" }
+            : { kind: "checkout", inert: !c.canPurchase };
+    return {
+      code: o.code,
+      name: o.name,
+      kind: o.kind,
+      ...(o.tagline === undefined ? {} : { tagline: o.tagline }),
+      price: o.price,
+      ...(o.interval === undefined ? {} : { interval: o.interval }),
+      allotment,
+      features: o.features ?? [],
+      action,
+    };
+  });
+  return {
+    subscriptions: offers.filter((o) => o.kind === "subscription"),
+    oneTime: offers.filter((o) => o.kind === "one_time"),
+    canPurchase: c.canPurchase,
+    viewerNotice: c.canPurchase ? null : { reason: c.cannotPurchaseReason ?? null, request: link(c.requestPath) },
+    contact: link(c.contact),
   };
 }
