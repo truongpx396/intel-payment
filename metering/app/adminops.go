@@ -63,6 +63,13 @@ type (
 	ReplayParams struct {
 		ID string `json:"id"`
 	}
+	// AdjustParams: the scope and pool to correct, and by how much — signed, whole credits. The pool is always spelled out (the general
+	// pool when the request named none), so that two spellings of one request are one operation.
+	AdjustParams struct {
+		Scope  ScopeParams `json:"scope"`
+		Pool   string      `json:"pool"`
+		Amount int64       `json:"amount"`
+	}
 	// UnblockParams: the scope whose block_and_flag an operator clears, in the books and then in the hot account.
 	UnblockParams struct {
 		Scope ScopeParams `json:"scope"`
@@ -75,6 +82,9 @@ type AdminOperationsDeps struct {
 	Metrics ports.Metrics // default: no-op
 	// Shards is the deployment's shard count: a request that names one beyond it is refused where it is read, not after it has waited.
 	Shards int
+	// MaxAmount is the most one operation may move, as the deployment configures it (metering.Config.MaxOperationAmount): an adjustment
+	// beyond it is refused where it is read, not after it has waited for a worker and failed at the hot tier. Default domain.MaxOperationAmount.
+	MaxAmount domain.Credits
 	// Kinds are the kinds the composition root adds to the engine's own.
 	Kinds []AdminKind
 }
@@ -98,12 +108,22 @@ func NewAdminOperations(d AdminOperationsDeps) (*AdminOperations, error) {
 	if d.Shards <= 0 {
 		errs = append(errs, errors.New("the deployment's shard count is required: without it a shard cannot be told from a typo"))
 	}
+	if d.MaxAmount < 0 || d.MaxAmount > domain.MaxHotAmount {
+		errs = append(errs, errors.New("MaxAmount must be in (0, 2^52]: hot-tier arithmetic is exact only within ±2^53"))
+	}
+	maxAmount := d.MaxAmount
+	if maxAmount == 0 {
+		maxAmount = domain.MaxOperationAmount
+	}
 	kinds := map[ports.AdminOperationKind]AdminKind{
 		ports.AdminReconcile: {Kind: ports.AdminReconcile, Parse: func(_ string, p json.RawMessage) (json.RawMessage, error) { return parseReconcile(p, d.Shards) }},
 		ports.AdminRecover:   {Kind: ports.AdminRecover, Parse: func(_ string, p json.RawMessage) (json.RawMessage, error) { return parseRecover(p, d.Shards) }},
 		ports.AdminRehydrate: {Kind: ports.AdminRehydrate, Parse: parseRehydrate},
 		ports.AdminUnblock:   {Kind: ports.AdminUnblock, Parse: parseUnblock},
-		ports.AdminReplay:    {Kind: ports.AdminReplay, Parse: func(_ string, p json.RawMessage) (json.RawMessage, error) { return parseReplay(p) }},
+		ports.AdminAdjust: {Kind: ports.AdminAdjust, Parse: func(realm string, p json.RawMessage) (json.RawMessage, error) {
+			return parseAdjust(realm, p, maxAmount)
+		}},
+		ports.AdminReplay: {Kind: ports.AdminReplay, Parse: func(_ string, p json.RawMessage) (json.RawMessage, error) { return parseReplay(p) }},
 	}
 	for _, k := range d.Kinds {
 		if k.Kind == "" || k.Parse == nil {
@@ -263,6 +283,42 @@ func parseUnblock(realm string, raw json.RawMessage) (json.RawMessage, error) {
 		return nil, err
 	}
 	return json.Marshal(UnblockParams{Scope: *in.Scope})
+}
+
+// parseAdjust reads what an adjustment may carry and nothing else: one scope of the request's realm, one pool, and one non-zero amount of
+// whole credits within what an operation may move. The reason is reserved and the idempotency key is the operation's, so neither is
+// accepted from the caller; a realm in the arguments, a field nobody knows and an amount that is not written as an integer are refused,
+// because an amount rounded or truncated on the way in would be a different correction from the one the operator meant.
+func parseAdjust(realm string, raw json.RawMessage, maxAmount domain.Credits) (json.RawMessage, error) {
+	var in struct {
+		Scope  *ScopeParams `json:"scope"`
+		Pool   string       `json:"pool"`
+		Amount *int64       `json:"amount"`
+	}
+	if err := decodeStrict(raw, &in); err != nil {
+		return nil, err
+	}
+	if in.Scope == nil {
+		return nil, fmt.Errorf("%w: scope is required: {\"scope\": {\"kind\": ..., \"id\": ...}}", domain.ErrInvalid)
+	}
+	if err := (domain.Scope{Realm: domain.Realm(realm), Kind: in.Scope.Kind, ID: in.Scope.ID}).Validate(); err != nil {
+		return nil, err
+	}
+	pool := domain.Pool(in.Pool)
+	if err := pool.Validate(); err != nil {
+		return nil, err
+	}
+	if in.Amount == nil {
+		return nil, fmt.Errorf("%w: amount is required: a signed whole number of credits", domain.ErrInvalid)
+	}
+	amount := *in.Amount
+	if amount == 0 {
+		return nil, fmt.Errorf("%w: an adjustment of zero credits changes nothing", domain.ErrInvalid)
+	}
+	if amount > int64(maxAmount) || amount < -int64(maxAmount) {
+		return nil, fmt.Errorf("%w: an adjustment moves at most %d credits", domain.ErrInvalid, int64(maxAmount))
+	}
+	return json.Marshal(AdjustParams{Scope: *in.Scope, Pool: string(pool.Or()), Amount: amount})
 }
 
 // A dead letter's id is a lower-case UUID: anything else is not an id this deployment issued.

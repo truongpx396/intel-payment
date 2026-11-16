@@ -1339,6 +1339,32 @@ paths:
         "413": { $ref: "#/components/responses/TooLarge" }
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/admin/adjustments:
+    post:
+      operationId: adjustAccount
+      tags: [admin]
+      summary: "An investigated correction to the books."
+      description: "Adds credits to a pool of a scope (`amount` positive) or removes them (negative), as a grant with the reserved reason `admin_adjustment` through the normal path: the writer books it, the ledger row's `ref` names the operation and the person, and nothing edits a row. A negative amount is subject to the negative-balance policy, so a clawback larger than the balance is floored and its shortfall written off (the operation's `result` reports `writeoff`). The grant is booked under a key derived from the operation, so a retry of the request, or the operation done again by a worker that took it over, cannot book twice; two operations are two adjustments. **A failed operation is never run again, and one that failed with the hot tier unavailable may have been applied:** its `error` names the `idem_key` to look for in the ledger before asking again under a new key. `amount` is a whole number of credits, non-zero, and at most what one operation may move. Asking records the request — with `actor`, `reason` and the `Idempotency-Key` — and returns `202`; the worker that holds the sole durable writer does it, and `GET /v1/admin/operations/{id}` (the `Location` header) says how it went. The same request under the same key is the same operation (`created: false`); the key reused for a different request is `409`."
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Realm"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdjustmentOperationRequest" }
+      responses:
+        "202": { $ref: "#/components/responses/OperationAccepted" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
   /v1/admin/dead-letters/{id}/replay:
     parameters:
       - name: id
@@ -2375,7 +2401,7 @@ components:
       required: [id, kind, status, realm, params, actor, reason, idempotency_key, attempts, created_at]
       properties:
         id: { type: string, format: uuid }
-        kind: { type: string, enum: [reconcile, recover, rehydrate, replay, subdrift, unblock] }
+        kind: { type: string, enum: [reconcile, recover, rehydrate, replay, subdrift, unblock, adjust] }
         status: { type: string, enum: [pending, running, succeeded, failed] }
         realm: { type: string }
         params: { type: object, description: "The arguments, in the one form they are stored in." }
@@ -2424,6 +2450,23 @@ components:
           properties:
             kind: { type: string }
             id: { type: string }
+    AdjustmentOperationRequest:
+      type: object
+      required: [actor, reason, scope, amount]
+      additionalProperties: false
+      properties:
+        actor: { type: string, minLength: 1 }
+        reason: { type: string, minLength: 1 }
+        scope:
+          type: object
+          required: [kind, id]
+          additionalProperties: false
+          description: "The scope to correct, in the request's realm."
+          properties:
+            kind: { type: string }
+            id: { type: string }
+        pool: { type: string, description: "The pool to correct; default the general pool." }
+        amount: { type: integer, format: int64, description: "Signed whole credits: positive adds, negative removes. Not zero, and at most what one operation may move." }
     UnblockOperationRequest:
       type: object
       required: [actor, reason, scope]

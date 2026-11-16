@@ -18,6 +18,7 @@ const (
 	AdminReplay    AdminOperationKind = "replay"    // POST /v1/admin/dead-letters/{id}/replay
 	AdminSubdrift  AdminOperationKind = "subdrift"  // POST /v1/admin/subdrift
 	AdminUnblock   AdminOperationKind = "unblock"   // POST /v1/admin/unblock
+	AdminAdjust    AdminOperationKind = "adjust"    // POST /v1/admin/adjustments
 )
 
 // AdminOperationStatus is where an operation stands. Pending and running are not final; succeeded and failed are, and neither is claimed again.

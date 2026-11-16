@@ -194,7 +194,7 @@ func wire(ctx context.Context, s settings, log *slog.Logger, getenv func(string)
 
 	// The operator's requests (R112): paymentd has no writer, so it records them — with the person and the reason — and the worker does them.
 	adminOps, err := app.NewAdminOperations(app.AdminOperationsDeps{
-		Store: pgadapter.NewAdminOps(st.Pool, system.Clock{}), Metrics: metrics, Shards: cfg.Shards, Kinds: []app.AdminKind{payments.SubdriftKind()},
+		Store: pgadapter.NewAdminOps(st.Pool, system.Clock{}), Metrics: metrics, Shards: cfg.Shards, MaxAmount: cfg.MaxOperationAmount, Kinds: []app.AdminKind{payments.SubdriftKind()},
 	})
 	if err != nil {
 		return nil, err

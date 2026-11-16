@@ -99,9 +99,7 @@ FROM reconcile_findings f WHERE f.outcome = 'drift' ORDER BY f.created_at DESC L
 
 Either way, find the intents around `hot_seq` in the ledger and suspense for that scope. If the
 **books** are wrong — rarer, and a real bug — correct them with an audited
-`POST /v1/admin/adjustments`, never by editing a row. (**That route is designed and not built yet**; until it is, the correction is a signed
-grant made through `POST /v1/grant`: its `reason` becomes the ledger row's operation type, a negative one is subject to the negative-balance
-policy, and nothing marks it as an operator's — cite the ticket in `reason`.)
+`POST /v1/admin/adjustments`, never by editing a row.
 
 ---
 
@@ -315,6 +313,7 @@ request to the worker that holds the sole durable writer. `paymentd` has no writ
 | Rebuild a scope's hot account from the books (only if it is missing or stale) | `POST /v1/admin/rehydrate` | `scope: {kind, id}` |
 | Publish a parked message again (once; a letter of another realm is not yours) | `POST /v1/admin/dead-letters/{id}/replay` | — |
 | Sweep a provider account's subscriptions against the provider | `POST /v1/admin/subdrift` | `account` |
+| Correct the books: a signed grant with the reason `admin_adjustment`, booked once however often it is asked for | `POST /v1/admin/adjustments` | `scope: {kind, id}`, `pool` (default general), `amount` (signed, whole, not zero) |
 | Clear `block_and_flag` for a scope (the shard is drained, then the books are cleared, then the hot account; asking again finishes an unblock that stopped between the last two) | `POST /v1/admin/unblock` | `scope: {kind, id}` |
 | Read how a request went | `GET /v1/admin/operations/{id}` | — |
 
@@ -341,7 +340,23 @@ account that was not blocked. The worker that takes the request needs the shard'
 the operation fails and says so in `error`, and is not tried again — ask again under a new key, which any worker may take. With one worker,
 which owns every shard, this does not arise.
 
-**Not built yet:** `POST /v1/admin/adjustments` and `GET /v1/admin/drift`.
+### Adjusting the books
+
+`POST /v1/admin/adjustments` with `{"scope": {…}, "pool": …, "amount": …, "actor": …, "reason": …}` books a signed grant with the reserved reason
+`admin_adjustment`: positive adds credits, negative removes them and is subject to the negative-balance policy (a clawback larger than the balance
+is floored and its shortfall written off — the operation's `result` reports `writeoff`). The writer books it like any other grant, the ledger row's
+`ref` carries `operation` and `actor`, and the database audits the request and its outcome. Its key is `admin-adjustment:<operation id>`: the same
+request under the same key, and the operation done again by a worker that took it over, book once; **two operations are two adjustments**.
+
+**A failed adjustment may have been applied.** A refusal (a frozen shard, an amount out of range) changed nothing. But if the hot tier did not
+confirm — the call went out and the answer did not come back — the grant may be in, and a failed operation is never run again. The operation's
+`error` then says so and names the key: look for it before asking again under a new key, or the account is adjusted twice.
+
+```sql
+SELECT created_at, pool, delta, operation_type, ref FROM credit_ledger WHERE realm = $1 AND idem_key = 'admin-adjustment:<operation id>';
+```
+
+**Not built yet:** `GET /v1/admin/drift`.
 
 ---
 

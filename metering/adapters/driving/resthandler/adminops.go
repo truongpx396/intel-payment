@@ -185,6 +185,29 @@ func (h *handler) opUnblock(w http.ResponseWriter, r *http.Request) {
 	}{req.Scope})
 }
 
+// opAdjust takes an investigated correction to the books. The amount is read as the integer it must be — a float, a string or an exponent is
+// a 400 here, before anything is recorded — and the application reads the rest again and decides what is stored.
+func (h *handler) opAdjust(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		who
+		Scope *struct {
+			Kind string `json:"kind"`
+			ID   string `json:"id"`
+		} `json:"scope"`
+		Pool   string `json:"pool,omitempty"`
+		Amount *int64 `json:"amount"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		h.fail(w, r, "adjust", err)
+		return
+	}
+	h.submit(w, r, "adjust", ports.AdminAdjust, req.who, struct {
+		Scope  any    `json:"scope"`
+		Pool   string `json:"pool,omitempty"`
+		Amount *int64 `json:"amount"`
+	}{req.Scope, req.Pool, req.Amount})
+}
+
 func (h *handler) getOperation(w http.ResponseWriter, r *http.Request) {
 	p, ok := h.caller(w, r)
 	if !ok {

@@ -84,6 +84,9 @@ func (w *tickWork) adminExecutors(ticks *app.Ticks, dead *app.DeadLetters, lette
 			}
 			return json.Marshal(map[string]any{"outcome": outcome, "subject": l.Subject})
 		},
+		// An investigated correction to the books, made as a signed Grant through the engine like every other credit-affecting call: the key is
+		// the operation's, so the operation done again — a worker that died after the grant — is a replay and not a second adjustment.
+		ports.AdminAdjust: app.AdjustmentExecutor(w.grants),
 		// Clear block_and_flag in the books, then in the hot account, on the shard's lease: the writer drains the shard first, so a
 		// write-off it has not booked yet cannot set the block again after this has cleared it. The caller's operation is run again if
 		// this worker dies, and is safe to: a second run finds the books clear and finishes the hot account.
