@@ -201,6 +201,31 @@ describe("invariant 7 — every series shows its label and its value as text, an
     expect(container.querySelectorAll("tbody tr")).toHaveLength(14);
   });
 
+  test("the line is drawn inside its own box: no point on the edge, where half its stroke would be cut off", () => {
+    const view = derivePanel(panelSnapshot(1, { series: [90, 120, 80, 170, 130, 40, 0].map((a, i) => ({ at: `2026-01-0${i + 1}T00:00:00Z`, amount: q(a) })) }));
+    const { container } = render(<SpendChart spend={view.spend} labels={llm} />);
+    const [w, h] = container.querySelector("svg")!.getAttribute("viewBox")!.split(" ").slice(2).map(Number) as [number, number];
+    const pts = container.querySelector("polyline")!.getAttribute("points")!.split(" ").map((p) => p.split(",").map(Number) as [number, number]);
+    expect(pts).toHaveLength(7);
+    for (const [x, y] of pts) {
+      expect(x).toBeGreaterThanOrEqual(2);
+      expect(x).toBeLessThanOrEqual(w - 2);
+      expect(y).toBeGreaterThanOrEqual(2);
+      expect(y).toBeLessThanOrEqual(h - 2);
+    }
+    // the largest day is the highest point and the smallest the lowest; nothing is reordered
+    const ys = pts.map(([, y]) => y);
+    expect(ys.indexOf(Math.min(...ys))).toBe(3);
+    expect(ys.indexOf(Math.max(...ys))).toBe(6);
+  });
+
+  test("a single day is a point in the middle, not on an edge", () => {
+    const view = derivePanel(panelSnapshot(1, { series: [{ at: "2026-01-01T00:00:00Z", amount: q(50) }] }));
+    const { container } = render(<SpendChart spend={view.spend} labels={llm} />);
+    const [x] = container.querySelector("polyline")!.getAttribute("points")!.split(",").map(Number) as [number];
+    expect(x).toBe(160);
+  });
+
   test("no data is said in words, never drawn as an empty box", () => {
     const view = derivePanel(panelSnapshot(1, { series: undefined as never, breakdown: [] }));
     const { container } = render(<><SpendChart spend={view.spend} labels={llm} /><Breakdown breakdown={view.breakdown} labels={llm} /><LedgerTable rows={[]} labels={llm} /></>);

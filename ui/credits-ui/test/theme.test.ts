@@ -13,6 +13,26 @@ describe("the stylesheet reads tokens and sets none", () => {
   });
 });
 
+describe("the layout the screenshots asked for", () => {
+  const rule = (sel: string) => rules.find((r) => r.selector === sel)?.body ?? "";
+
+  test("the panel is a grid with a gap, so sections are not stacked flush", () => {
+    expect(rule(".cu-panel")).toMatch(/display:\s*grid/);
+    expect(rule(".cu-panel")).toMatch(/gap:\s*\d+px/);
+  });
+
+  test("the chart's stroke does not stretch with the box, and the box has a height", () => {
+    expect(rule(".cu-spend-line")).toMatch(/vector-effect:\s*non-scaling-stroke/);
+    expect(rule(".cu-spend svg")).toMatch(/width:\s*100%/);
+    expect(rule(".cu-spend svg")).toMatch(/height:\s*\d+px/);
+  });
+
+  test("a section title is set apart from the text around it", () => {
+    expect(rule(".cu-heading")).toMatch(/margin:/);
+    expect(rule(".cu-heading")).toMatch(/font-size:/);
+  });
+});
+
 describe("invariant 8 — a tone comes from a threshold state, a series colour from an index, and neither borrows from the other", () => {
   const byTone = rules.filter((r) => r.selector.includes("[data-tone"));
   const bySlot = rules.filter((r) => r.selector.includes("[data-slot") || r.selector.includes(".cu-spend-line"));

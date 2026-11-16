@@ -253,6 +253,31 @@ describe("a panel is never silently empty", () => {
   });
 });
 
+describe("a person can tell what they are looking at", () => {
+  const headings = () => screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
+
+  test("every section has a visible title, so an empty one still says what it is", async () => {
+    const f = fakes();
+    render(panel(f));
+    await flush();
+    expect(headings()).toEqual(["Limits", "Spend over time", "Spend by member", "Activity", "Billing"]);
+  });
+
+  test("and the titles are there when there is nothing to show", async () => {
+    const f = fakes({ snapshot: panelSnapshot(1, { series: undefined as never, breakdown: [], ledger: [] }) });
+    render(panel(f));
+    await flush();
+    expect(headings()).toEqual(["Limits", "Spend over time", "Spend by member", "Activity", "Billing"]);
+    expect(document.body.textContent).toContain("No spend in this window yet.");
+  });
+
+  test("a screen with nothing to sell has no Billing title either", async () => {
+    render(<CreditsPanel source={fakes().source} scope={scope} labels={llm} />);
+    await flush();
+    expect(headings()).toEqual(["Limits", "Spend over time", "Spend by member", "Activity"]);
+  });
+});
+
 describe("the seams — what the host may leave out, or swap", () => {
   test("a product with no self-serve purchase passes no CheckoutSource: no plan affordance and no error", async () => {
     const f = fakes();
