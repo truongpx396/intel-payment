@@ -55,6 +55,22 @@ export interface Copy {
   readonly interval: Readonly<Record<"month" | "year", string>>;
   readonly allotment: (amount: string) => string;
   readonly allotmentCustom: string;
+
+  readonly loading: string;
+  readonly loadFailed: string;
+  readonly cannotShow: string;
+  readonly retry: string;
+  readonly processing: string;
+  readonly granted: (amount: string) => string;
+  readonly viewReceipt: string;
+  readonly failed: (reason: string) => string;
+  readonly tryAgain: string;
+  readonly checkoutFailed: string;
+  readonly plansCannotShow: string;
+  readonly billingHeading: string;
+  readonly manageBilling: string;
+  readonly anchorHolds: (label: string) => string;
+  readonly anchorOpen: (label: string) => string;
 }
 
 export const defaultCopy: Copy = {
@@ -110,6 +126,22 @@ export const defaultCopy: Copy = {
   interval: { month: "month", year: "year" },
   allotment: (amount) => `${amount} included`,
   allotmentCustom: "Custom allotment",
+
+  loading: "Loading…",
+  loadFailed: "Could not load this balance.",
+  cannotShow: "This balance cannot be shown.",
+  retry: "Try again",
+  processing: "Payment processing — your balance updates once the provider confirms it. Please do not pay again.",
+  granted: (amount) => `Payment confirmed: ${amount} added.`,
+  viewReceipt: "View receipt",
+  failed: (reason) => `Payment failed: ${reason}`,
+  tryAgain: "Try again",
+  checkoutFailed: "We could not start checkout. Please try again.",
+  plansCannotShow: "Plans cannot be shown.",
+  billingHeading: "Billing",
+  manageBilling: "Manage billing",
+  anchorHolds: (label) => `${label} manages billing for this scope.`,
+  anchorOpen: (label) => `Open ${label}`,
 };
 
 export function resolveCopy(partial?: Partial<Copy>): Copy {

@@ -3,6 +3,7 @@
 export type * from "./ports.js";
 export * from "./model.js";
 export { defaultCopy, resolveCopy, type Copy } from "./copy.js";
+export { CreditsPanel, type BillingSlots, type CreditsPanelProps } from "./CreditsPanel.js";
 export { BalanceHero } from "./components/BalanceHero.js";
 export { LimitMeter, LimitMeters } from "./components/LimitMeter.js";
 export { SpendChart } from "./components/SpendChart.js";

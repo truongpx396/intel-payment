@@ -7,7 +7,7 @@
 // Arithmetic is BigInt wherever a product or a sum could leave the 53 bits a double keeps exactly: `used * 100` at the top of the
 // range is where a float lands a threshold on the wrong side. Anything that would leave the safe-integer range is REFUSED, not
 // wrapped or rounded — the same rule the books follow.
-import type { BalanceView, BillingAnchor, CreditsSnapshot, Int, LedgerRow, LimitView, PlanCatalog, PlanOffer, Quantity, Scope, UnitLabels } from "./ports.js";
+import type { BalanceView, BillingAnchor, CreditsSnapshot, FulfilmentState, Int, LedgerRow, LimitView, PlanCatalog, PlanOffer, Quantity, Scope, UnitLabels } from "./ports.js";
 
 /** How many categorical colours the ramp has. Members past this fold into one Other row; the host supplies the tokens (--cu-series-1…). */
 export const SERIES_SLOTS = 6;
@@ -479,4 +479,29 @@ export function deriveCatalog(c: PlanCatalog): CatalogModel {
     viewerNotice: c.canPurchase ? null : { reason: c.cannotPurchaseReason ?? null, request: link(c.requestPath) },
     contact: link(c.contact),
   };
+}
+
+// ── fulfilment ────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** What a person is told about a payment they just made. */
+export type FulfilmentView =
+  | { readonly kind: "processing" }
+  | { readonly kind: "granted"; readonly amount: Quantity; readonly receiptHref?: string }
+  | { readonly kind: "failed"; readonly reason: string; readonly retryHref?: string };
+
+/**
+ * Invariant 10, as a function. Fulfilment is webhook-driven, so a return from checkout proves only that the browser came back: the honest
+ * state on return is "processing", and `granted` is something the SERVER reports. `granted` is the result exactly when the server said it
+ * was — never because time passed, a poll was slow, or the redirect looked successful. A user told "added" while it is not, or "failed"
+ * while it is in flight, is a user who pays twice. Not on return (`returned` false) nothing is claimed at all.
+ */
+export function deriveFulfilment(returned: boolean, reported: FulfilmentState | null): FulfilmentView | null {
+  if (!returned) return null;
+  if (reported?.kind === "granted") {
+    return { kind: "granted", amount: quantity(reported.amount, "fulfilment.amount"), ...(reported.receiptHref === undefined ? {} : { receiptHref: reported.receiptHref }) };
+  }
+  if (reported?.kind === "failed") {
+    return { kind: "failed", reason: reported.reason, ...(reported.retryHref === undefined ? {} : { retryHref: reported.retryHref }) };
+  }
+  return { kind: "processing" }; // not heard yet, nothing, or processing: all the same to the person — it is not done
 }
