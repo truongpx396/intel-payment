@@ -12,12 +12,14 @@ export function Breakdown({ breakdown, labels, copy }: { breakdown: BreakdownMod
   if (breakdown.rows.length === 0) {
     return (
       <section className="cu-breakdown" aria-label={c.breakdownHeading}>
+        <h2 className="cu-heading">{c.breakdownHeading}</h2>
         <p className="cu-muted">{c.noBreakdown}</p>
       </section>
     );
   }
   return (
     <section className="cu-breakdown" aria-label={c.breakdownHeading}>
+      <h2 className="cu-heading">{c.breakdownHeading}</h2>
       <ul>
         {breakdown.rows.map((r) => (
           <li key={r.key} data-kind={r.kind} data-slot={r.slot === null ? r.kind : String(r.slot)}>

@@ -31,12 +31,15 @@ export function LedgerTable({ rows, columns = [], labels, copy, formatTime = def
   if (rows.length === 0) {
     return (
       <section className="cu-ledger" aria-label={c.ledgerHeading}>
+        <h2 className="cu-heading">{c.ledgerHeading}</h2>
         <p className="cu-muted">{c.noLedger}</p>
       </section>
     );
   }
   return (
-    <section className="cu-ledger" aria-label={c.ledgerHeading}>
+    // tabIndex: the box scrolls sideways on a narrow screen, and a scroll box a keyboard cannot focus cannot be scrolled by one
+    <section className="cu-ledger" aria-label={c.ledgerHeading} tabIndex={0}>
+      <h2 className="cu-heading">{c.ledgerHeading}</h2>
       <table>
         <thead>
           <tr>

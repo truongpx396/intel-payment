@@ -15,9 +15,9 @@
   /* a member's colour: a ramp that borrows nothing from the status hues above */
   --cu-series-1: #3a6ea5;
   --cu-series-2: #7b5ea7;
-  --cu-series-3: #2a8f9d;
-  --cu-series-4: #a05a8c;
-  --cu-series-5: #5c7a3a;
-  --cu-series-6: #8a6d3b;
+  --cu-series-3: #1f8fb3;
+  --cu-series-4: #a0489c;
+  --cu-series-5: #4a53b5;
+  --cu-series-6: #d05fa8;
   --cu-series-other: #8b95a1;
 }

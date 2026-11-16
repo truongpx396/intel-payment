@@ -256,12 +256,18 @@ export function CreditsPanel({ source, scope, labels, columns, checkout, billing
       ))}
       <BalanceHero hero={v.hero} pools={v.pools} labels={labels} copy={copy} remedy={primary === undefined || remedyFor === undefined ? undefined : remedyFor(primary)} />
       <section aria-label={c.limitsHeading}>
+        <h2 className="cu-heading">{c.limitsHeading}</h2>
         <LimitMeters limits={v.limits} labels={labels} copy={copy} remedyFor={remedyFor} formatTime={formatTime} />
       </section>
       <SpendChart spend={v.spend} labels={labels} copy={copy} />
       <Breakdown breakdown={v.breakdown} labels={labels} copy={copy} />
       <LedgerTable rows={v.ledger} columns={columns} labels={labels} copy={copy} formatTime={formatTime} />
-      {billingNode !== null ? <section aria-label={c.billingHeading}>{billingNode}</section> : null}
+      {billingNode !== null ? (
+        <section aria-label={c.billingHeading}>
+          <h2 className="cu-heading">{c.billingHeading}</h2>
+          {billingNode}
+        </section>
+      ) : null}
     </div>
   );
 }
