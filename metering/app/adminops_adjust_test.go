@@ -218,7 +218,12 @@ func TestAnOperationDoneAgainBooksNothingMore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := ex(t.Context(), op)
+	// The next worker finds it as the first left it, claimed once already: the attempts say so, and the key must not.
+	taken := op
+	taken.Attempts = 2
+	at := time.Date(2026, 11, 16, 9, 10, 0, 0, time.UTC)
+	taken.StartedAt = &at
+	second, err := ex(t.Context(), taken)
 	if err != nil {
 		t.Fatalf("running the same operation again: %v", err)
 	}
