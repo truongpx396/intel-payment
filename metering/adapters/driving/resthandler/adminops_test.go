@@ -76,6 +76,8 @@ var opRoutes = []opRoute{
 	{"rehydrate", "/v1/admin/rehydrate?realm=acme", `{"scope":{"kind":"workspace","id":"w1"},` + opWho + `}`, ports.AdminRehydrate, `{"scope":{"kind":"workspace","id":"w1"}}`},
 	{"replay", "/v1/admin/dead-letters/5b0e6f2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b/replay?realm=acme", `{` + opWho + `}`, ports.AdminReplay, `{"id":"5b0e6f2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b"}`},
 	{"subdrift", "/v1/admin/subdrift?realm=acme", `{"account":"stripe-live",` + opWho + `}`, ports.AdminSubdrift, `{"account":"stripe-live"}`},
+	{"adjust a pool", "/v1/admin/adjustments?realm=acme", `{"scope":{"kind":"workspace","id":"w1"},"pool":"promo","amount":-30,` + opWho + `}`, ports.AdminAdjust, `{"scope":{"kind":"workspace","id":"w1"},"pool":"promo","amount":-30}`},
+	{"adjust the general pool", "/v1/admin/adjustments?realm=acme", `{"scope":{"kind":"workspace","id":"w1"},"amount":500,` + opWho + `}`, ports.AdminAdjust, `{"scope":{"kind":"workspace","id":"w1"},"amount":500}`},
 	{"unblock", "/v1/admin/unblock?realm=acme", `{"scope":{"kind":"workspace","id":"w1"},` + opWho + `}`, ports.AdminUnblock, `{"scope":{"kind":"workspace","id":"w1"}}`},
 }
 
@@ -316,5 +318,23 @@ func TestWithoutTheOperationsNoOperationRouteExists(t *testing.T) {
 		if rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
 			t.Errorf("%s: %d, want it not to exist", rt.name, rec.Code)
 		}
+	}
+}
+
+// An adjustment moves money, so an amount that is not a whole number written as one is refused where it is read: a float rounded to an
+// integer would be a different adjustment from the one the operator meant.
+func TestAnAdjustmentWithAnAmountThatIsNotAnIntegerIsRefusedBeforeAnythingIsRecorded(t *testing.T) {
+	t.Parallel()
+	ops := &stubOps{created: true}
+	a := newAPI(t, &stubMeter{}, apiOpts{ops: ops})
+	for _, amount := range []string{`1.5`, `"5"`, `1e2`, `true`, `[5]`, `{"n":5}`, `9223372036854775808`} {
+		body := `{"scope":{"kind":"workspace","id":"w1"},"amount":` + amount + `,` + opWho + `}`
+		rec := a.call("admin", "POST", "/v1/admin/adjustments?realm=acme", body, "Idempotency-Key", "k-1")
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid_request") {
+			t.Errorf("amount %s: %d %s, want 400 invalid_request", amount, rec.Code, rec.Body)
+		}
+	}
+	if n := len(ops.requests()); n != 0 {
+		t.Fatalf("%d requests were recorded for amounts that are not integers", n)
 	}
 }

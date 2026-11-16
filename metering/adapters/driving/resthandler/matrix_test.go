@@ -44,6 +44,7 @@ var wantPrivilege = map[string]auth.Privilege{
 	"POST /v1/admin/dead-letters/{id}/replay": auth.Admin,
 	"POST /v1/admin/subdrift":                 auth.Admin,
 	"POST /v1/admin/unblock":                  auth.Admin,
+	"POST /v1/admin/adjustments":              auth.Admin,
 	"GET /v1/admin/operations/{id}":           auth.Admin,
 	"GET /v1/transfers/{idem_key}":            auth.Grant,
 }
