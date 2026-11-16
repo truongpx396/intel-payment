@@ -1,0 +1,16 @@
+{
+  "name": "@intel-payment/example-llm-credits",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The reference binding of @intel-payment/credits-ui: one product's vocabulary (LLM credits) over the generic panel. Every product-specific thing is here and none of it is in the package.",
+  "type": "module",
+  "dependencies": {
+    "@intel-payment/credits-ui": "*",
+    "react": "^18.2.0 || ^19.0.0",
+    "react-dom": "^18.2.0 || ^19.0.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  }
+}

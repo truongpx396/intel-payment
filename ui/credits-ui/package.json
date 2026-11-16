@@ -1,0 +1,28 @@
+{
+  "name": "@intel-payment/credits-ui",
+  "version": "0.0.0",
+  "description": "Balances, ceilings, spend, a ledger and a plan catalogue over an opaque unit and an opaque scope. Framework-free ports and a pure model, with React components on top.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": [
+    "**/*.css"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./theme.css": "./dist/theme.css"
+  },
+  "files": [
+    "dist"
+  ],
+  "peerDependencies": {
+    "react": "^18.2.0 || ^19.0.0"
+  },
+  "scripts": {
+    "build": "node scripts/clean.mjs && tsc -p tsconfig.build.json && node scripts/copy-theme.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  }
+}
