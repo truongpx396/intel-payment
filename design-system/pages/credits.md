@@ -6,6 +6,11 @@
 > not stylistic: each one is a way a money screen misleads the person reading it, and they
 > are normative for any binding.
 
+> **As built** (`ui/`). The package implements this page and its **Don'ts** as tests, with these differences: the usage chart is a static line in the first
+> categorical slot with a text summary and a table of points — there is **no per-feature toggle**; the near-limit banner is a status notice with the host's
+> remedy; the trial / new-account notice is the host's `notices[]`, drawn generically; and the four anchor figures are the host's `facts[]`. It has been
+> rendered by jsdom and looked at once, by hand, in Chromium (desktop and phone widths); no automated browser test covers it, so treat the layout above as the design, not a verified screen.
+
 ## Purpose
 Show the scope's spendable balance in real time, warn near limits, and explain **each
 independent ceiling** — the reference binding has three (scope balance, per-user daily,

@@ -20,7 +20,7 @@ make e2e                # E2E_BASE_URL defaults to http://localhost:8080
   `uniqueScope()`, so a balance is never contended and a re-run never sees the last run's data. A
   test that must share state is `serial` with a comment saying what it shares.
 - **`*.api.spec.ts`** use Playwright's `request` (no browser, nothing to install). **`*.ui.spec.ts`**
-  arrive with the credits-ui package in Phase 6 and add a browser project in `playwright.config.ts`.
+  are not written: the credits-ui package (Phase 6) is tested in jsdom under `ui/`, and a browser project in `playwright.config.ts` is still to come.
 - **Failure paths first**: what a credential-less caller gets, a replay, an outage. The happy path is
   the one that is exercised in development anyway (constitution X).
 - **No retry-until-green.** One CI retry, reported; a test that needs more is a bug in the system or
