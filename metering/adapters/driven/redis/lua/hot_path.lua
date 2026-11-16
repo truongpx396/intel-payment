@@ -273,15 +273,21 @@ end
 
 --[[ ip_unblock — clear block_and_flag in a live hot account: an operator's unblock, after the books have been cleared.
 KEYS: meta, acct
-Returns {'OK', 1} when the account held the block and no longer does, {'OK', 0} when there was none to clear — the account is live
-and held none, or it is absent or was built in an older generation, and a rebuild reads the books, which are already clear — or
-{status}: a shard that is cold or frozen is refused, as everywhere. Nothing but the block is touched: not `seq`, not a balance. ]]
-local function unblock(keys, _)
+ARGV: 1 the sequence the books were at when they were cleared (their applied_seq)
+A compare-and-set on `seq`, as ip_heal is. Every mutation moves `seq` by one and applied_seq is the last the books have booked, so equal means
+nothing the hot tier has issued is waiting to be booked — and nothing that is can be a write-off that sets the block again in the books after
+this cleared it. Not equal and blocked: {'RACE'}, and nothing is touched; the caller lets the writer catch up and asks again.
+Returns {'OK', 1} when the account held the block, at that sequence, and no longer does, {'OK', 0} when there was none to clear — the account
+holds none (whatever its sequence), or is absent or was built in an older generation, and a rebuild reads the books, which are already clear —
+{'RACE'}, or {status}: a shard that is cold or frozen is refused, as everywhere. Nothing but the block is touched: not `seq`, not a balance. ]]
+local function unblock(keys, args)
   local gen, st = live(keys[1], keys[2])
   if not gen then
     if st == 'COLD_SCOPE' then return {'OK', 0} end
     return {st}
   end
+  if not redis.call('HGET', keys[2], 'blocked') then return {'OK', 0} end
+  if redis.call('HGET', keys[2], 'seq') ~= args[1] then return {'RACE'} end
   return {'OK', redis.call('HDEL', keys[2], 'blocked')}
 end
 

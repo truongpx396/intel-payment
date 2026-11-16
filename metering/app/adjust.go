@@ -27,11 +27,17 @@ type Granter interface {
 //
 // Its ref leads back to the operation and the person, and the database has the request and its outcome in audit_log. A positive amount adds
 // credits; a negative one removes them and is subject to the negative-balance policy, so a clawback larger than the balance is floored and its
-// shortfall written off, which the result reports.
+// shortfall written off, which the result reports (and, under block_and_flag, blocks the account: see Unblock).
 //
-// A refusal by the hot tier changed nothing. A failure the hot tier did not CONFIRM may have been applied — the call went out and the answer
-// did not come back — and a failed operation is never run again, so the error says so and names the key to look for: an operator who asked
-// again under a new key without looking would adjust twice.
+// Running it again is safe, and the result says what the run found. A run that applied the adjustment reports what it moved. A run that found
+// it already there — an operation taken over from a worker that died after the grant and before it said so — reports `replayed`, and nothing
+// it did not do: the hot tier tells a replay by its key and says nothing moved, and a result of zero recorded for good on an adjustment that
+// was applied would be a claim that nothing happened.
+//
+// A refusal by the hot tier changed nothing and is a failure. A failure the hot tier did not CONFIRM may have been applied — the call went
+// out and the answer did not come back — and is returned as ErrRetryOperation: the key is the operation's, so running it again either finds
+// it (a replay) or applies it, and the worker does that, up to its limit, instead of leaving a person to read an error and decide whether
+// asking again under a new key would adjust twice. The error says what to look for if the attempts are spent.
 func AdjustmentExecutor(g Granter) AdminExecutor {
 	return func(ctx context.Context, op ports.AdminOperation) (json.RawMessage, error) {
 		var p AdjustParams
@@ -52,19 +58,25 @@ func AdjustmentExecutor(g Granter) AdminExecutor {
 		rc, err := g.Grant(ctx, grant)
 		if err != nil {
 			if errors.Is(err, domain.ErrHotStoreUnavailable) {
-				return nil, fmt.Errorf("the hot tier did not confirm the adjustment, and it may have been applied: look for ledger rows with idem_key %q before asking again, or the account is adjusted twice: %w", grant.IdemKey, err)
+				return nil, fmt.Errorf("%w: the hot tier did not confirm the adjustment, and it may have been applied: look for ledger rows with idem_key %q before asking again, or the account is adjusted twice: %w", ErrRetryOperation, grant.IdemKey, err)
 			}
 			return nil, fmt.Errorf("adjust %s: %w", grant.Scope.Tag(), err)
 		}
-		return json.Marshal(struct {
+		out := struct {
 			Scope    ScopeParams `json:"scope"`
 			Pool     string      `json:"pool"`
 			Amount   int64       `json:"amount"`
-			Applied  bool        `json:"applied"`
-			Delta    int64       `json:"delta"`
-			Writeoff int64       `json:"writeoff"`
-			Balance  int64       `json:"balance"`
+			Applied  bool        `json:"applied"`  // the adjustment is in, whichever run put it there
+			Replayed bool        `json:"replayed"` // this run found it already booked, and moved nothing
+			Delta    *int64      `json:"delta,omitempty"`
+			Writeoff *int64      `json:"writeoff,omitempty"`
+			Balance  *int64      `json:"balance,omitempty"`
 			IdemKey  string      `json:"idem_key"`
-		}{p.Scope, p.Pool, p.Amount, rc.Applied, int64(rc.Delta), int64(rc.Writeoff), int64(rc.Balance), grant.IdemKey})
+		}{Scope: p.Scope, Pool: p.Pool, Amount: p.Amount, Applied: true, Replayed: !rc.Applied, IdemKey: grant.IdemKey}
+		if rc.Applied {
+			delta, writeoff, balance := int64(rc.Delta), int64(rc.Writeoff), int64(rc.Balance)
+			out.Delta, out.Writeoff, out.Balance = &delta, &writeoff, &balance
+		}
+		return json.Marshal(out)
 	}
 }

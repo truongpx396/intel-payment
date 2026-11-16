@@ -107,6 +107,10 @@ func (w *tickWork) adminExecutors(ticks *app.Ticks, dead *app.DeadLetters, lette
 				if errors.Is(err, app.ErrTickSkipped) {
 					return nil, fmt.Errorf("shard %d is owned by another worker, which must unblock it: %w", sh, err)
 				}
+				if errors.Is(err, app.ErrUnblockRaced) || errors.Is(err, domain.ErrHotStoreUnavailable) {
+					// Clearing a block that is already clear finds nothing to clear, so doing it again is safe; the next claim does.
+					return nil, fmt.Errorf("%w: %w", app.ErrRetryOperation, err)
+				}
 				return nil, err
 			}
 			return json.Marshal(map[string]any{"scope": p.Scope, "books": res.Books, "hot": res.Hot})

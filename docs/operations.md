@@ -319,8 +319,10 @@ request to the worker that holds the sole durable writer. `paymentd` has no writ
 | Clear `block_and_flag` for a scope (the shard is drained, then the books are cleared, then the hot account; asking again finishes an unblock that stopped between the last two) | `POST /v1/admin/unblock` | `scope: {kind, id}` |
 | Read how a request went | `GET /v1/admin/operations/{id}` | — |
 
-An operation is `pending`, then `running` while a worker has it, then `succeeded` (with a `result`) or `failed` (with an `error`). **A failed
-operation is not tried again**: ask again, under a new key, once the cause is fixed. The same request under the same key is the same operation
+An operation is `pending`, then `running` while a worker has it, then `succeeded` (with a `result`) or `failed` (with an `error`). An executor may
+mark an operation **safe to run again** — an adjustment the hot tier did not confirm, an unblock that could not settle — and the worker then
+leaves it `running` for the next claim, up to five attempts (`attempts` says how many; `metering_admin_operations_total{outcome="retry"}` counts
+them, and a request nobody takes within its lease shows as waiting), before it records the failure. **A failed operation is not tried again**: ask again, under a new key, once the cause is fixed. The same request under the same key is the same operation
 (`created: false`), whatever order its JSON keys are in, and is done once; the key reused for a different request is `409
 idempotency_conflict`. A worker that dies holding a request leaves it to the next one (`attempts` says how many tried), so every operation is
 safe to do again.
@@ -338,21 +340,39 @@ admission answers `403 account_blocked` however much is paid in afterwards, unti
 is a signal that someone took credits the customer had already spent — then `POST /v1/admin/unblock` with `{"scope": {…}, "actor": …, "reason": …}`.
 The operation's `result` is `{"scope": …, "books": true|false, "hot": true|false}`: whether the books, and the hot account, held the block and
 no longer do. `books: false, hot: true` is the second half of an unblock that stopped between the two tiers, now finished; `false, false` is an
-account that was not blocked. The worker that takes the request needs the shard's lease (as for a recovery): if another worker owns the shard,
-the operation fails and says so in `error`, and is not tried again — ask again under a new key, which any worker may take. With one worker,
-which owns every shard, this does not arise.
+account that was not blocked.
+
+The hot account is cleared only **at the sequence the books were at**: a write-off the writer has not yet booked would set the block in the books
+after the clear, leaving the two disagreeing (hot open, books blocked, and nothing in reconcile compares the flag). So if the writer is behind the
+hot tier the unblock drains and looks again, up to four times, and a block that is back after the clear is cleared again. An unblock that cannot
+settle — a gap that is not filling, a hot tier written to faster than it is booked — is left `running` for the next claim (up to five attempts),
+and if they are spent it fails saying the books are clear: find out why the writer is behind (`metering_outbox_age_seconds`, [outbox depth or
+age](#alert-outbox-depth-or-age-rising)) before asking again under a new key.
+
+The worker that takes the request needs the shard's lease (as for a recovery): if another worker owns the shard, the operation fails and says so
+in `error`, and is not tried again — ask again under a new key, which any worker may take. With one worker, which owns every shard, this does
+not arise.
 
 ### Adjusting the books
 
 `POST /v1/admin/adjustments` with `{"scope": {…}, "pool": …, "amount": …, "actor": …, "reason": …}` books a signed grant with the reserved reason
 `admin_adjustment`: positive adds credits, negative removes them and is subject to the negative-balance policy (a clawback larger than the balance
-is floored and its shortfall written off — the operation's `result` reports `writeoff`). The writer books it like any other grant, the ledger row's
-`ref` carries `operation` and `actor`, and the database audits the request and its outcome. Its key is `admin-adjustment:<operation id>`: the same
-request under the same key, and the operation done again by a worker that took it over, book once; **two operations are two adjustments**.
+is floored and its shortfall written off — the operation's `result` reports `writeoff`; under `block_and_flag` such a clawback also blocks the
+account, which [unblocking](#unblocking-an-account) clears). The writer books it like any other grant, the ledger row's `ref` carries `operation`
+and `actor`, and the database audits the request and its outcome. Its key is `admin-adjustment:<operation id>`: the same request under the same
+key, and the operation done again by a worker that took it over, book once; **two operations are two adjustments**. The `result` says
+`applied: true` and, when this run did the booking, `delta`, `writeoff` and `balance`; a run that found the adjustment already booked says
+`replayed: true` and does not say what it moved — read the ledger row for that.
 
-**A failed adjustment may have been applied.** A refusal (a frozen shard, an amount out of range) changed nothing. But if the hot tier did not
-confirm — the call went out and the answer did not come back — the grant may be in, and a failed operation is never run again. The operation's
-`error` then says so and names the key: look for it before asking again under a new key, or the account is adjusted twice.
+**An adjustment the hot tier did not confirm may have been applied, and is run again.** A refusal (a frozen shard, an amount out of range)
+changed nothing and fails the operation. But if the hot tier did not confirm — the call went out and the answer did not come back — the grant may
+be in; the key is the operation's, so the worker runs it again on the next claim (a replay if it was in, an adjustment if it was not), up to five
+attempts. Only if they are spent is the operation `failed`, and its `error` then names the key: look for it before asking again under a new key, or
+the account is adjusted twice.
+
+**`admin_adjustment` is reserved by convention, not enforced.** `POST /v1/grant` does not yet refuse it as a `reason`, so a credential that may
+grant can write a ledger row with that operation type; what marks a row as an operator's is its `ref` (`operation`, `actor`) and the audit rows of
+`admin_operations`, not the label.
 
 ```sql
 SELECT created_at, pool, delta, operation_type, ref FROM credit_ledger WHERE realm = $1 AND idem_key = 'admin-adjustment:<operation id>';
@@ -364,7 +384,7 @@ SELECT created_at, pool, delta, operation_type, ref FROM credit_ledger WHERE rea
 narrows them to one shard's (zero is shard zero), `?limit=` is 1–100 (default 10), and `?with_findings=true` keeps only the runs that found something of
 your realm's own. Each run has its own counters — scopes checked, in sync, `deferred` (an intent in flight: lag, not drift), `cold`, `regressions`
 (which froze the shard), `drifted` and `abs_drift` (Σ|drift|, never a net figure) — across every realm that has accounts in the shard, and names no
-account. Its `findings` are **your realm's alone**, worst first, at most 200 a run (`findings_total` says how many there were); a finding names its scope
+account. Its `findings` are **your realm's alone**, worst first (a regression, which froze the shard and has no drift to rank by, before any drift), at most 200 a run (`findings_total` says how many there were); a finding names its scope
 without a realm. A +100 on one scope and a −100 on another are two findings. `healed: true` means the hot side was corrected to the books; reconcile
 never corrects the books — that is an investigated [adjustment](#adjusting-the-books). The read is not indexed by run (`reconcile_findings` has no
 index on `run_id`), which a run with a handful of findings does not feel and a shard-wide incident with millions might.

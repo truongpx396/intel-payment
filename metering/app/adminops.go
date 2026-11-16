@@ -335,6 +335,16 @@ func parseReplay(raw json.RawMessage) (json.RawMessage, error) {
 	return json.Marshal(in)
 }
 
+// ErrRetryOperation, wrapped in what an executor returns, says the operation did not come to an outcome and is SAFE TO RUN AGAIN — because its
+// effect is keyed by the operation, so running it again either finds the effect already there (a replay) or has it. The worker leaves the
+// operation as it would one whose worker died, to be claimed again when the lease lapses, up to MaxAdminAttempts; it records a failure only
+// when the attempts are spent, with the executor's own text. It is for what cannot be known from here — an adjustment whose confirmation never
+// came back — and never for an executor that was refused: doing that again would be refused again.
+var ErrRetryOperation = errors.New("did not come to an outcome, and is safe to run again")
+
+// MaxAdminAttempts is how often an operation that is safe to run again is claimed before it is recorded as failed.
+const MaxAdminAttempts = 5
+
 // AdminExecutor does one kind of operation and says what it came to as JSON. It is run again if its worker dies, so it must be safe to run
 // again: every operation the engine defines is, and an executor that is not is a bug in the executor.
 type AdminExecutor func(ctx context.Context, op ports.AdminOperation) (json.RawMessage, error)
@@ -397,6 +407,13 @@ func (w *AdminWorker) RunOne(ctx context.Context) (bool, error) {
 	if runErr != nil && ctx.Err() != nil {
 		w.d.Log.Warn("an operator request was interrupted and will be done by the next worker", "operation", op.ID, "kind", string(op.Kind), "attempt", op.Attempts)
 		return true, ctx.Err()
+	}
+	if runErr != nil && errors.Is(runErr, ErrRetryOperation) && op.Attempts < MaxAdminAttempts {
+		// Not recorded, and not silent: the claim lapses and the next one takes it, as after a worker that died. The count says it happened.
+		w.d.Metrics.Count(ports.MetricAdminOperations, 1, ports.Labels{"kind": string(op.Kind), "outcome": "retry"})
+		w.d.Log.Warn("an operator request did not come to an outcome and is safe to run again: the next claim will", "operation", op.ID, "kind", string(op.Kind),
+			"attempt", op.Attempts, "of", MaxAdminAttempts, "error", runErr.Error())
+		return true, nil
 	}
 	status, errText, outcome := ports.AdminSucceeded, "", "succeeded"
 	if runErr != nil {

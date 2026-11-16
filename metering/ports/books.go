@@ -222,14 +222,23 @@ type BookedState struct {
 	Suspense  map[domain.Pool]domain.Credits // Σ open suspense deltas
 }
 
+// BookUnblock is what the books held when an unblock cleared them, and where they were.
+type BookUnblock struct {
+	// Cleared is whether the books held the block and no longer do. A scope that is not blocked, and one the books have no watermark for,
+	// are false: nothing is written for either.
+	Cleared bool
+	// AppliedSeq is the scope's applied sequence at the moment of the clear, read under the same lock (0 for a scope with no watermark). It
+	// is what the hot account must be at for its block to be cleared too: behind it, the writer has not booked what the hot tier issued.
+	AppliedSeq int64
+}
+
 // BookUnblocker clears block_and_flag where the books hold it (account_watermarks.blocked): half of an operator's unblock (R112a), the
 // other half being the hot account (HotUnblocker). The books go first, so a crash between the two is repaired by asking again.
 type BookUnblocker interface {
 	// ClearBlocked clears the scope's block under the scope's transaction lock — the lock a booking takes, so a booking in progress
-	// finishes first and the clear lands on what it wrote. It reports whether there was a block to clear: a scope that is not blocked, and
-	// one the books have no watermark for, are false and nil, and nothing is written for either. Only the block moves: not the applied
-	// sequence, not the generation. A scope that is not a scope is domain.ErrInvalid.
-	ClearBlocked(ctx context.Context, scope domain.Scope) (bool, error)
+	// finishes first and the clear lands on what it wrote, and the sequence it reports is the one that booking left. Only the block moves:
+	// not the applied sequence, not the generation. A scope that is not a scope is domain.ErrInvalid.
+	ClearBlocked(ctx context.Context, scope domain.Scope) (BookUnblock, error)
 }
 
 // BookStore is the writer's Postgres port.

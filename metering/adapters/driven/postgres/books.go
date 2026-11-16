@@ -51,33 +51,41 @@ func (b *Books) InTx(ctx context.Context, scope domain.Scope, fn func(ctx contex
 
 // ClearBlocked clears block_and_flag in the scope's watermark, in a transaction that holds the scope's advisory lock — the lock a booking
 // takes. A booking in progress therefore finishes first, and the clear lands on the watermark it wrote and not on the one it read: were it
-// not for the lock, a booking that had read the block would write it straight back. Only `blocked` moves (and `updated_at`, which makes
-// the next incremental reconcile look at the scope again); a scope with no watermark is not given one.
-func (b *Books) ClearBlocked(ctx context.Context, scope domain.Scope) (bool, error) {
+// not for the lock, a booking that had read the block would write it straight back. The applied sequence it reports is read under the same
+// lock, so it is the sequence of the books the block was cleared in. Only `blocked` moves (and `updated_at`, which makes the next incremental
+// reconcile look at the scope again); a scope with no watermark is not given one.
+func (b *Books) ClearBlocked(ctx context.Context, scope domain.Scope) (ports.BookUnblock, error) {
 	if err := scope.Validate(); err != nil {
-		return false, err
+		return ports.BookUnblock{}, err
 	}
 	scope = scope.Normalized()
-	cleared := false
+	var out ports.BookUnblock
 	err := b.InTx(ctx, scope, func(ctx context.Context, tx ports.BookTx) error {
 		bt, ok := tx.(*bookTx)
 		if !ok {
 			return fmt.Errorf("postgres: unblock: the transaction is a %T", tx)
 		}
-		r, k, i := bt.key()
-		tag, err := bt.tx.Exec(ctx, `
-			UPDATE account_watermarks SET blocked = false, updated_at = now()
-			WHERE realm = $1 AND scope_kind = $2 AND scope_id = $3 AND blocked`, r, k, i)
+		w, err := bt.Watermark(ctx)
 		if err != nil {
+			return err
+		}
+		out.AppliedSeq = w.AppliedSeq
+		if !w.Exists || !w.Blocked {
+			return nil
+		}
+		r, k, i := bt.key()
+		if _, err := bt.tx.Exec(ctx, `
+			UPDATE account_watermarks SET blocked = false, updated_at = now()
+			WHERE realm = $1 AND scope_kind = $2 AND scope_id = $3`, r, k, i); err != nil {
 			return fmt.Errorf("postgres: clear the block: %w", err)
 		}
-		cleared = tag.RowsAffected() == 1
+		out.Cleared = true
 		return nil
 	})
 	if err != nil {
-		return false, err
+		return ports.BookUnblock{}, err
 	}
-	return cleared, nil
+	return out, nil
 }
 
 type bookTx struct {

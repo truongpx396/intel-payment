@@ -144,23 +144,26 @@ check "heal refuses when seq moved since the measurement" "RACE" "$(cli FCALL ip
 check "heal applies at the measured seq" "OK" "$(cli FCALL ip_heal 2 "$META" "$(acct o1)" 4 general -1000 | flat)"
 check "heal is hot-side only and does not advance seq" "OK 4 0 general -1000 promo 0" "$(admit o1)"
 
-echo "== unblock: an operator clears the block, and only the block, in a live account"
+echo "== unblock: an operator clears the block, and only the block, in a live account, at the sequence the books were at"
 rehydrate o6 2 7 1 general 50 >/dev/null
 check "an account is handed the block the books hold" "OK 7 1 general 50" "$(admit o6)"
-check "unblock clears it and says so" "OK 1" "$(cli FCALL ip_unblock 2 "$META" "$(acct o6)" | flat)"
+check "an unblock at a sequence before the account's races and clears nothing" "RACE" "$(cli FCALL ip_unblock 2 "$META" "$(acct o6)" 6 | flat)"
+check "…and so does one past it" "RACE" "$(cli FCALL ip_unblock 2 "$META" "$(acct o6)" 8 | flat)"
+check "the account still holds the block, untouched" "OK 7 1 general 50" "$(admit o6)"
+check "an unblock at the account's own sequence clears it and says so" "OK 1" "$(cli FCALL ip_unblock 2 "$META" "$(acct o6)" 7 | flat)"
 check "and moves nothing else: not the sequence, not a balance" "OK 7 0 general 50" "$(admit o6)"
-check "asking again finds nothing to clear" "OK 0" "$(cli FCALL ip_unblock 2 "$META" "$(acct o6)" | flat)"
-check "an account that holds no block is left as it is" "OK 0" "$(cli FCALL ip_unblock 2 "$META" "$(acct o1)" | flat)"
+check "asking again finds nothing to clear" "OK 0" "$(cli FCALL ip_unblock 2 "$META" "$(acct o6)" 7 | flat)"
+check "an account that holds no block is left as it is, whatever sequence it is asked at" "OK 0" "$(cli FCALL ip_unblock 2 "$META" "$(acct o1)" 99 | flat)"
 check "and is unchanged" "OK 4 0 general -1000 promo 0" "$(admit o1)"
-check "an account that does not exist has nothing to clear" "OK 0" "$(cli FCALL ip_unblock 2 "$META" "$(acct o7)" | flat)"
+check "an account that does not exist has nothing to clear" "OK 0" "$(cli FCALL ip_unblock 2 "$META" "$(acct o7)" 0 | flat)"
 check "and is not made" "0" "$(cli EXISTS "$(acct o7)" | flat)"
 cli FCALL ip_shard 1 "$META" freeze unblock-test >/dev/null
-check "a frozen shard refuses an unblock" "FROZEN" "$(cli FCALL ip_unblock 2 "$META" "$(acct o6)" | flat)"
+check "a frozen shard refuses an unblock" "FROZEN" "$(cli FCALL ip_unblock 2 "$META" "$(acct o6)" 7 | flat)"
 cli FCALL ip_shard 1 "$META" unfreeze >/dev/null
 rehydrate o8 2 3 1 general 5 >/dev/null
 cli FCALL ip_shard 1 "$META" bump 3 >/dev/null
-check "an account built in an older generation has nothing to clear" "OK 0" "$(cli FCALL ip_unblock 2 "$META" "$(acct o8)" | flat)"
-check "a shard that was never opened refuses it too" "COLD_SHARD" "$(cli FCALL ip_unblock 2 'meta:{s8}' 'acct:{s8}:t1/org:o9' | flat)"
+check "an account built in an older generation has nothing to clear" "OK 0" "$(cli FCALL ip_unblock 2 "$META" "$(acct o8)" 3 | flat)"
+check "a shard that was never opened refuses it too" "COLD_SHARD" "$(cli FCALL ip_unblock 2 'meta:{s8}' 'acct:{s8}:t1/org:o9' 0 | flat)"
 
 echo "== backpressure"
 cli FCALL ip_shard 1 'meta:{s9}' open 1 >/dev/null

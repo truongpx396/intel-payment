@@ -18,8 +18,8 @@ var _ ports.DriftReader = (*Drift)(nil)
 // NewDrift returns a reader over the pool.
 func NewDrift(pool *pgxpool.Pool) *Drift { return &Drift{pool: pool} }
 
-// RecentRuns implements ports.DriftReader: the newest runs first, each with the asking realm's findings — the worst first, capped, and with
-// how many there were. A run's counters are the run's own; a finding of another realm is never read, never listed and never counted: the
+// RecentRuns implements ports.DriftReader: the newest runs first, each with the asking realm's findings — the worst first (a regression, which
+// froze the shard and carries no drift to rank by, before any drift), capped, and with how many there were. A run's counters are the run's own; a finding of another realm is never read, never listed and never counted: the
 // findings are selected by realm in the same statement that counts and caps them.
 func (d *Drift) RecentRuns(ctx context.Context, q ports.DriftQuery) ([]ports.DriftRun, error) {
 	if q.Realm == "" {
@@ -83,7 +83,7 @@ func (d *Drift) RecentRuns(ctx context.Context, q ports.DriftQuery) ([]ports.Dri
 		SELECT run_id, scope_kind, scope_id, pool, outcome, hot_seq, applied_seq, hot_balance, expected_balance, drift, healed, alarmed, total
 		FROM (
 			SELECT f.run_id::text AS run_id, f.scope_kind, f.scope_id, f.pool, f.outcome, f.hot_seq, f.applied_seq, f.hot_balance, f.expected_balance, f.drift, f.healed, f.alarmed,
-			       row_number() OVER (PARTITION BY f.run_id ORDER BY abs(f.drift) DESC NULLS LAST, f.id) AS rn,
+			       row_number() OVER (PARTITION BY f.run_id ORDER BY (f.outcome = 'regression') DESC, abs(f.drift) DESC NULLS LAST, f.id) AS rn,
 			       count(*) OVER (PARTITION BY f.run_id) AS total
 			FROM reconcile_findings f
 			WHERE f.run_id::text = ANY($1::text[]) AND f.realm = $2
