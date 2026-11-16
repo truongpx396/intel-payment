@@ -46,6 +46,7 @@ func TestDriftContractRejectsEveryBrokenReaderByName(t *testing.T) {
 		{"lists every finding, however many", func(d *contracts.MemDriftDefects) { d.NoCap = true }, []string{contracts.CaseDRWorstFirst}},
 		{"counts only the findings it listed", func(d *contracts.MemDriftDefects) { d.CountsOnlyWhatShown = true }, []string{contracts.CaseDRWorstFirst}},
 		{"gives the smallest drift first", func(d *contracts.MemDriftDefects) { d.BestFirst = true }, []string{contracts.CaseDRWhole, contracts.CaseDRWorstFirst}},
+		{"ranks a regression by its zero drift, behind everything", func(d *contracts.MemDriftDefects) { d.RegressionsLast = true }, []string{contracts.CaseDRWorstFirst}},
 		{"nets a plus and a minus into one", func(d *contracts.MemDriftDefects) { d.NetsFindings = true }, []string{contracts.CaseDRWhole, contracts.CaseDRWorstFirst}},
 		{"loses healed and alarmed", func(d *contracts.MemDriftDefects) { d.DropsFlags = true }, []string{contracts.CaseDRWhole}},
 		{"takes a realm that is not one", func(d *contracts.MemDriftDefects) { d.AcceptsAnyRealm = true }, []string{contracts.CaseDREmptyAndRealms}},

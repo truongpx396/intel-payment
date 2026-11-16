@@ -16,8 +16,9 @@ import (
 
 // R112a: an operator's unblock clears block_and_flag where it is held — in the books (durable, and what a rehydrate reads), then in the hot
 // account (what the admission gate reads) — in that order, so a crash between the two leaves the books clear and the hot account the only
-// thing left to do, which asking again does. Before either it drains the shard: a write-off the hot tier has issued and the writer has not
-// yet booked would otherwise set the block in the books AFTER the operator cleared it, leaving the two disagreeing about it.
+// thing left to do, which asking again does. A write-off the hot tier has issued and the writer has not yet booked would set the block in the
+// books AFTER the operator cleared it, so the hot account is cleared only at the sequence the books were at: a drain can book one batch and
+// leave more behind, and a write-off can arrive after any drain, so "the writer is caught up" is checked where it can be, at the clear.
 
 type unblockLog struct {
 	mu    sync.Mutex
@@ -42,7 +43,7 @@ type unblockBooks struct {
 	mu      sync.Mutex
 	scopes  []domain.Scope
 	shards  []domain.Shard
-	clearIt func(domain.Scope) (bool, error)
+	clearIt func(domain.Scope) (ports.BookUnblock, error)
 }
 
 func (b *unblockBooks) EnsureShard(_ context.Context, sh domain.Shard) (ports.ShardRecord, error) {
@@ -52,7 +53,7 @@ func (b *unblockBooks) EnsureShard(_ context.Context, sh domain.Shard) (ports.Sh
 	return ports.ShardRecord{Shard: sh, Gen: 1}, nil
 }
 
-func (b *unblockBooks) ClearBlocked(_ context.Context, s domain.Scope) (bool, error) {
+func (b *unblockBooks) ClearBlocked(_ context.Context, s domain.Scope) (ports.BookUnblock, error) {
 	b.log.add("books")
 	b.mu.Lock()
 	b.scopes = append(b.scopes, s)
@@ -62,22 +63,30 @@ func (b *unblockBooks) ClearBlocked(_ context.Context, s domain.Scope) (bool, er
 
 type unblockHot struct {
 	ports.BalanceStore
-	log     *unblockLog
-	mu      sync.Mutex
-	scopes  []domain.Scope
-	clearIt func(domain.Scope) (bool, error)
+	log      *unblockLog
+	mu       sync.Mutex
+	scopes   []domain.Scope
+	seqs     []int64 // the sequence each clear was asked to be made at
+	clearIt  func(domain.Scope, int64) (ports.HotUnblockOutcome, error)
+	snapshot func() (ports.HotAccount, error)
 }
 
 func (h *unblockHot) ShardState(context.Context, domain.Shard) (ports.ShardState, error) {
 	return ports.ShardState{Open: true, Gen: 1}, nil
 }
 
-func (h *unblockHot) ClearBlocked(_ context.Context, s domain.Scope) (bool, error) {
+func (h *unblockHot) ClearBlocked(_ context.Context, s domain.Scope, appliedSeq int64) (ports.HotUnblockOutcome, error) {
 	h.log.add("hot")
 	h.mu.Lock()
 	h.scopes = append(h.scopes, s)
+	h.seqs = append(h.seqs, appliedSeq)
 	h.mu.Unlock()
-	return h.clearIt(s)
+	return h.clearIt(s, appliedSeq)
+}
+
+func (h *unblockHot) Snapshot(context.Context, domain.Scope) (ports.HotAccount, error) {
+	h.log.add("snapshot")
+	return h.snapshot()
 }
 
 type unblockStream struct {
@@ -108,8 +117,14 @@ func newUnblockRig(t *testing.T) *unblockRig {
 	t.Helper()
 	log := &unblockLog{}
 	r := &unblockRig{log: log}
-	r.books = &unblockBooks{log: log, clearIt: func(domain.Scope) (bool, error) { return true, nil }}
-	r.hot = &unblockHot{log: log, clearIt: func(domain.Scope) (bool, error) { return true, nil }}
+	r.books = &unblockBooks{log: log, clearIt: func(domain.Scope) (ports.BookUnblock, error) {
+		return ports.BookUnblock{Cleared: true, AppliedSeq: 41}, nil
+	}}
+	r.hot = &unblockHot{
+		log:      log,
+		clearIt:  func(domain.Scope, int64) (ports.HotUnblockOutcome, error) { return ports.HotUnblockCleared, nil },
+		snapshot: func() (ports.HotAccount, error) { return ports.HotAccount{Cold: true}, nil }, // nothing installed it again
+	}
 	r.stream = &unblockStream{log: log}
 	cfg := metering.Config{BalanceRedisURL: "redis://x", LedgerDSN: "postgres://x"}
 	r.shards = cfg.WithDefaults().Shards
@@ -130,11 +145,14 @@ func TestAnUnblockDrainsTheShardThenClearsTheBooksThenTheHotAccount(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"drain", "books", "hot"}; !slices.Equal(r.log.got(), want) {
-		t.Fatalf("the steps were %v, want %v: the writer is caught up first, the durable block goes before the one the gate reads", r.log.got(), want)
+	if want := []string{"drain", "books", "hot", "snapshot"}; !slices.Equal(r.log.got(), want) {
+		t.Fatalf("the steps were %v, want %v: the writer is given the chance to catch up, the durable block goes before the one the gate reads, and the account is looked at after", r.log.got(), want)
 	}
 	if want := (UnblockResult{Books: true, Hot: true}); got != want {
 		t.Fatalf("the result is %+v, want %+v", got, want)
+	}
+	if !slices.Equal(r.hot.seqs, []int64{41}) {
+		t.Fatalf("the hot account was cleared at sequence %v, want the one the books were at, 41", r.hot.seqs)
 	}
 }
 
@@ -152,8 +170,15 @@ func TestWhatEachTierHeldIsReportedApartFromTheOther(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			r := newUnblockRig(t)
-			r.books.clearIt = func(domain.Scope) (bool, error) { return c.books, nil }
-			r.hot.clearIt = func(domain.Scope) (bool, error) { return c.hot, nil }
+			r.books.clearIt = func(domain.Scope) (ports.BookUnblock, error) {
+				return ports.BookUnblock{Cleared: c.books, AppliedSeq: 41}, nil
+			}
+			r.hot.clearIt = func(domain.Scope, int64) (ports.HotUnblockOutcome, error) {
+				if c.hot {
+					return ports.HotUnblockCleared, nil
+				}
+				return ports.HotUnblockNothing, nil
+			}
 			got, err := r.w.Unblock(context.Background(), unblockScope)
 			if err != nil || got != (UnblockResult{Books: c.books, Hot: c.hot}) {
 				t.Fatalf("%+v, %v, want books %v, hot %v", got, err, c.books, c.hot)
@@ -168,15 +193,21 @@ func TestAnUnblockThatFellBetweenTheTiersIsRepairedByAskingAgain(t *testing.T) {
 	t.Parallel()
 	r := newUnblockRig(t)
 	booksBlocked, hotBlocked := true, true
-	r.books.clearIt = func(domain.Scope) (bool, error) { held := booksBlocked; booksBlocked = false; return held, nil }
+	r.books.clearIt = func(domain.Scope) (ports.BookUnblock, error) {
+		held := booksBlocked
+		booksBlocked = false
+		return ports.BookUnblock{Cleared: held, AppliedSeq: 41}, nil
+	}
 	hotDown := true
-	r.hot.clearIt = func(domain.Scope) (bool, error) {
+	r.hot.clearIt = func(domain.Scope, int64) (ports.HotUnblockOutcome, error) {
 		if hotDown {
-			return false, domain.ErrHotStoreUnavailable
+			return ports.HotUnblockNothing, domain.ErrHotStoreUnavailable
 		}
-		held := hotBlocked
-		hotBlocked = false
-		return held, nil
+		if hotBlocked {
+			hotBlocked = false
+			return ports.HotUnblockCleared, nil
+		}
+		return ports.HotUnblockNothing, nil
 	}
 
 	if _, err := r.w.Unblock(context.Background(), unblockScope); !errors.Is(err, domain.ErrHotStoreUnavailable) {
@@ -200,7 +231,7 @@ func TestAnUnblockThatCannotClearTheBooksNeverTouchesTheHotAccount(t *testing.T)
 	t.Parallel()
 	r := newUnblockRig(t)
 	boom := errors.New("the books are down")
-	r.books.clearIt = func(domain.Scope) (bool, error) { return false, boom }
+	r.books.clearIt = func(domain.Scope) (ports.BookUnblock, error) { return ports.BookUnblock{}, boom }
 	if _, err := r.w.Unblock(context.Background(), unblockScope); !errors.Is(err, boom) {
 		t.Fatalf("came to %v, want the books' error", err)
 	}
@@ -252,5 +283,88 @@ func TestAnUnblockActsOnTheNormalisedScopeAndTheShardItLivesIn(t *testing.T) {
 	}
 	if len(r.books.shards) == 0 || r.books.shards[0] != want.Shard(r.shards) {
 		t.Fatalf("the shard drained was %v, want %d: the one the scope lives in", r.books.shards, want.Shard(r.shards))
+	}
+}
+
+// A drain books one batch and returns; more intents than a batch leave some behind, and the one that set the block may be among them. The books
+// then say they are at a sequence the hot account is past, the clear is refused as a race, and the unblock drains again and looks again — and
+// the hot account is cleared when the books and it are at the same sequence, and not before.
+func TestAnUnblockThatRacedDrainsAgainAndClearsWhenTheBooksHaveCaughtUp(t *testing.T) {
+	t.Parallel()
+	r := newUnblockRig(t)
+	call := 0
+	r.books.clearIt = func(domain.Scope) (ports.BookUnblock, error) {
+		call++
+		if call == 1 {
+			return ports.BookUnblock{Cleared: true, AppliedSeq: 40}, nil // one intent behind: the write-off the hot tier issued last
+		}
+		return ports.BookUnblock{Cleared: false, AppliedSeq: 41}, nil // the writer has booked it, and the books say what it carried
+	}
+	r.hot.clearIt = func(_ domain.Scope, at int64) (ports.HotUnblockOutcome, error) {
+		if at != 41 {
+			return ports.HotUnblockRaced, nil
+		}
+		return ports.HotUnblockCleared, nil
+	}
+	got, err := r.w.Unblock(context.Background(), unblockScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (UnblockResult{Books: true, Hot: true}); got != want {
+		t.Fatalf("the result is %+v, want %+v: the books were cleared on the first look, the hot account on the second", got, want)
+	}
+	if !slices.Equal(r.hot.seqs, []int64{40, 41}) {
+		t.Fatalf("the hot account was asked at sequences %v, want 40 and then 41", r.hot.seqs)
+	}
+	if want := []string{"drain", "books", "hot", "drain", "books", "hot", "snapshot"}; !slices.Equal(r.log.got(), want) {
+		t.Fatalf("the steps were %v, want %v: a race drains and looks again", r.log.got(), want)
+	}
+}
+
+// A shard that never settles — a gap that is not filling, a hot tier written to faster than it is booked — does not loop for ever and does
+// not clear a block it cannot be sure of: it fails, says the books are clear, and says it may be asked again.
+func TestAnUnblockThatKeepsRacingGivesUpLeavingTheHotBlockAndSaysSo(t *testing.T) {
+	t.Parallel()
+	r := newUnblockRig(t)
+	r.hot.clearIt = func(domain.Scope, int64) (ports.HotUnblockOutcome, error) { return ports.HotUnblockRaced, nil }
+	got, err := r.w.Unblock(context.Background(), unblockScope)
+	if !errors.Is(err, ErrUnblockRaced) {
+		t.Fatalf("came to %v, want %v", err, ErrUnblockRaced)
+	}
+	if !got.Books || got.Hot {
+		t.Fatalf("the result is %+v: the books were cleared and the hot account was not", got)
+	}
+	if n := len(r.hot.seqs); n != unblockAttempts {
+		t.Fatalf("the hot account was asked %d times, want %d: bounded", n, unblockAttempts)
+	}
+}
+
+// A rehydrate that read the books before they were cleared can install the block after the hot account was looked at and found cold. The
+// account is read once more after the clear, and a block that is back is cleared again.
+func TestABlockInstalledAfterTheClearIsClearedAgain(t *testing.T) {
+	t.Parallel()
+	r := newUnblockRig(t)
+	looks := 0
+	r.hot.snapshot = func() (ports.HotAccount, error) {
+		looks++
+		return ports.HotAccount{Seq: 41, Blocked: looks == 1}, nil // blocked the first time we look, clear the second
+	}
+	got, err := r.w.Unblock(context.Background(), unblockScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Hot || len(r.hot.seqs) != 2 {
+		t.Fatalf("%+v after %d hot clears, want the block cleared the second time", got, len(r.hot.seqs))
+	}
+}
+
+func TestAnUnblockWhoseAccountCannotBeReadAfterwardsSaysSoAndKeepsWhatItDid(t *testing.T) {
+	t.Parallel()
+	r := newUnblockRig(t)
+	boom := errors.New("the hot tier went away")
+	r.hot.snapshot = func() (ports.HotAccount, error) { return ports.HotAccount{}, boom }
+	got, err := r.w.Unblock(context.Background(), unblockScope)
+	if !errors.Is(err, boom) || !got.Books || !got.Hot {
+		t.Fatalf("%+v, %v: want what was done kept, and the error reported", got, err)
 	}
 }

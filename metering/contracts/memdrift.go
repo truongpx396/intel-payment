@@ -28,6 +28,7 @@ type MemDriftDefects struct {
 	NoCap               bool // every finding, however many
 	CountsOnlyWhatShown bool // the total is what was listed, not what there was
 	BestFirst           bool // findings come smallest drift first
+	RegressionsLast     bool // a regression, which carries no drift, is ranked by that zero and falls behind (and outside the cap)
 	NetsFindings        bool // a +x and a -x on two scopes are one finding of zero
 	DropsFlags          bool // healed and alarmed are lost
 	AcceptsAnyRealm     bool // a realm that is not one, or none, is taken
@@ -148,6 +149,9 @@ func (m *MemDrift) RecentRuns(_ context.Context, q ports.DriftQuery) ([]ports.Dr
 		sort.SliceStable(fs, func(i, j int) bool {
 			if m.Defects.BestFirst {
 				return absCredits(fs[i].Drift) < absCredits(fs[j].Drift)
+			}
+			if ri, rj := fs[i].Outcome == domain.OutcomeRegression, fs[j].Outcome == domain.OutcomeRegression; ri != rj && !m.Defects.RegressionsLast {
+				return ri
 			}
 			return absCredits(fs[i].Drift) > absCredits(fs[j].Drift)
 		})

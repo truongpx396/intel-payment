@@ -38,7 +38,7 @@ const (
 	CaseDRShard          = "a shard narrows the runs to that shard's, and shard zero is a shard"
 	CaseDRRealm          = "another realm's findings are never in the answer, nor in the count of them"
 	CaseDRWithFindings   = "asked for runs with findings, a realm gets only the runs that found something of its own"
-	CaseDRWorstFirst     = "findings come worst first, capped, with how many there were, and a plus and a minus are two"
+	CaseDRWorstFirst     = "findings come worst first — a regression before any drift — capped, with how many there were, and a plus and a minus are two"
 	CaseDREmptyAndRealms = "an empty store is an empty answer, and a realm that is not one is refused"
 )
 
@@ -232,6 +232,10 @@ func drWorstFirst(tb testing.TB, f DriftFactory) {
 	}
 	// A +100 and a -100 on two scopes are two findings, never one that nets to nothing.
 	fs = append(fs, drFinding("t1", "plus", "general", 1000), drFinding("t1", "minus", "general", -1000))
+	// A regression is a hot sequence that went backwards, and it froze the shard. It carries no drift to rank by, and it is the finding an
+	// operator most needs: it comes first, however many drifted scopes there are behind it.
+	regression := domain.ReconcileFinding{Scope: domain.Scope{Realm: "t1", Kind: "workspace", ID: "regressed"}, Pool: "general", Outcome: domain.OutcomeRegression, HotSeq: 3, AppliedSeq: 9, Alarmed: true}
+	fs = append(fs, regression)
 	w.Save(tb, drRun(1, domain.ReconcileFull, drBase, fs...))
 	r := drRead(tb, w, ports.DriftQuery{Realm: "t1"})[0]
 	if r.FindingsTotal != len(fs) || len(r.Findings) != ports.MaxDriftFindings {
@@ -243,12 +247,15 @@ func drWorstFirst(tb testing.TB, f DriftFactory) {
 		}
 		return c
 	}
-	for i := 1; i < len(r.Findings); i++ {
+	if r.Findings[0] != regression {
+		tb.Fatalf("the first finding is %+v, want the regression, which froze the shard and has no drift to rank by", r.Findings[0])
+	}
+	for i := 2; i < len(r.Findings); i++ {
 		if abs(r.Findings[i-1].Drift) < abs(r.Findings[i].Drift) {
 			tb.Fatalf("finding %d (%d) is worse than finding %d (%d): worst first", i, r.Findings[i].Drift, i-1, r.Findings[i-1].Drift)
 		}
 	}
-	ids := map[string]domain.Credits{r.Findings[0].Scope.ID: r.Findings[0].Drift, r.Findings[1].Scope.ID: r.Findings[1].Drift}
+	ids := map[string]domain.Credits{r.Findings[1].Scope.ID: r.Findings[1].Drift, r.Findings[2].Scope.ID: r.Findings[2].Drift}
 	if ids["plus"] != 1000 || ids["minus"] != -1000 {
 		tb.Fatalf("the two worst are %+v: a +1000 and a -1000 are two findings", ids)
 	}

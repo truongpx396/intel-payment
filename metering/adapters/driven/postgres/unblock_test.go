@@ -58,8 +58,8 @@ func TestAnUnblockWaitsForABookingInProgressAndClearsWhatItWrote(t *testing.T) {
 
 	clearing := make(chan struct{})
 	type outcome struct {
-		cleared bool
-		err     error
+		got ports.BookUnblock
+		err error
 	}
 	done := make(chan outcome, 1)
 	err := books.InTx(ctx, s, func(ctx context.Context, tx ports.BookTx) error {
@@ -69,8 +69,8 @@ func TestAnUnblockWaitsForABookingInProgressAndClearsWhatItWrote(t *testing.T) {
 		}
 		go func() {
 			close(clearing)
-			cleared, err := books.ClearBlocked(ctx, s)
-			done <- outcome{cleared, err}
+			got, err := books.ClearBlocked(ctx, s)
+			done <- outcome{got, err}
 		}()
 		<-clearing
 		select {
@@ -86,8 +86,9 @@ func TestAnUnblockWaitsForABookingInProgressAndClearsWhatItWrote(t *testing.T) {
 	}
 	select {
 	case o := <-done:
-		if o.err != nil || !o.cleared {
-			t.Fatalf("the unblock after the booking: %+v, want it to have cleared the block the booking left", o)
+		// It reports the sequence the booking left, not the one it started from: the hot account is cleared at the sequence the books are at.
+		if o.err != nil || !o.got.Cleared || o.got.AppliedSeq != 11 {
+			t.Fatalf("the unblock after the booking: %+v, want it to have cleared the block the booking left, at sequence 11", o)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("the unblock never finished after the booking committed")

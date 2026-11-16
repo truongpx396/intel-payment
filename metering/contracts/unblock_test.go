@@ -55,6 +55,7 @@ func TestBooksUnblockContractRejectsEveryBrokenClearerByName(t *testing.T) {
 		{"reads, looks away and writes: two callers both see the block", func(d *contracts.MemBooksUnblockDefects) { d.NotAtomic = true }, []string{contracts.CaseBUTogether}},
 		{"clears for a caller who has gone", func(d *contracts.MemBooksUnblockDefects) { d.IgnoresCancel = true }, []string{contracts.CaseBUCancelled}},
 		{"does not check that the scope is one", func(d *contracts.MemBooksUnblockDefects) { d.AcceptsAnyScope = true }, []string{contracts.CaseBUInvalidScope}},
+		{"reports the applied sequence as zero", func(d *contracts.MemBooksUnblockDefects) { d.ForgetsTheSequence = true }, []string{contracts.CaseBUClears, contracts.CaseBUNotBlocked, contracts.CaseBUTwice}},
 	}
 	for _, b := range broken {
 		t.Run(b.name, func(t *testing.T) {
@@ -88,6 +89,9 @@ func TestHotUnblockContractRejectsEveryBrokenClearerByName(t *testing.T) {
 		{"reads, looks away and writes: two callers both see the block", func(d *contracts.MemHotUnblockDefects) { d.NotAtomic = true }, []string{contracts.CaseHUTogether}},
 		{"advances the account's sequence", func(d *contracts.MemHotUnblockDefects) { d.MovesTheSequence = true }, []string{contracts.CaseHUClears}},
 		{"answers a scope with no account as an error", func(d *contracts.MemHotUnblockDefects) { d.RefusesACold = true }, []string{contracts.CaseHUNoAccount}},
+		{"clears whatever sequence the books were at", func(d *contracts.MemHotUnblockDefects) { d.IgnoresTheSequence = true }, []string{contracts.CaseHURaced}},
+		{"reports a race and clears anyway", func(d *contracts.MemHotUnblockDefects) { d.ClearsWhileSayingRaced = true }, []string{contracts.CaseHURaced}},
+		{"says raced for an account that holds no block", func(d *contracts.MemHotUnblockDefects) { d.RacesWhenNothingIsHeld = true }, []string{contracts.CaseHUNotBlocked}},
 	}
 	for _, b := range broken {
 		t.Run(b.name, func(t *testing.T) {

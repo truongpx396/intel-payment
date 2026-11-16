@@ -62,7 +62,7 @@ func hotUnblockWorld(mode redistest.Mode) contracts.HotUnblockFactory {
 			},
 			Install: func(tb testing.TB, s domain.Scope, blocked bool) {
 				tb.Helper()
-				out, err := st.Rehydrate(ctx, s, ports.RehydrateState{ShardGen: 1, AppliedSeq: 41, Blocked: blocked, Pools: map[domain.Pool]domain.Credits{"general": 500, "promo": 25}})
+				out, err := st.Rehydrate(ctx, s, ports.RehydrateState{ShardGen: 1, AppliedSeq: contracts.HotUnblockSeq, Blocked: blocked, Pools: map[domain.Pool]domain.Credits{"general": 500, "promo": 25}})
 				if err != nil || out != ports.RehydrateInstalled {
 					tb.Fatalf("install the account of %s: %v, %v", s.Tag(), out, err)
 				}

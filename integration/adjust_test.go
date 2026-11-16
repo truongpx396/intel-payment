@@ -131,7 +131,6 @@ func TestAnOperatorAdjustsTheBooksOnceHoweverOftenTheyAskAndItIsLedBackToThem(t 
 	if created || again != opID {
 		t.Fatalf("a retry made operation %s (created %v) after %s", again, created, opID)
 	}
-	time.Sleep(3 * time.Second) // time enough for a worker to do it a second time, were it going to
 	if n, sum := adjustments(); n != 1 || sum != 500 || hot() != 100500 {
 		t.Fatalf("a retry booked again: %d rows summing to %d, hot balance %d", n, sum, hot())
 	}

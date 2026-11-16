@@ -43,6 +43,7 @@ type MemBooksUnblockDefects struct {
 	NotAtomic           bool // reads, looks away, then writes: two callers both see the block
 	IgnoresCancel       bool // clears for a caller who has gone
 	AcceptsAnyScope     bool // does not check that the scope is one
+	ForgetsTheSequence  bool // reports the applied sequence as zero, so the hot tier is asked to clear at a sequence that is not the books'
 }
 
 // MemBooksUnblock is an in-memory ports.BookUnblocker.
@@ -61,15 +62,15 @@ func NewMemBooksUnblock() *MemBooksUnblock {
 }
 
 // ClearBlocked implements ports.BookUnblocker.
-func (m *MemBooksUnblock) ClearBlocked(ctx context.Context, s domain.Scope) (bool, error) {
+func (m *MemBooksUnblock) ClearBlocked(ctx context.Context, s domain.Scope) (ports.BookUnblock, error) {
 	if !m.Defects.AcceptsAnyScope {
 		if err := s.Validate(); err != nil {
-			return false, err
+			return ports.BookUnblock{}, err
 		}
 	}
 	if !m.Defects.IgnoresCancel {
 		if err := ctx.Err(); err != nil {
-			return false, err
+			return ports.BookUnblock{}, err
 		}
 	}
 	s = s.Normalized()
@@ -88,7 +89,7 @@ func (m *MemBooksUnblock) ClearBlocked(ctx context.Context, s domain.Scope) (boo
 		if m.Defects.InventsAWatermark {
 			m.marks[s] = ports.Watermark{Exists: true}
 		}
-		return m.Defects.ReportsAlways, nil
+		return ports.BookUnblock{Cleared: m.Defects.ReportsAlways}, nil
 	}
 	if m.Defects.NotAtomic {
 		m.mu.Unlock()
@@ -96,9 +97,13 @@ func (m *MemBooksUnblock) ClearBlocked(ctx context.Context, s domain.Scope) (boo
 		m.mu.Lock()
 	}
 	defer m.mu.Unlock()
+	at := w.AppliedSeq
+	if m.Defects.ForgetsTheSequence {
+		at = 0
+	}
 	held := w.Blocked
 	if !held && !m.Defects.ReportsAlways {
-		return false, nil
+		return ports.BookUnblock{AppliedSeq: at}, nil
 	}
 	w.Blocked = false
 	if m.Defects.ResetsProgress {
@@ -113,7 +118,7 @@ func (m *MemBooksUnblock) ClearBlocked(ctx context.Context, s domain.Scope) (boo
 			}
 		}
 	}
-	return held || m.Defects.ReportsAlways, nil
+	return ports.BookUnblock{Cleared: held || m.Defects.ReportsAlways, AppliedSeq: at}, nil
 }
 
 // World is the honest or broken clearer as a BooksUnblockWorld.
@@ -135,13 +140,16 @@ func (m *MemBooksUnblock) World() BooksUnblockWorld {
 
 // MemHotUnblockDefects are the deliberate faults a MemHotUnblock can be given. HotUnblockContract is shown to reject each by name.
 type MemHotUnblockDefects struct {
-	ClearsAStaleAccount bool // reaches into an account of an older generation and says it cleared it
-	ClearsWhileFrozen   bool // clears in a frozen shard, with no complaint
-	ReportsAlways       bool // says it cleared a block whether or not there was one
-	MakesAnAccount      bool // brings an account into being for a scope that had none
-	NotAtomic           bool // reads, looks away, then writes: two callers both see the block
-	MovesTheSequence    bool // advances the account's sequence as it clears
-	RefusesACold        bool // answers a scope with no account as an error
+	ClearsAStaleAccount    bool // reaches into an account of an older generation and says it cleared it
+	ClearsWhileFrozen      bool // clears in a frozen shard, with no complaint
+	ReportsAlways          bool // says it cleared a block whether or not there was one
+	MakesAnAccount         bool // brings an account into being for a scope that had none
+	NotAtomic              bool // reads, looks away, then writes: two callers both see the block
+	MovesTheSequence       bool // advances the account's sequence as it clears
+	RefusesACold           bool // answers a scope with no account as an error
+	IgnoresTheSequence     bool // clears whatever sequence the books were at: a write-off the writer has not booked would set the block again
+	ClearsWhileSayingRaced bool // keeps its word to the caller and not to the account: reports a race, and clears
+	RacesWhenNothingIsHeld bool // says raced for an account that holds no block, which would fail an unblock of a busy account for nothing
 }
 
 type memHotAccount struct {
@@ -168,15 +176,21 @@ func NewMemHotUnblock() *MemHotUnblock {
 }
 
 // ClearBlocked implements ports.HotUnblocker.
-func (m *MemHotUnblock) ClearBlocked(_ context.Context, s domain.Scope) (bool, error) {
+func (m *MemHotUnblock) ClearBlocked(_ context.Context, s domain.Scope, appliedSeq int64) (ports.HotUnblockOutcome, error) {
 	if err := s.Validate(); err != nil {
-		return false, err
+		return ports.HotUnblockNothing, err
 	}
 	s = s.Normalized()
 	m.mu.Lock()
 	if m.frozen[s] && !m.Defects.ClearsWhileFrozen {
 		m.mu.Unlock()
-		return false, domain.ErrShardFrozen
+		return ports.HotUnblockNothing, domain.ErrShardFrozen
+	}
+	reported := func(ok bool) ports.HotUnblockOutcome {
+		if ok || m.Defects.ReportsAlways {
+			return ports.HotUnblockCleared
+		}
+		return ports.HotUnblockNothing
 	}
 	a, ok := m.acct[s]
 	switch {
@@ -186,14 +200,25 @@ func (m *MemHotUnblock) ClearBlocked(_ context.Context, s domain.Scope) (bool, e
 		}
 		m.mu.Unlock()
 		if m.Defects.RefusesACold {
-			return false, domain.ErrColdScope
+			return ports.HotUnblockNothing, domain.ErrColdScope
 		}
-		return m.Defects.ReportsAlways, nil
+		return reported(false), nil
 	case m.stale[s] && !m.Defects.ClearsAStaleAccount:
 		m.mu.Unlock()
-		return m.Defects.ReportsAlways, nil
+		return reported(false), nil
 	}
-	held := a.blocked
+	held, seq := a.blocked, a.seq
+	if !held && m.Defects.RacesWhenNothingIsHeld && seq != appliedSeq {
+		m.mu.Unlock()
+		return ports.HotUnblockRaced, nil
+	}
+	if held && seq != appliedSeq && !m.Defects.IgnoresTheSequence {
+		if m.Defects.ClearsWhileSayingRaced {
+			a.blocked = false
+		}
+		m.mu.Unlock()
+		return ports.HotUnblockRaced, nil
+	}
 	if m.Defects.NotAtomic {
 		m.mu.Unlock()
 		m.seen.wait()
@@ -204,7 +229,7 @@ func (m *MemHotUnblock) ClearBlocked(_ context.Context, s domain.Scope) (bool, e
 	if m.Defects.MovesTheSequence {
 		a.seq++
 	}
-	return held || m.Defects.ReportsAlways, nil
+	return reported(held), nil
 }
 
 // World is the honest or broken clearer as a HotUnblockWorld.
@@ -214,7 +239,7 @@ func (m *MemHotUnblock) World() HotUnblockWorld {
 		NewScope: func(testing.TB) domain.Scope { return ubScope("t1") },
 		Install: func(_ testing.TB, s domain.Scope, blocked bool) {
 			m.mu.Lock()
-			m.acct[s.Normalized()] = &memHotAccount{live: true, blocked: blocked, seq: 41, pools: map[domain.Pool]domain.Credits{"general": 500}}
+			m.acct[s.Normalized()] = &memHotAccount{live: true, blocked: blocked, seq: HotUnblockSeq, pools: map[domain.Pool]domain.Credits{"general": 500}}
 			m.mu.Unlock()
 		},
 		Account: func(_ testing.TB, s domain.Scope) ports.HotAccount {

@@ -234,11 +234,25 @@ func TestAnOperationDoneAgainBooksNothingMore(t *testing.T) {
 	if len(g.byKey) != 1 || g.balance != 970 {
 		t.Fatalf("%d adjustments were booked and the balance is %d, want 1 and 970", len(g.byKey), g.balance)
 	}
-	var a, b struct{ Applied bool }
+	// The adjustment is in, whichever run it was that put it there; the second run says it found it there, and does not say what it moved (it
+	// did not move anything, and what the first run moved was the first run's to say — a result of zero would be a claim that nothing happened,
+	// recorded for good on an adjustment that did).
+	var a, b struct {
+		Applied  bool   `json:"applied"`
+		Replayed bool   `json:"replayed"`
+		IdemKey  string `json:"idem_key"`
+	}
 	_ = json.Unmarshal(first, &a)
 	_ = json.Unmarshal(second, &b)
-	if !a.Applied || b.Applied {
-		t.Fatalf("the first run says applied=%v and the second applied=%v: want true, then false (a replay)", a.Applied, b.Applied)
+	if !a.Applied || a.Replayed || !b.Applied || !b.Replayed || b.IdemKey != "admin-adjustment:"+opA {
+		t.Fatalf("the first run says %+v and the second %+v: want applied for both, replayed only for the second, and the key", a, b)
+	}
+	for _, k := range []string{"delta", "writeoff", "balance"} {
+		var raw map[string]json.RawMessage
+		_ = json.Unmarshal(second, &raw)
+		if _, has := raw[k]; has {
+			t.Fatalf("a replay reports %q (%s): it moved nothing and does not know what the first run moved", k, second)
+		}
 	}
 }
 
@@ -293,8 +307,8 @@ func TestAnAdjustmentTheHotTierRefusedFailsPlainlyAndOneItDidNotConfirmSaysItMay
 	refused := newFakeGranter()
 	refused.err = domain.ErrShardFrozen
 	_, err := app.AdjustmentExecutor(refused)(t.Context(), adjustOp(opA, adjParams))
-	if !errors.Is(err, domain.ErrShardFrozen) || strings.Contains(err.Error(), "may have been applied") {
-		t.Fatalf("a refused adjustment came to %v: it failed, and nothing was applied", err)
+	if !errors.Is(err, domain.ErrShardFrozen) || strings.Contains(err.Error(), "may have been applied") || errors.Is(err, app.ErrRetryOperation) {
+		t.Fatalf("a refused adjustment came to %v: it failed, nothing was applied, and doing it again would be refused again", err)
 	}
 
 	unsure := newFakeGranter()
@@ -302,6 +316,11 @@ func TestAnAdjustmentTheHotTierRefusedFailsPlainlyAndOneItDidNotConfirmSaysItMay
 	_, err = app.AdjustmentExecutor(unsure)(t.Context(), adjustOp(opA, adjParams))
 	if !errors.Is(err, domain.ErrHotStoreUnavailable) || !strings.Contains(err.Error(), "may have been applied") || !strings.Contains(err.Error(), "admin-adjustment:"+opA) {
 		t.Fatalf("an unconfirmed adjustment came to %v: it must say it may have been applied, and which key to look for", err)
+	}
+	// The key is the operation's, so doing it again is safe whether the first run applied it (a replay) or did not (an adjustment): the
+	// worker is told so, and does not leave a person to decide from error text whether to ask again and adjust twice.
+	if !errors.Is(err, app.ErrRetryOperation) {
+		t.Fatalf("an unconfirmed adjustment came to %v: it is safe to run again and must say so", err)
 	}
 }
 
@@ -315,5 +334,51 @@ func TestAnAdjustmentWhoseArgumentsCannotBeReadFailsTheOperationAndGrantsNothing
 		if n := len(g.grants()); n != 0 {
 			t.Errorf("arguments %q made %d grants", p, n)
 		}
+	}
+}
+
+// Constitution II: the same operation delivered concurrently — two workers that both believe they hold it, a lease that lapsed under a slow
+// one — is one adjustment. The hot tier tells a replay from a new key by the key and the fingerprint; this is what the executor must give it.
+func TestTheSameOperationRunByManyWorkersAtOnceIsOneAdjustment(t *testing.T) {
+	t.Parallel()
+	g := newFakeGranter()
+	ex := app.AdjustmentExecutor(g)
+	const workers = 16
+	results := make(chan json.RawMessage, workers)
+	var wg sync.WaitGroup
+	for i := range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			op := adjustOp(opA, adjParams)
+			op.Attempts = i + 1 // each worker holds it as its own attempt
+			out, err := ex(t.Context(), op)
+			if err != nil {
+				t.Errorf("worker %d: %v", i, err)
+				return
+			}
+			results <- out
+		}()
+	}
+	wg.Wait()
+	close(results)
+	fresh, replayed := 0, 0
+	for out := range results {
+		var r struct {
+			Applied  bool `json:"applied"`
+			Replayed bool `json:"replayed"`
+		}
+		_ = json.Unmarshal(out, &r)
+		switch {
+		case r.Applied && !r.Replayed:
+			fresh++
+		case r.Applied && r.Replayed:
+			replayed++
+		default:
+			t.Errorf("a worker's result says %s", out)
+		}
+	}
+	if len(g.byKey) != 1 || g.balance != 970 || fresh != 1 || replayed != workers-1 {
+		t.Fatalf("%d adjustments booked, balance %d, %d fresh and %d replayed: want 1, 970, 1 and %d", len(g.byKey), g.balance, fresh, replayed, workers-1)
 	}
 }
