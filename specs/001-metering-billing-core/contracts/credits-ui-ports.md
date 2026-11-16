@@ -63,10 +63,16 @@ Four seams a host swaps independently: the **`CreditsSource`** (its transport), 
  *  never be rendered under the wrong product's labels. */
 export interface Scope { readonly realm?: string; readonly kind: string; readonly id: string; }
 
+declare const integerBrand: unique symbol;
+/** An integer, and only an integer. `number` cannot say so, and a float that reaches a balance, a delta or a total is how a
+ *  reconciliation discrepancy gets rounded out of sight of the person best placed to notice it. A value becomes an `Int` where it
+ *  enters the package (`quantity()` in model.ts), which REFUSES anything that is not a safe integer instead of rounding it. */
+export type Int = number & { readonly [integerBrand]: true };
+
 /** Integer minor units. Never a float — the money rule from metering-ports.md holds
  *  identically in the view layer, where a rounded display is how a reconciliation
  *  discrepancy gets hidden from the person best placed to notice it. */
-export type Quantity = number;
+export type Quantity = Int;
 
 /** What the host meters. `credits` is OUR value, not the package's vocabulary. */
 export interface UnitLabels {
@@ -76,8 +82,8 @@ export interface UnitLabels {
   /** Internal units per displayed unit. The books keep a FINE unit (the reference is
    *  1 credit = 1 µ$ of list price); a host shows dollars with scale 1_000_000 and 2 decimals,
    *  or "credits" of $0.001 with scale 1000. Integer division plus a remainder — never a float. */
-  readonly scale?: number;
-  readonly decimals?: number;
+  readonly scale?: Int;
+  readonly decimals?: Int;
   readonly format?: (q: Quantity) => string;  // default: grouped integer ÷ scale, `decimals` places
 }
 
@@ -100,7 +106,7 @@ export interface LimitView {
    *  not render them the same way. */
   readonly window: "period" | "day" | "hour" | "job" | "call" | "none";
   readonly resetsAt?: string;       // ISO; omitted when window === "call" | "none"
-  readonly warnAtPct: number;       // from Limit.WarnAt — NOT a hardcoded 80
+  readonly warnAtPct: Int;          // from Limit.WarnAt, a whole percent — NOT a hardcoded 80; 0 = no warning (as in the engine)
   readonly denyCode?: string;       // maps to the host's 402/429 ([metering-ports.md](./metering-ports.md))
   readonly scopeHint?: string;      // "all members" | "you" — set for a subject limit (Limit.Subject)
 }
@@ -108,7 +114,7 @@ export interface LimitView {
 export interface BalanceView {
   readonly remaining: Quantity;
   readonly granted: Quantity;
-  readonly primaryLimitKey: string; // which LimitView the hero mirrors
+  readonly primaryLimitKey: string; // which LimitView the hero mirrors; "" when the realm shows no limit
   readonly burnRatePerDay?: Quantity;
   /** Per credit pool, in draw order, when the realm defines pools beyond `general` — e.g.
    *  promotional credits that are spent first, or credits usable only on some resources. */
@@ -186,9 +192,9 @@ export interface PlanOffer {
   readonly tagline?: string;
   /** null = not self-serve (invoiced). Renders a `contact` action, NOT a disabled
    *  buy button — a greyed-out purchase control implies checkout that doesn't exist. */
-  readonly price: { readonly minor: number; readonly currency: string } | null;
+  readonly price: { readonly minor: Int; readonly currency: string } | null;
   readonly interval?: "month" | "year";
-  readonly creditAllotment: number | null;     // null = custom/negotiated
+  readonly creditAllotment: Quantity | null;   // null = custom/negotiated
   readonly features?: ReadonlyArray<{ readonly label: string; readonly value: string }>;
   readonly current?: boolean;                  // renders inert, never a no-op button
   /** Set when this offer cannot be taken from the current position. The package
@@ -207,6 +213,8 @@ export interface PlanCatalog {
   readonly canPurchase: boolean;
   readonly cannotPurchaseReason?: string;
   readonly requestPath?: { readonly label: string; readonly href: string };
+  /** Where an offer that is not self-serve (`price: null`) sends the viewer. Absent: the offer says so in words and exposes no control. */
+  readonly contact?: { readonly label: string; readonly href: string };
 }
 
 /** Fulfilment is webhook-driven, so `granted` is a state the SERVER reports —
