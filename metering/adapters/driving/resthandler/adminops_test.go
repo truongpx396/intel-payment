@@ -76,6 +76,7 @@ var opRoutes = []opRoute{
 	{"rehydrate", "/v1/admin/rehydrate?realm=acme", `{"scope":{"kind":"workspace","id":"w1"},` + opWho + `}`, ports.AdminRehydrate, `{"scope":{"kind":"workspace","id":"w1"}}`},
 	{"replay", "/v1/admin/dead-letters/5b0e6f2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b/replay?realm=acme", `{` + opWho + `}`, ports.AdminReplay, `{"id":"5b0e6f2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b"}`},
 	{"subdrift", "/v1/admin/subdrift?realm=acme", `{"account":"stripe-live",` + opWho + `}`, ports.AdminSubdrift, `{"account":"stripe-live"}`},
+	{"unblock", "/v1/admin/unblock?realm=acme", `{"scope":{"kind":"workspace","id":"w1"},` + opWho + `}`, ports.AdminUnblock, `{"scope":{"kind":"workspace","id":"w1"}}`},
 }
 
 func TestEveryOperationIsAcceptedRecordedAndPointedTo(t *testing.T) {
