@@ -27,6 +27,17 @@ describe("the layout the screenshots asked for", () => {
     expect(rule(".cu-spend svg")).toMatch(/height:\s*\d+px/);
   });
 
+  test("a wide child cannot widen the page: the grid column may shrink, and the ledger scrolls inside its own box", () => {
+    // found at 390px: a grid column sizes to its widest child, so the ledger table made the whole page 525px wide
+    expect(rule(".cu-panel")).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+    expect(rule(".cu-ledger")).toMatch(/overflow-x:\s*auto/);
+  });
+
+  test("a group title inside the plans is no larger than the section title above it", () => {
+    expect(rule(".cu-plans h3")).toMatch(/font-size:\s*1rem/);
+    expect(rule(".cu-heading")).toMatch(/font-size:\s*1rem/);
+  });
+
   test("a section title is set apart from the text around it", () => {
     expect(rule(".cu-heading")).toMatch(/margin:/);
     expect(rule(".cu-heading")).toMatch(/font-size:/);
