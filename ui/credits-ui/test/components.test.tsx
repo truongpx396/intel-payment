@@ -468,6 +468,17 @@ describe("the ledger", () => {
     expect(row("r2").querySelector('[data-cu="generic"]')).toBeNull(); // claimed by the model column
   });
 
+  test("the ledger scrolls sideways on a narrow screen, so a keyboard must be able to reach it", () => {
+    draw();
+    const region = screen.getByRole("region", { name: "Activity" });
+    expect(region.getAttribute("tabindex")).toBe("0");
+  });
+
+  test("an empty ledger has nothing to scroll and is not a tab stop", () => {
+    render(<LedgerTable rows={[]} labels={llm} />);
+    expect(screen.getByRole("region", { name: "Activity" }).hasAttribute("tabindex")).toBe(false);
+  });
+
   test("the rows keep the order the server sent", () => {
     draw();
     expect([...document.querySelectorAll("[data-row]")].map((r) => r.getAttribute("data-row"))).toEqual(ledgerRows().map((r) => r.id));
