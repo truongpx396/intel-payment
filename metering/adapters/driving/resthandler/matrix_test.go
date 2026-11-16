@@ -43,7 +43,10 @@ var wantPrivilege = map[string]auth.Privilege{
 	"POST /v1/admin/rehydrate":                auth.Admin,
 	"POST /v1/admin/dead-letters/{id}/replay": auth.Admin,
 	"POST /v1/admin/subdrift":                 auth.Admin,
+	"POST /v1/admin/unblock":                  auth.Admin,
+	"POST /v1/admin/adjustments":              auth.Admin,
 	"GET /v1/admin/operations/{id}":           auth.Admin,
+	"GET /v1/admin/drift":                     auth.Admin,
 	"GET /v1/transfers/{idem_key}":            auth.Grant,
 }
 
@@ -51,7 +54,7 @@ func productionTable(t *testing.T) *resthandler.Registry {
 	t.Helper()
 	stub := &stubMeter{}
 	reg, err := resthandler.BuildRegistry(resthandler.Config{
-		Meter: stub, Balance: stub, Clock: contracts.NewFakeClock(epoch), Ledger: &stubReads{}, Transfers: &stubReads{}, Credits: &stubCredits{}, Admin: &stubAdmin{}, Operations: &stubOps{},
+		Meter: stub, Balance: stub, Clock: contracts.NewFakeClock(epoch), Ledger: &stubReads{}, Transfers: &stubReads{}, Credits: &stubCredits{}, Admin: &stubAdmin{}, Operations: &stubOps{}, Drift: &stubDrift{},
 		Ready: &stubReady{}, Metrics: http.NotFoundHandler(),
 		Auth: auth.AuthenticatorFunc(func(context.Context, auth.Credential) (auth.Principal, error) {
 			return auth.Principal{}, auth.ErrUnauthenticated
@@ -122,7 +125,7 @@ func matrixHandler(t *testing.T) http.Handler {
 	}
 	// Either credential: the service runs one mode at a time, and the matrix holds for each.
 	stub := &stubMeter{}
-	reg, err := resthandler.BuildRegistry(resthandler.Config{Meter: stub, Balance: stub, Clock: contracts.NewFakeClock(epoch), Ledger: &stubReads{}, Transfers: &stubReads{}, Credits: &stubCredits{}, Admin: &stubAdmin{}, Operations: &stubOps{}, Auth: bearer})
+	reg, err := resthandler.BuildRegistry(resthandler.Config{Meter: stub, Balance: stub, Clock: contracts.NewFakeClock(epoch), Ledger: &stubReads{}, Transfers: &stubReads{}, Credits: &stubCredits{}, Admin: &stubAdmin{}, Operations: &stubOps{}, Drift: &stubDrift{}, Auth: bearer})
 	if err != nil {
 		t.Fatal(err)
 	}

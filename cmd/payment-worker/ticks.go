@@ -31,6 +31,7 @@ type tickWork struct {
 	clock    ports.Clock
 	r        *runner
 	writer   *app.Writer
+	grants   app.Granter // the engine: an operator's adjustment is a Grant like any other
 	replayer *app.JournalReplayer
 	expirer  *app.Expirer
 	books    *pgadapter.Books

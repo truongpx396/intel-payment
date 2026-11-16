@@ -202,7 +202,7 @@ func runWorker(ctx context.Context, s settings, log *slog.Logger, getenv func(st
 	// The scheduled ticks, claimed so that a tick published twice, or delivered to two replicas, is worked once.
 	r := &runner{s: s, log: log, books: st.Books, writer: writer, replayer: replayer, expirer: expirer, deadLetters: dead}
 	work := &tickWork{
-		s: s, log: log, clock: system.Clock{}, r: r, writer: writer, replayer: replayer, expirer: expirer, books: st.Books,
+		s: s, log: log, clock: system.Clock{}, r: r, writer: writer, grants: engine, replayer: replayer, expirer: expirer, books: st.Books,
 		maint: pgadapter.NewMaintenance(st.Pool), usage: pgadapter.NewUsage(st.Pool), stream: stream, bus: bus, pay: pay, out: out, met: metrics,
 	}
 	ticks, err := app.NewTicks(app.TicksDeps{Claims: pgadapter.NewClaims(st.Pool), Metrics: metrics, Prefix: cfg.SubjectPrefix, Handlers: work.handlers()})

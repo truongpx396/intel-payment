@@ -63,6 +63,17 @@ type (
 	ReplayParams struct {
 		ID string `json:"id"`
 	}
+	// AdjustParams: the scope and pool to correct, and by how much — signed, whole credits. The pool is always spelled out (the general
+	// pool when the request named none), so that two spellings of one request are one operation.
+	AdjustParams struct {
+		Scope  ScopeParams `json:"scope"`
+		Pool   string      `json:"pool"`
+		Amount int64       `json:"amount"`
+	}
+	// UnblockParams: the scope whose block_and_flag an operator clears, in the books and then in the hot account.
+	UnblockParams struct {
+		Scope ScopeParams `json:"scope"`
+	}
 )
 
 // AdminOperationsDeps are what taking a request needs.
@@ -71,6 +82,9 @@ type AdminOperationsDeps struct {
 	Metrics ports.Metrics // default: no-op
 	// Shards is the deployment's shard count: a request that names one beyond it is refused where it is read, not after it has waited.
 	Shards int
+	// MaxAmount is the most one operation may move, as the deployment configures it (metering.Config.MaxOperationAmount): an adjustment
+	// beyond it is refused where it is read, not after it has waited for a worker and failed at the hot tier. Default domain.MaxOperationAmount.
+	MaxAmount domain.Credits
 	// Kinds are the kinds the composition root adds to the engine's own.
 	Kinds []AdminKind
 }
@@ -94,11 +108,22 @@ func NewAdminOperations(d AdminOperationsDeps) (*AdminOperations, error) {
 	if d.Shards <= 0 {
 		errs = append(errs, errors.New("the deployment's shard count is required: without it a shard cannot be told from a typo"))
 	}
+	if d.MaxAmount < 0 || d.MaxAmount > domain.MaxHotAmount {
+		errs = append(errs, errors.New("MaxAmount must be in (0, 2^52]: hot-tier arithmetic is exact only within ±2^53"))
+	}
+	maxAmount := d.MaxAmount
+	if maxAmount == 0 {
+		maxAmount = domain.MaxOperationAmount
+	}
 	kinds := map[ports.AdminOperationKind]AdminKind{
 		ports.AdminReconcile: {Kind: ports.AdminReconcile, Parse: func(_ string, p json.RawMessage) (json.RawMessage, error) { return parseReconcile(p, d.Shards) }},
 		ports.AdminRecover:   {Kind: ports.AdminRecover, Parse: func(_ string, p json.RawMessage) (json.RawMessage, error) { return parseRecover(p, d.Shards) }},
 		ports.AdminRehydrate: {Kind: ports.AdminRehydrate, Parse: parseRehydrate},
-		ports.AdminReplay:    {Kind: ports.AdminReplay, Parse: func(_ string, p json.RawMessage) (json.RawMessage, error) { return parseReplay(p) }},
+		ports.AdminUnblock:   {Kind: ports.AdminUnblock, Parse: parseUnblock},
+		ports.AdminAdjust: {Kind: ports.AdminAdjust, Parse: func(realm string, p json.RawMessage) (json.RawMessage, error) {
+			return parseAdjust(realm, p, maxAmount)
+		}},
+		ports.AdminReplay: {Kind: ports.AdminReplay, Parse: func(_ string, p json.RawMessage) (json.RawMessage, error) { return parseReplay(p) }},
 	}
 	for _, k := range d.Kinds {
 		if k.Kind == "" || k.Parse == nil {
@@ -242,6 +267,60 @@ func parseRehydrate(realm string, raw json.RawMessage) (json.RawMessage, error) 
 	return json.Marshal(RehydrateParams{Scope: *in.Scope})
 }
 
+// parseUnblock reads the one scope an unblock names. The realm is the request's and never the arguments': an operator of one realm cannot
+// name a scope of another, and a scope with a realm of its own in the arguments is refused as a field nobody knows.
+func parseUnblock(realm string, raw json.RawMessage) (json.RawMessage, error) {
+	var in struct {
+		Scope *ScopeParams `json:"scope"`
+	}
+	if err := decodeStrict(raw, &in); err != nil {
+		return nil, err
+	}
+	if in.Scope == nil {
+		return nil, fmt.Errorf("%w: scope is required: {\"scope\": {\"kind\": ..., \"id\": ...}}", domain.ErrInvalid)
+	}
+	if err := (domain.Scope{Realm: domain.Realm(realm), Kind: in.Scope.Kind, ID: in.Scope.ID}).Validate(); err != nil {
+		return nil, err
+	}
+	return json.Marshal(UnblockParams{Scope: *in.Scope})
+}
+
+// parseAdjust reads what an adjustment may carry and nothing else: one scope of the request's realm, one pool, and one non-zero amount of
+// whole credits within what an operation may move. The reason is reserved and the idempotency key is the operation's, so neither is
+// accepted from the caller; a realm in the arguments, a field nobody knows and an amount that is not written as an integer are refused,
+// because an amount rounded or truncated on the way in would be a different correction from the one the operator meant.
+func parseAdjust(realm string, raw json.RawMessage, maxAmount domain.Credits) (json.RawMessage, error) {
+	var in struct {
+		Scope  *ScopeParams `json:"scope"`
+		Pool   string       `json:"pool"`
+		Amount *int64       `json:"amount"`
+	}
+	if err := decodeStrict(raw, &in); err != nil {
+		return nil, err
+	}
+	if in.Scope == nil {
+		return nil, fmt.Errorf("%w: scope is required: {\"scope\": {\"kind\": ..., \"id\": ...}}", domain.ErrInvalid)
+	}
+	if err := (domain.Scope{Realm: domain.Realm(realm), Kind: in.Scope.Kind, ID: in.Scope.ID}).Validate(); err != nil {
+		return nil, err
+	}
+	pool := domain.Pool(in.Pool)
+	if err := pool.Validate(); err != nil {
+		return nil, err
+	}
+	if in.Amount == nil {
+		return nil, fmt.Errorf("%w: amount is required: a signed whole number of credits", domain.ErrInvalid)
+	}
+	amount := *in.Amount
+	if amount == 0 {
+		return nil, fmt.Errorf("%w: an adjustment of zero credits changes nothing", domain.ErrInvalid)
+	}
+	if amount > int64(maxAmount) || amount < -int64(maxAmount) {
+		return nil, fmt.Errorf("%w: an adjustment moves at most %d credits", domain.ErrInvalid, int64(maxAmount))
+	}
+	return json.Marshal(AdjustParams{Scope: *in.Scope, Pool: string(pool.Or()), Amount: amount})
+}
+
 // A dead letter's id is a lower-case UUID: anything else is not an id this deployment issued.
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
@@ -255,6 +334,16 @@ func parseReplay(raw json.RawMessage) (json.RawMessage, error) {
 	}
 	return json.Marshal(in)
 }
+
+// ErrRetryOperation, wrapped in what an executor returns, says the operation did not come to an outcome and is SAFE TO RUN AGAIN — because its
+// effect is keyed by the operation, so running it again either finds the effect already there (a replay) or has it. The worker leaves the
+// operation as it would one whose worker died, to be claimed again when the lease lapses, up to MaxAdminAttempts; it records a failure only
+// when the attempts are spent, with the executor's own text. It is for what cannot be known from here — an adjustment whose confirmation never
+// came back — and never for an executor that was refused: doing that again would be refused again.
+var ErrRetryOperation = errors.New("did not come to an outcome, and is safe to run again")
+
+// MaxAdminAttempts is how often an operation that is safe to run again is claimed before it is recorded as failed.
+const MaxAdminAttempts = 5
 
 // AdminExecutor does one kind of operation and says what it came to as JSON. It is run again if its worker dies, so it must be safe to run
 // again: every operation the engine defines is, and an executor that is not is a bug in the executor.
@@ -318,6 +407,13 @@ func (w *AdminWorker) RunOne(ctx context.Context) (bool, error) {
 	if runErr != nil && ctx.Err() != nil {
 		w.d.Log.Warn("an operator request was interrupted and will be done by the next worker", "operation", op.ID, "kind", string(op.Kind), "attempt", op.Attempts)
 		return true, ctx.Err()
+	}
+	if runErr != nil && errors.Is(runErr, ErrRetryOperation) && op.Attempts < MaxAdminAttempts {
+		// Not recorded, and not silent: the claim lapses and the next one takes it, as after a worker that died. The count says it happened.
+		w.d.Metrics.Count(ports.MetricAdminOperations, 1, ports.Labels{"kind": string(op.Kind), "outcome": "retry"})
+		w.d.Log.Warn("an operator request did not come to an outcome and is safe to run again: the next claim will", "operation", op.ID, "kind", string(op.Kind),
+			"attempt", op.Attempts, "of", MaxAdminAttempts, "error", runErr.Error())
+		return true, nil
 	}
 	status, errText, outcome := ports.AdminSucceeded, "", "succeeded"
 	if runErr != nil {

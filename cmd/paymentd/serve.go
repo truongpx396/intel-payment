@@ -194,7 +194,7 @@ func wire(ctx context.Context, s settings, log *slog.Logger, getenv func(string)
 
 	// The operator's requests (R112): paymentd has no writer, so it records them — with the person and the reason — and the worker does them.
 	adminOps, err := app.NewAdminOperations(app.AdminOperationsDeps{
-		Store: pgadapter.NewAdminOps(st.Pool, system.Clock{}), Metrics: metrics, Shards: cfg.Shards, Kinds: []app.AdminKind{payments.SubdriftKind()},
+		Store: pgadapter.NewAdminOps(st.Pool, system.Clock{}), Metrics: metrics, Shards: cfg.Shards, MaxAmount: cfg.MaxOperationAmount, Kinds: []app.AdminKind{payments.SubdriftKind()},
 	})
 	if err != nil {
 		return nil, err
@@ -243,7 +243,7 @@ func wire(ctx context.Context, s settings, log *slog.Logger, getenv func(string)
 	}
 
 	handler, err := resthandler.New(resthandler.Config{
-		Meter: engine, Balance: engine, Credits: engine, Ledger: st.Books, Transfers: st.Books, Admin: admin, Operations: adminOps,
+		Meter: engine, Balance: engine, Credits: engine, Ledger: st.Books, Transfers: st.Books, Admin: admin, Operations: adminOps, Drift: pgadapter.NewDrift(st.Pool),
 		Auth: s.Authenticator, Clock: system.Clock{}, Logger: log, Legacy429ForLimits: s.Legacy429,
 		Ready: readiness{db: st.DB, ms: st.Migrations, books: st.Books, shards: cfg.Shards}, Metrics: metricsHandler,
 		Extra: slices.Concat([]resthandler.Route{{Method: http.MethodPost, Path: webhookhttp.Path, Surface: resthandler.Webhook, Handler: door}}, hostRoutes, entRoutes, feedRoutes),

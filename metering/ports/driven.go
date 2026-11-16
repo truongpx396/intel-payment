@@ -144,10 +144,45 @@ type ShardState struct {
 	Reason string
 }
 
+// HotUnblockOutcome is what an unblock found in the hot account.
+type HotUnblockOutcome int
+
+// The outcomes.
+const (
+	HotUnblockNothing HotUnblockOutcome = iota // no block to clear: the account holds none, or is absent or stale (it is rebuilt from the books)
+	HotUnblockCleared                          // the account held the block, at the sequence asked, and no longer does
+	HotUnblockRaced                            // the account holds a block but is not at the sequence asked; nothing was touched
+)
+
+func (o HotUnblockOutcome) String() string {
+	switch o {
+	case HotUnblockNothing:
+		return "nothing to clear"
+	case HotUnblockCleared:
+		return "cleared"
+	case HotUnblockRaced:
+		return "raced"
+	}
+	return "unknown"
+}
+
+// HotUnblocker clears block_and_flag in the hot account — the flag the admission gate reads — once the books are clear (R112a).
+type HotUnblocker interface {
+	// ClearBlocked removes the block from a live account only if the account is at appliedSeq, the sequence the books were at when they were
+	// cleared (BookUnblock.AppliedSeq): a compare-and-set, as Heal is. Every hot mutation moves the sequence by one, and the books' applied
+	// sequence is the last one they have booked, so equal means nothing the hot tier has issued is waiting to be booked — and nothing that is
+	// can be a write-off that sets the block again in the books after this cleared it. Not equal is HotUnblockRaced and nothing is touched:
+	// the caller lets the writer catch up and asks again. An account that holds no block, is absent, or was built in an older shard
+	// generation has nothing to clear (HotUnblockNothing), whatever sequence it is at. A frozen shard is domain.ErrShardFrozen and a shard
+	// that was never opened domain.ErrColdShard, and nothing is touched. Only the block moves: not the sequence, not a balance.
+	ClearBlocked(ctx context.Context, s domain.Scope, appliedSeq int64) (HotUnblockOutcome, error)
+}
+
 // BalanceStore is the hot-tier adapter (Redis Functions on the shard-tagged key layout). Beyond the
 // Ledger the Meter uses, it carries the operations only the writer, reconcile and recovery need.
 type BalanceStore interface {
 	Ledger
+	HotUnblocker
 
 	// ApplyDelta issues a writer hot mutation (transfer_in, correction, expiry) in the scope's slot.
 	ApplyDelta(ctx context.Context, d HotDelta) (domain.Receipt, error)

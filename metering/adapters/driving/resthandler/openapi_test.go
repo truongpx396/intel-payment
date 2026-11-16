@@ -151,7 +151,7 @@ func fullHandler(t *testing.T, name string, m *stubMeter, r *stubReads, c *stubC
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		_, _ = io.WriteString(w, "# HELP metering_admit_denied_total Admissions refused.\n# TYPE metering_admit_denied_total counter\n")
 	})
-	return newAPI(t, m, apiOpts{ledger: r, transfers: r, credits: c, admin: a, ops: &stubOps{created: true, op: sampleOperation()}, ready: ready, metrics: metrics})
+	return newAPI(t, m, apiOpts{ledger: r, transfers: r, credits: c, admin: a, ops: &stubOps{created: true, op: sampleOperation()}, drift: &stubDrift{runs: sampleDriftRuns()}, ready: ready, metrics: metrics})
 }
 
 func TestEveryOperationsRequestsAndResponsesValidateAgainstTheDocument(t *testing.T) {
@@ -217,6 +217,10 @@ func TestEveryOperationsRequestsAndResponsesValidateAgainstTheDocument(t *testin
 		{"rehydrate an account", "admin", "POST", "/v1/admin/rehydrate?realm=acme", `{"actor":"alice","reason":"INC-1","scope":{"kind":"workspace","id":"w1"}}`, key, 202, nil},
 		{"replay a dead letter", "admin", "POST", "/v1/admin/dead-letters/5b0e6f2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b/replay?realm=acme", `{"actor":"alice","reason":"INC-1"}`, key, 202, nil},
 		{"sweep an account's subscriptions", "admin", "POST", "/v1/admin/subdrift?realm=acme", `{"actor":"alice","reason":"INC-1","account":"stripe-live"}`, key, 202, nil},
+		{"the reconcile runs and what they found", "admin", "GET", "/v1/admin/drift?realm=acme&shard=3&limit=5&with_findings=true", "", nil, 200, nil},
+		{"a drift read with a limit nobody allows", "admin", "GET", "/v1/admin/drift?realm=acme&limit=0", "", nil, 400, nil},
+		{"adjust an account's credits", "admin", "POST", "/v1/admin/adjustments?realm=acme", `{"actor":"alice","reason":"INC-1","scope":{"kind":"workspace","id":"w1"},"pool":"promo","amount":-30}`, key, 202, nil},
+		{"unblock an account", "admin", "POST", "/v1/admin/unblock?realm=acme", `{"actor":"alice","reason":"INC-1","scope":{"kind":"workspace","id":"w1"}}`, key, 202, nil},
 		{"read an operation", "admin", "GET", "/v1/admin/operations/5b0e6f2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b?realm=acme", "", nil, 200, nil},
 		{"an operator request without a key", "admin", "POST", "/v1/admin/reconcile?realm=acme", `{"actor":"alice","reason":"INC-1","shard":3}`, nil, 400, nil},
 		{"balance", "record", "GET", "/v1/balance?scope_kind=workspace&scope_id=w1", "", nil, 200, nil},

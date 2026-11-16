@@ -74,6 +74,10 @@ has   "payment can FCALL a loaded function" "ran" "$(rcli --user payment --pass 
 has   "the service role sees the real hot-path library (FUNCTION LIST)" "intelpay" "$(rcli --user payment --pass dev-payment FUNCTION LIST LIBRARYNAME intelpay)"
 has   "the service role can call the real hot path: a cold shard says so" "COLD_SHARD" "$(rcli --user payment --pass dev-payment FCALL_RO ip_admit 2 'meta:{s1}' 'acct:{s1}:default/w:x')"
 has   "the service role can open a shard" "OK" "$(rcli --user payment --pass dev-payment FCALL ip_shard 1 'meta:{s1}' open 1)"
+rcli --user payment --pass dev-payment FCALL ip_rehydrate 2 'meta:{s1}' 'acct:{s1}:default/w:blk' 1 5 1 general 10 >/dev/null
+has   "the service role holds a block it was handed" "1" "$(rcli --user payment --pass dev-payment HGET 'acct:{s1}:default/w:blk' blocked)"
+rcli --user payment --pass dev-payment FCALL ip_unblock 2 'meta:{s1}' 'acct:{s1}:default/w:blk' 5 >/dev/null
+hasnt "the service role can clear it: an unblock needs HDEL, and nothing wider" "1" "$(rcli --user payment --pass dev-payment HGET 'acct:{s1}:default/w:blk' blocked)"
 has   "the service role can read the replication id (failover detection)" "master_replid" "$(rcli --user payment --pass dev-payment INFO replication)"
 has   "the service role cannot read arbitrary data with GET" "NOPERM" "$(rcli --user deploy --pass dev-deploy GET x)"
 has   "deploy cannot read data" "NOPERM" "$(rcli --user deploy --pass dev-deploy GET x)"
