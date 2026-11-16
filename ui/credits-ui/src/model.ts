@@ -220,6 +220,8 @@ export interface PanelView {
 // and one that arrives pre-computed is how a bar and the figure beside it come to disagree.
 const PERCENT_KEY = /^(pct|percent|percentage|fill|fillpct|fillpercent|usedpct|usedpercent|pctused|percentused)$/i;
 
+const WINDOWS: readonly LimitView["window"][] = ["period", "day", "hour", "job", "call", "none"];
+
 function meterOf(used: number, cap: number): MeterModel {
   const pct = used >= cap ? 100 : Number((BigInt(used) * 100n) / BigInt(cap));
   return { used: used as Quantity, cap: cap as Quantity, pct };
@@ -242,6 +244,8 @@ export function deriveLimit(l: LimitView, remaining: Quantity): LimitModel {
   if (used < 0) throw new SnapshotError("invalid_limit", `${path}.used`, "a counter cannot be negative");
   if (cap !== null && cap < 0) throw new SnapshotError("invalid_limit", `${path}.cap`, "a ceiling cannot be negative");
   if (warn < 0 || warn > 100) throw new SnapshotError("invalid_limit", `${path}.warnAtPct`, "a threshold is a whole percent from 0 to 100");
+
+  if (!WINDOWS.includes(l.window)) throw new SnapshotError("invalid_limit", `${path}.window`, `"${String(l.window)}" is not a window this view has a word for`);
 
   const balance = l.window === "none";
   const blocked = cap !== null && (balance ? BigInt(left) + BigInt(cap) <= 0n : used >= cap);
