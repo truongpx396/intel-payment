@@ -1,6 +1,7 @@
 {
   "name": "intel-payment-ui",
   "private": true,
+  "type": "module",
   "description": "The browser-facing half of intel-payment: the credits-ui package and its reference binding. Tooling lives here once; each package declares only what a consumer needs.",
   "workspaces": [
     "credits-ui",
