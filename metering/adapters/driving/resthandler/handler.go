@@ -30,9 +30,11 @@ type Config struct {
 	// Operations backs the operator's routes (/v1/admin/reconcile, …/recover, …/rehydrate, …/dead-letters/{id}/replay, …/subdrift, …/unblock, …/adjustments and
 	// GET /v1/admin/operations/{id}): each is recorded and done by the worker. A deployment without it serves none of them.
 	Operations ports.AdminOperations
-	Auth       auth.Authenticator
-	Clock      ports.Clock
-	Logger     *slog.Logger
+	// Drift backs GET /v1/admin/drift: the recent reconcile runs and what they found in one realm. A deployment without it serves no such route.
+	Drift  ports.DriftReader
+	Auth   auth.Authenticator
+	Clock  ports.Clock
+	Logger *slog.Logger
 
 	// Ready backs /readyz and Metrics backs /metrics; each route exists only with its source. /healthz always
 	// exists and calls nothing. ReadyTimeout bounds a readiness check (default 2s): a probe must answer.
@@ -128,6 +130,9 @@ func BuildRegistry(cfg Config) (*Registry, error) {
 			r.Surface, r.Privilege = V1, auth.Admin
 			reg.Add(r)
 		}
+	}
+	if cfg.Drift != nil {
+		reg.Add(Route{Method: http.MethodGet, Path: "/v1/admin/drift", Surface: V1, Privilege: auth.Admin, Handler: h.getDrift})
 	}
 	h.platform(reg)
 	if cfg.Credits != nil {

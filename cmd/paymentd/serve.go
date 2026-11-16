@@ -243,7 +243,7 @@ func wire(ctx context.Context, s settings, log *slog.Logger, getenv func(string)
 	}
 
 	handler, err := resthandler.New(resthandler.Config{
-		Meter: engine, Balance: engine, Credits: engine, Ledger: st.Books, Transfers: st.Books, Admin: admin, Operations: adminOps,
+		Meter: engine, Balance: engine, Credits: engine, Ledger: st.Books, Transfers: st.Books, Admin: admin, Operations: adminOps, Drift: pgadapter.NewDrift(st.Pool),
 		Auth: s.Authenticator, Clock: system.Clock{}, Logger: log, Legacy429ForLimits: s.Legacy429,
 		Ready: readiness{db: st.DB, ms: st.Migrations, books: st.Books, shards: cfg.Shards}, Metrics: metricsHandler,
 		Extra: slices.Concat([]resthandler.Route{{Method: http.MethodPost, Path: webhookhttp.Path, Surface: resthandler.Webhook, Handler: door}}, hostRoutes, entRoutes, feedRoutes),

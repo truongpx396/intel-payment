@@ -7,8 +7,8 @@ this runbook is written from that reasoning and has **not yet been exercised in 
 T131/T133 rehearse it before release.
 
 Keys and streams below use a shard's hash tag, e.g. `{s42}`. To find a scope's shard:
-`fnv1a64("<realm>/<kind>:<id>") mod PAYMENT_SHARDS`. (`GET /v1/admin/drift` is **designed and not built**: read `reconcile_runs` and
-`reconcile_findings` in PostgreSQL.)
+`fnv1a64("<realm>/<kind>:<id>") mod PAYMENT_SHARDS`. (`GET /v1/admin/drift` reads the reconcile runs and what they found:
+see [Reading drift](#reading-drift).)
 
 ---
 
@@ -87,6 +87,8 @@ booked.
 SELECT f.realm, f.scope_kind, f.scope_id, f.pool, f.hot_seq, f.hot_balance, f.expected_balance, f.drift, f.healed
 FROM reconcile_findings f WHERE f.outcome = 'drift' ORDER BY f.created_at DESC LIMIT 20;
 ```
+
+Or, as an operator of the realm, `GET /v1/admin/drift?with_findings=true` ([Reading drift](#reading-drift)).
 
 **Read the direction:**
 
@@ -356,7 +358,16 @@ confirm — the call went out and the answer did not come back — the grant may
 SELECT created_at, pool, delta, operation_type, ref FROM credit_ledger WHERE realm = $1 AND idem_key = 'admin-adjustment:<operation id>';
 ```
 
-**Not built yet:** `GET /v1/admin/drift`.
+### Reading drift
+
+`GET /v1/admin/drift` (the `admin` privilege; `?realm=` when the credential spans several) gives the recent reconcile runs, newest first: `?shard=`
+narrows them to one shard's (zero is shard zero), `?limit=` is 1–100 (default 10), and `?with_findings=true` keeps only the runs that found something of
+your realm's own. Each run has its own counters — scopes checked, in sync, `deferred` (an intent in flight: lag, not drift), `cold`, `regressions`
+(which froze the shard), `drifted` and `abs_drift` (Σ|drift|, never a net figure) — across every realm that has accounts in the shard, and names no
+account. Its `findings` are **your realm's alone**, worst first, at most 200 a run (`findings_total` says how many there were); a finding names its scope
+without a realm. A +100 on one scope and a −100 on another are two findings. `healed: true` means the hot side was corrected to the books; reconcile
+never corrects the books — that is an investigated [adjustment](#adjusting-the-books). The read is not indexed by run (`reconcile_findings` has no
+index on `run_id`), which a run with a handful of findings does not feel and a shard-wide incident with millions might.
 
 ---
 

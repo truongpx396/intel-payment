@@ -1422,6 +1422,31 @@ paths:
         "413": { $ref: "#/components/responses/TooLarge" }
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/admin/drift:
+    get:
+      operationId: getDrift
+      tags: [admin]
+      summary: "The recent reconcile runs, and what they found in one realm."
+      description: "Newest first. Each run says how many scopes it checked and what it found — `in_sync`, `deferred` (an intent in flight: not drift), `cold`, `regressions` (which froze the shard), `drifted`, and `abs_drift` (Σ|drift|, never a net figure) — as the run's own counters across every realm that has accounts in the shard: they carry no account. `findings` are the asking realm's alone, worst first (largest |drift|), at most 200 a run, with `findings_total` for how many there were; a finding names its scope without a realm, because the answer is that realm's. A +100 on one scope and a −100 on another are two findings. `healed` means the hot side was corrected; **the books are never corrected by reconcile**, only by an investigated `admin_adjustment`. With `with_findings=true` only the runs that found something of the realm's own are given, and `limit` counts those. Read-only."
+      x-privilege: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Realm"
+        - { name: shard, in: query, required: false, schema: { type: integer, minimum: 0 }, description: "Only this shard's runs. Zero is shard zero." }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100 }, description: "How many runs. Default 10." }
+        - { name: with_findings, in: query, required: false, schema: { type: boolean }, description: "Only the runs that found something of this realm's own." }
+      responses:
+        "200":
+          description: "The runs."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DriftReport" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
   /v1/admin/operations/{id}:
     parameters:
       - name: id
@@ -2414,6 +2439,53 @@ components:
         created_at: { type: string, format: date-time }
         started_at: { type: string, format: date-time }
         finished_at: { type: string, format: date-time }
+    DriftReport:
+      type: object
+      required: [runs]
+      properties:
+        runs:
+          type: array
+          items: { $ref: "#/components/schemas/DriftRun" }
+    DriftRun:
+      type: object
+      required: [id, shard, kind, started_at, scopes_checked, in_sync, deferred, cold, regressions, drifted, abs_drift, findings, findings_total]
+      properties:
+        id: { type: string, format: uuid }
+        shard: { type: integer }
+        kind: { type: string, enum: [incremental, full] }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time, description: "Absent while the run has not finished." }
+        scopes_checked: { type: integer }
+        in_sync: { type: integer }
+        deferred: { type: integer, description: "Scopes with an intent in flight: not drift." }
+        cold: { type: integer }
+        regressions: { type: integer, description: "Scopes whose hot sequence went backwards; they froze the shard." }
+        drifted: { type: integer }
+        abs_drift: { type: integer, format: int64, description: "Σ|drift| over the run, never a net figure." }
+        findings:
+          type: array
+          description: "This realm's findings, worst first, at most 200."
+          items: { $ref: "#/components/schemas/DriftFinding" }
+        findings_total: { type: integer, description: "How many findings this realm has in the run." }
+    DriftFinding:
+      type: object
+      required: [scope, pool, outcome, hot_seq, applied_seq, hot_balance, expected_balance, drift, healed, alarmed]
+      properties:
+        scope:
+          type: object
+          required: [kind, id]
+          properties:
+            kind: { type: string }
+            id: { type: string }
+        pool: { type: string }
+        outcome: { type: string, enum: [drift, regression] }
+        hot_seq: { type: integer, format: int64 }
+        applied_seq: { type: integer, format: int64 }
+        hot_balance: { type: integer, format: int64 }
+        expected_balance: { type: integer, format: int64, description: "Booked plus open suspense." }
+        drift: { type: integer, format: int64, description: "Hot minus expected." }
+        healed: { type: boolean, description: "The hot side was corrected." }
+        alarmed: { type: boolean }
     AdminOperationAccepted:
       type: object
       required: [created, operation]
