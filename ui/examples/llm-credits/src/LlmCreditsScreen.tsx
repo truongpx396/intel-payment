@@ -7,9 +7,15 @@ import { llmLabels } from "./labels.js";
 import { OrgPlanPointer, type OrganisationPlan } from "./OrgPlanPointer.js";
 import { RestCheckoutSource, RestCreditsSource } from "./RestCreditsSource.js";
 
-// A breakdown row of this product's spend is a feature (the engine's dimension is the resource that was metered): the package's own title is
-// neutral, and this is the product saying what its rows are. Module-level, so the panel is handed the same object on every render.
-const copy = { breakdownHeading: "Spend by feature" } as const;
+// The product's own words, over the package's neutral ones. A breakdown row of this product's spend is a feature (the engine's dimension is the
+// resource that was metered). And the spend figures come from a rollup that runs every few minutes, so a spend that is already in the ledger may
+// not be in them yet: the empty states say so, because a screen whose ledger and chart disagree should say which one is behind. Module-level, so
+// the panel is handed the same object on every render.
+const copy = {
+  breakdownHeading: "Spend by feature",
+  noSpend: "No spend in this window yet. This chart trails the ledger by a few minutes.",
+  noBreakdown: "No spend to break down yet. This list trails the ledger by a few minutes.",
+} as const;
 
 export interface LlmCreditsScreenProps {
   readonly baseUrl: string;
