@@ -1,6 +1,7 @@
 import AxeBuilder from '@axe-core/playwright';
 import type { Page } from '@playwright/test';
-import { expect, freshScope, grant, requireUiStack, screenUrl, settle, spend, test, type Scope } from './credits-support';
+import { bearer } from './support';
+import { expect, freshScope, grant, requireUiStack, rolledUp, screenUrl, settle, spend, test, type Scope } from './credits-support';
 
 // The credits screen (ui/), in a real Chromium, over a real paymentd — the one thing the jsdom tests under ui/ cannot say. Each test takes its
 // own scope (see support.ts), so they run in parallel and a re-run never sees the last run's state. The realm is the one `make e2e-seed` set up:
@@ -180,3 +181,110 @@ test.describe('accessibility (axe-core, WCAG 2.2 AA and best practice)', () => {
     });
   }
 });
+
+// The spend section, from the real rollup. The worker runs it every five minutes, so these ask the stack's worker for the tick (rolledUp) and
+// wait for the snapshot the screen reads to hold the figures: until then the chart rightly says it trails the ledger.
+test.describe('spend, over a real rollup', () => {
+  /** Two chats and an embedding, 660 credits each: 1,320 for llm.chat and 660 for llm.embed. */
+  async function spent(request: Parameters<typeof grant>[0], scope: Scope) {
+    await grant(request, scope, 5_000_000);
+    await spend(request, scope, { in: 1200, out: 800 }, 'llm.chat');
+    await spend(request, scope, { in: 1200, out: 800 }, 'llm.chat');
+    await spend(request, scope, { in: 1200, out: 800 }, 'llm.embed');
+    await settle(request, scope, 4);
+    await rolledUp(request, scope, 1980);
+  }
+
+  test('the chart, the breakdown by feature and the runway are the rollup\'s own figures, and they close', async ({ page, request, host }) => {
+    const errors = trapErrors(page);
+    const scope = freshScope();
+    await spent(request, scope);
+    await page.goto(screenUrl(host, scope));
+
+    const chart = page.getByRole('figure', { name: 'Spend over time' });
+    await expect(chart).toContainText('1,980 over 14 days');
+    await expect(page.locator('svg polyline.cu-spend-line')).toHaveCount(1);
+    const feature = page.getByRole('region', { name: 'Spend by feature' });
+    await expect(feature.getByRole('listitem').filter({ hasText: 'llm.chat' })).toContainText('1,320');
+    await expect(feature.getByRole('listitem').filter({ hasText: 'llm.embed' })).toContainText('660');
+    await expect(feature.locator('[data-cu="total"]')).toContainText('1,980'); // the parts add up to the whole the chart states
+    await expect(feature.getByText(/residual|other/i)).toHaveCount(0); // and nothing is left over to explain
+    await expect(page.getByText(/Runs out in about \d+ days/)).toBeVisible(); // a burn rate was served, so there is a runway
+    await expect(page.getByText(/trails the ledger/)).toHaveCount(0); // there is spend to show: no apology
+    expect(errors).toEqual([]);
+  });
+
+  test('a member\'s view has no spend, and says so — it does not say they spent nothing', async ({ page, request, host }) => {
+    const scope = freshScope();
+    await spent(request, scope);
+    const asked: string[] = [];
+    page.on('request', (r) => r.url().includes('/v1/credits') && asked.push(new URL(r.url()).search));
+    await page.goto(screenUrl(host, scope, '&subject_kind=user&subject_id=u1'));
+
+    await expect(page.getByText('Spend over time is not available here.')).toBeVisible();
+    await expect(page.getByText('The spend breakdown is not available here.')).toBeVisible();
+    await expect(page.getByText(/No spend/)).toHaveCount(0);
+    await expect(page.getByText(/Runs out in about/)).toHaveCount(0); // no burn rate for a member either
+    expect(asked.every((q) => q.includes('subject_kind=user') && q.includes('subject_id=u1'))).toBe(true);
+  });
+
+  test('a ledger longer than a page is paged: older rows below the newer, none twice, and focus is not lost at the end', async ({ page, request, host }) => {
+    const scope = freshScope();
+    await grant(request, scope, 5_000_000);
+    for (let i = 0; i < 5; i++) await spend(request, scope, { in: 100 + i, out: 0 });
+    await settle(request, scope, 6);
+    await page.goto(screenUrl(host, scope, '&page_size=2'));
+
+    const ids = () => page.locator('[data-row]').evaluateAll((rows) => rows.map((r) => r.getAttribute('data-row')));
+    const more = page.getByRole('button', { name: 'Show earlier activity' });
+    await expect(page.locator('[data-row]')).toHaveCount(2);
+    await more.click();
+    await expect(page.locator('[data-row]')).toHaveCount(4);
+    await expect(more).toBeVisible();
+    await more.click();
+    await expect(page.locator('[data-row]')).toHaveCount(6);
+    await expect(more).toHaveCount(0); // the books ran out
+    expect(new Set(await ids()).size).toBe(6);
+    // the pages, put together, are the books in the books' own order. (Not "the times never go up": the ledger is in booking order, and a row
+    // shows when it happened where it says so and when it was booked where it does not, so the column can run backwards by the writer's latency.)
+    const books = await request.get('/v1/ledger', { headers: bearer(), params: { scope_kind: scope.kind, scope_id: scope.id, limit: '200' } });
+    expect(await ids()).toEqual(((await books.json()) as { data: Array<{ id: string }> }).data.map((r) => r.id));
+    await expect(page.getByRole('region', { name: 'Activity' })).toBeFocused();
+    await expect(page.getByRole('status').filter({ hasText: 'earlier' })).toHaveCount(1);
+  });
+});
+
+test.describe('accessibility of the spend states (axe-core, WCAG 2.2 AA and best practice)', () => {
+  const audit = async (page: Page) => {
+    const { violations } = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa', 'best-practice']).analyze();
+    return violations.map((v) => `${v.id} (${v.impact}): ${v.nodes.map((n) => n.target.join(' ')).join(' ; ')}`);
+  };
+
+  test('a chart and a breakdown with real spend: no violations', async ({ page, request, host }) => {
+    const scope = freshScope();
+    await grant(request, scope, 5_000_000);
+    await spend(request, scope, { in: 1200, out: 800 }, 'llm.chat');
+    await spend(request, scope, { in: 1200, out: 800 }, 'llm.embed');
+    await settle(request, scope, 3);
+    await rolledUp(request, scope, 1320);
+    await page.goto(screenUrl(host, scope));
+    await expect(page.getByRole('figure', { name: 'Spend over time' })).toBeVisible();
+    expect(await audit(page)).toEqual([]);
+  });
+
+  test('a member\'s view and a ledger with its paging control: no violations', async ({ page, request, host }) => {
+    const scope = freshScope();
+    await grant(request, scope, 5_000_000);
+    for (let i = 0; i < 3; i++) await spend(request, scope, { in: 100 + i, out: 0 });
+    await settle(request, scope, 4);
+
+    await page.goto(screenUrl(host, scope, '&page_size=2'));
+    await expect(page.getByRole('button', { name: 'Show earlier activity' })).toBeVisible();
+    expect(await audit(page)).toEqual([]);
+
+    await page.goto(screenUrl(host, scope, '&subject_kind=user&subject_id=u1'));
+    await expect(page.getByText('Spend over time is not available here.')).toBeVisible();
+    expect(await audit(page)).toEqual([]);
+  });
+});
+

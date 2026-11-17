@@ -1,5 +1,7 @@
 import { test as base, expect, type APIRequestContext } from '@playwright/test';
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { bearer, uniqueScope } from './support';
 import { startHost, type Host } from './ui-host';
@@ -51,7 +53,7 @@ export async function grant(request: APIRequestContext, scope: Scope, amount: nu
 }
 
 /** Spends from a scope through the real API, at the rate card `make e2e-seed` installs: 1,200 in + 800 out is 660 credits. */
-export async function spend(request: APIRequestContext, scope: Scope, tokens: { in: number; out: number }): Promise<void> {
+export async function spend(request: APIRequestContext, scope: Scope, tokens: { in: number; out: number }, resource = 'llm.chat'): Promise<void> {
   const quantities = [
     ...(tokens.in > 0 ? [{ unit: 'in', amount: tokens.in }] : []),
     ...(tokens.out > 0 ? [{ unit: 'out', amount: tokens.out }] : []),
@@ -59,7 +61,7 @@ export async function spend(request: APIRequestContext, scope: Scope, tokens: { 
   const res = await request.post('/v1/record', {
     headers: headers(),
     // `attributes` is the host's own bag: the reference screen's Model and Tokens columns read these two keys, and the server returns them as sent
-    data: { scope, resource: 'llm.chat', rate_key: 'gpt', quantities, attributes: { model: 'gpt-5', tokens: String(tokens.in + tokens.out) }, occurred_at: new Date().toISOString() },
+    data: { scope, resource, rate_key: 'gpt', quantities, attributes: { model: 'gpt-5', tokens: String(tokens.in + tokens.out) }, occurred_at: new Date().toISOString() },
   });
   expect(res.status(), await res.text()).toBe(200);
 }
@@ -79,6 +81,37 @@ export async function settle(request: APIRequestContext, scope: Scope, rows: num
       { message: `the writer to book ${rows} rows for ${scope.id}`, timeout: 20_000 },
     )
     .toBe(rows);
+}
+
+/**
+ * Runs the usage rollup now. The worker does it every five minutes (the spend figures trail the ledger by that much), and a test that wants
+ * them cannot wait; it asks the stack's own worker for the tick it would have run, the way an operator would: `payment-worker tick usage.rollup`
+ * publishes it and the running worker does it under its claim. The stack is the compose one (`make up`).
+ */
+export function publishRollupTick(): void {
+  const root = resolve(__dirname, '../..');
+  const env = resolve(root, '.env');
+  execFileSync(
+    'docker',
+    ['compose', '-f', resolve(root, 'deploy/docker-compose.yml'), ...(existsSync(env) ? ['--env-file', env] : []), 'exec', '-T', 'payment-worker', 'payment-worker', 'tick', 'usage.rollup'],
+    { stdio: 'pipe', cwd: root },
+  );
+}
+
+/** Waits until the rollup holds `total` credits of spend for the scope, as the snapshot the screen reads reports it. */
+export async function rolledUp(request: APIRequestContext, scope: Scope, total: number): Promise<void> {
+  publishRollupTick();
+  await expect
+    .poll(
+      async () => {
+        const res = await request.get('/v1/credits', { headers: bearer(), params: { scope_kind: scope.kind, scope_id: scope.id } });
+        if (!res.ok()) return -1;
+        const body = (await res.json()) as { series?: Array<{ amount: number }> };
+        return (body.series ?? []).reduce((n, p) => n + p.amount, 0);
+      },
+      { message: `the rollup to hold ${total} credits of spend for ${scope.id}`, timeout: 30_000 },
+    )
+    .toBe(total);
 }
 
 /** The address of the screen for a scope on a host. */

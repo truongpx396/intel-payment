@@ -37,6 +37,10 @@ E2E_SERVICE_TOKEN=$TOKEN make e2e
   and a browser never holds the token (a test asserts that). The jsdom tests under `ui/` stay the place for a component's rules; these say
   what only a browser and a real server can: that the shapes the server sends are the shapes the screen reads, how it lays out at real
   widths, and what an accessibility audit (axe-core, WCAG 2.2 AA and best practice) finds.
+- **The spend figures lag the books.** The chart, the breakdown and the runway come from the `usage_daily` rollup, which the worker runs every
+  five minutes. A test that wants them calls `rolledUp()`, which asks the stack's own worker for the tick it would have run (`docker compose exec
+  payment-worker payment-worker tick usage.rollup`, so it needs the compose stack that `make up` starts) and waits for the snapshot the screen
+  reads to hold the figures.
 - **The books lag the balance.** A balance is the hot copy and moves at once; the ledger is what the durable writer has booked, a few
   milliseconds later. A test that reads the ledger first calls `settle()` (it polls the real `/v1/ledger`), or it passes by luck.
 - **Failure paths first**: what a credential-less caller gets, a replay, an outage. The happy path is
