@@ -19,7 +19,7 @@ across rate cards over three disjoint unit spaces, so that is a test result rath
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
 > **Status, stated honestly.** The **metering core**, the **payment pipeline** and the **entitlements** are built, verified
-> in CI and served by two binaries, `paymentd` and `payment-worker`. **The rest of the operational surface (the credits snapshot's burn rate, series and breakdown) and the credits UI are designed, not built**; all fourteen scheduled ticks (the subscription drift sweep among them), the operator's reconcile, recover, rehydrate, replay, sweep, unblock and adjustment requests, the drift read, the usage rollup (not yet read by the credits snapshot), outbound events (signed webhooks and a cursor feed) and the parking of
+> in CI and served by two binaries, `paymentd` and `payment-worker`. **The rest of the operational surface (the credits snapshot's burn rate, series and breakdown) is designed, not built**, and the **credits UI** ([`ui/`](ui/credits-ui/README.md)) is built and tested in jsdom — checked once by hand in a browser, with no automated browser test, not published, never run against a live `paymentd`; all fourteen scheduled ticks (the subscription drift sweep among them), the operator's reconcile, recover, rehydrate, replay, sweep, unblock and adjustment requests, the drift read, the usage rollup (not yet read by the credits snapshot), outbound events (signed webhooks and a cursor feed) and the parking of
 > messages the bus gave up on are built, and **post-paid invoicing**
 > ([Phase 2](specs/002-postpaid-invoicing/)) is designed, not built. The provider adapters have met their sandboxes
 > once ([docs/sandbox.md](docs/sandbox.md)): not a buyer approving a PayPal order, a paid Polar order, or a live account.
@@ -84,12 +84,12 @@ across rate cards over three disjoint unit spaces, so that is a test result rath
 - 📝 **Configuration you can trust.** An admin API for rate cards, ceilings, pools, plans, provider prices, provider accounts and customers; the database itself audits every change, even a direct SQL write.
 - 🎫 **Entitlements as data.** Flags, quotas and enums resolved with `override > subscription > default`, a grace window that lapses at the nanosecond, and provenance for every grant; `-1` is unlimited and is never compared as a number. A refusal says why in words and names the plan that would permit it. Served over REST and gRPC as a batch `Check`, cached with a bound and evicted the moment a subscription, an override or the configuration changes; the same resolution sizes any ceiling a plan sizes (`max_entitlement`).
 - 📦 **Library or container.** The same ports embedded in-process or behind gRPC and REST; a `Meter` behind gRPC is shown to be the same value as the engine, by a suite that is itself shown to reject five broken transports.
+- 🖼️ **A credits UI** ([`ui/`](ui/credits-ui/README.md)): balances per pool, ceilings (however many), spend, a ledger and plans over an opaque unit — a framework-free model, React components, and a reference binding. It never says a payment succeeded because the browser came back from checkout, refuses a float where an integer is meant, and is shown to pack, install into an unrelated app and build. Jsdom-tested, looked at once in Chromium by hand: no automated browser test, no registry, no live server yet.
 - 🧱 **A boundary you cannot cross by accident.** `go-arch-lint` and `depguard` make the portability guarantee a CI gate, and `check-spec-drift` does the same for the contracts.
 
 **Designed, not built**
 
 - 📣 **Outbound events**: signed, retried webhooks and a cursor feed, so hosts never touch internals.
-- 🖼️ **A credits UI**: balances per pool, ceilings, spend, ledger and plans.
 - 🧾 **Post-paid invoicing**: rating, tiered schedules, commitments, immutable invoices and credit notes ([Phase 2](specs/002-postpaid-invoicing/)).
 
 * * *
@@ -153,9 +153,10 @@ flowchart TB
     AutoTopUp -->|"charge a saved card"| Stripe
     AutoTopUp -->|"credit the pool"| Redis
 
+    UI["credits-ui<br/>(ui/: built, jsdom-tested)"]
+
     subgraph planned_sg["Designed, not built"]
         Events["events/<br/>signed outbound webhooks, cursor feed"]
-        UI["credits-ui"]
         Invoicing["Post-paid invoicing<br/>(Phase 2)"]
     end
 
@@ -167,7 +168,7 @@ flowchart TB
     UI -.-> Metering
 
     classDef planned stroke-dasharray: 5 5,color:#888
-    class Events,UI,Invoicing planned
+    class Events,Invoicing planned
 ```
 
 - 🧱 **Ports and adapters.** `metering/` and `billing/` are each `domain` → `ports` → `app` → `adapters/{driven,driving}`. `billing/` depends on metering's *ports* only; `metering/` never imports `billing`, `entitlement`, `events` or `cmd` (`make verify-portability`). `os.Getenv` is called only in `cmd/`, and there is no `time.Now` in the core.
@@ -533,6 +534,7 @@ shape, properties and fuzzing, and when mutation testing applies.
 | 🚢 Deploy | `make verify-deploy` | Docker | `deploy` | The image builds, an empty Postgres migrates, and the Redis ACL refuses what it should |
 | 🌐 End to end | `make e2e` | `make up`, Node | `e2e` | Playwright against the built image: health and credential checks |
 | 🧰 Clients | `make verify-clients` | Node ≥ 22, Python ≥ 3.11, network | `clients` | The TypeScript and Python clients generated from OpenAPI compile and round-trip an `Admit` |
+| 🖼️ Credits UI | `make ui-ci` | Node ≥ 22.12, network | `ui` | Lint and the boundary guards (each shown to reject a planted violation), types, 176 unit / property / render tests, and the package packed, installed into an unrelated app and built |
 | 📜 Documents | `scripts/check-spec-drift.sh` | nothing | `drift`, `docs` | No document describes a retired mechanism as current, ROADMAP's task counts match `tasks.md`, and no relative link dangles |
 
 `make ci` runs the local equivalents of all of it **except** `verify-schema`, `verify-clients`, the e2e suite and the two
@@ -577,6 +579,7 @@ answers to are the [constitution](.specify/memory/constitution.md); [CLAUDE.md](
 | **🔎 Verify** | |
 | `make verify-schema` · `make verify-hot-path` · `make verify-deploy` | Migrations and seed · the Redis Functions on a cluster · the image and the Redis ACL |
 | `make verify-clients` · `make verify-equivalence` | The generated clients · the transport-equivalence suite |
+| `make ui-ci` (`ui-lint` · `ui-test` · `verify-ui-boundary` · `verify-ui-portability`) | The credits UI: lint and guards · types and tests · each guard rejects a plant · pack, install into an unrelated app, build |
 | `make verify-portability` · `make verify-boundary` | `metering/` stands alone · the boundary gates reject violations |
 | **🧹 Quality** | |
 | `make fmt` · `make lint` · `make arch-lint` | Format · `golangci-lint` and the architecture graph · the architecture graph alone |
@@ -624,7 +627,8 @@ e2e/                   Playwright against the built image
 scripts/               every verification gate, seed.sql, the drift and task-pair checks
 deploy/                docker-compose.yml, the Dockerfile, the Redis ACL
 docs/                  configuration, integration-guide, operations, security, sandbox, testing
-design-system/         the credits screen design (the UI itself is not built)
+ui/                    credits-ui (the package) and examples/llm-credits (the reference binding); an npm workspace
+design-system/         the credits screen design the UI was built from
 .specify/memory/       the constitution
 .github/workflows/     ci.yml
 ```
@@ -637,7 +641,8 @@ design-system/         the credits screen design (the UI itself is not built)
 
 - **An admin API for entitlements.** Keys, plan entitlements, the free tier and overrides are SQL rows today — each write audited by the database, and an override refused without a reason and an actor, whichever way it is written. `Overrides.Put` exists as a use case (it validates, writes and announces) and nothing serves it yet.
 - **An admin API for event endpoints.** Outbound events are built (a signed, retried webhook per subscribed endpoint, and `GET /v1/events`), but an endpoint is an `event_endpoints` row for now, and a dead delivery or a parked message is re-driven by a use case nothing serves yet.
-- **The rest of the operational surface** (the credits snapshot's burn rate, series and breakdown, which the built `usage_daily` rollup would feed) **and the credits UI.**
+- **The rest of the operational surface** (the credits snapshot's burn rate, series and breakdown, which the built `usage_daily` rollup would feed).
+- **The credits UI under an automated browser test, on a registry, and against a live server.** It is built (176 tests, boundary guards, a pack-and-install check) and was looked at once in Chromium by hand, but nothing automated renders it in a browser, it is not published, and its binding has only met fixtures taken from the server's own shapes. Against today's `GET /v1/credits` the burn rate, spend chart and breakdown draw their empty states.
 - **Post-paid invoicing** ([Phase 2](specs/002-postpaid-invoicing/)), including coupons, discounts, trials, quantity subscriptions and invoice generation. Phase 1 collects payments; it issues no invoices.
 - **A saved payment method captured automatically** from a `setup` checkout. The host passes `payment_method_ref` to `PUT /v1/auto-recharge` itself.
 - **The JetStream intent path in the binary.** It exists in the engine; `payment-worker` drains the Redis outbox only.

@@ -6,7 +6,7 @@ MODULE  := github.com/truongpx396/intel-payment
 
 .DEFAULT_GOAL := help
 .PHONY: help build test test-integration fuzz mutation mutation-diff verify-red-green verify-tdd-gates verify-equivalence verify-clients lint arch-lint check-plan-branches verify-portability \
-        verify-boundary verify-schema verify-hot-path verify-deploy e2e e2e-install up up-jetstream down down-volumes logs \
+        ui-install ui-lint ui-test ui-build ui-ci verify-ui-boundary verify-ui-portability verify-boundary verify-schema verify-hot-path verify-deploy e2e e2e-install up up-jetstream down down-volumes logs \
         migrate seed proto proto-tools proto-check fmt vuln secrets ci clean
 
 help: ## Show this help
@@ -72,6 +72,28 @@ verify-portability: ## Assert metering/ stands alone (SC-006)
 
 verify-boundary: ## Plant one violation per boundary rule and assert the gates reject it
 	scripts/verify-boundary.sh
+
+## ---- the credits UI (ui/) ---------------------------------------------------
+ui-install: ## Install the UI workspace's dependencies (Node >= 22.12)
+	cd ui && npm ci
+
+ui-lint: ## ESLint (no-restricted-paths, framework-free .ts) + the scan: credits-ui names no unit and no colour of its own
+	cd ui && node_modules/.bin/eslint .
+	scripts/check-credits-ui.sh
+
+ui-build: ## Build the credits-ui package (dist/: ESM, declarations, theme.css)
+	cd ui && npm run build
+
+ui-test: ## Typecheck and test the credits-ui package and its reference binding (the binding consumes the built package, as a host would)
+	cd ui && npm run typecheck && npm test
+
+verify-ui-boundary: ## Plant one violation per UI boundary rule and assert the guards reject it, each for its own rule
+	scripts/verify-ui-boundary.sh
+
+verify-ui-portability: ## SC-012: npm pack the credits UI, install it into an unrelated app with a different unit, build clean (needs Node >= 22.12 and the network)
+	scripts/verify-ui-portability.sh
+
+ui-ci: ui-install ui-lint ui-test verify-ui-boundary verify-ui-portability ## Everything CI runs for the UI (not in `make ci`: it needs the network, like verify-clients)
 
 vuln: ## govulncheck
 	govulncheck ./...

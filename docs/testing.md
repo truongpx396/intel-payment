@@ -68,6 +68,7 @@ Write the test at the lowest tier that can express the invariant; move up only w
 | **Integration** (`-tags=integration`) | real Redis, Postgres, NATS (Testcontainers) | the seams: guards, locks, the hot path, the writer, recovery |
 | **Consistency / chaos** | a hot tier that goes back in time | failover, truncated AOF, poison, drift |
 | **Generated clients** (`make verify-clients`) | the handler, over loopback | the REST document is a usable contract: the TypeScript and Python clients generated from `api/openapi/v1.yaml` compile and round-trip an `Admit`. The document is held to the route table by `resthandler`'s own tests |
+| **UI** (`ui/`, `make ui-ci`) | fake sources and a fake `fetch` in jsdom; the packed tarball in a throwaway app | the credits UI's invariants: the pure model by property (fast-check, in `node`, against BigInt references), the components by render, the guards by planting a violation, and portability by packing, installing and building. **Not a browser:** nothing automated here lays out a page or runs a screen reader (the one browser check was manual) |
 | **End-to-end** (`e2e/`, Playwright) | the deployed stack | the wiring: image, migrations, ACLs, transports |
 
 Failure paths get the most attention — replay, concurrency, cancellation, tampering, outage, drift, a

@@ -196,8 +196,11 @@ a second time. The amount is yours to choose; a refund past what was spent falls
 ## 6. Wire the surfaces
 
 - **Credits screen** — proxy `GET /v1/credits` behind your own session (never expose a `/v1/*`
-  credential to a browser) and render with `@intel-payment/credits-ui`, supplying `UnitLabels`
-  (with `scale`), your `LedgerColumn`s and your `BillingAnchor`. Or consume the JSON.
+  credential to a browser) and render with `@intel-payment/credits-ui` ([`ui/`](../ui/credits-ui/README.md)), supplying `UnitLabels`
+  (with `scale`), your `LedgerColumn`s and a `remedyFor` that maps a `denyCode` to a way out. Pass a `CheckoutSource` to sell plans (and
+  `returnedFromCheckout` when the browser comes back: the panel then shows *processing* until `GET /v1/fulfilment` says otherwise), or
+  none to sell nothing. [`ui/examples/llm-credits`](../ui/examples/llm-credits/src/RestCreditsSource.ts) is a complete binding to copy.
+  The package has not met a live server, a browser or a registry yet ([ROADMAP](../ROADMAP.md)). Or consume the JSON.
 - **Checkout** — `GET /v1/plans`, then `POST /v1/checkout` with a plan's slug and an `Idempotency-Key` → redirect. A checkout names
   a plan, never a price, an amount or a number of credits. On return, show **processing** and poll `GET /v1/fulfilment`, or wait
   for the `fulfilment.granted` event. Return URLs must be on `PAYMENT_CHECKOUT_RETURN_HOSTS`.

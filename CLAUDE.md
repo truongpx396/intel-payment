@@ -27,7 +27,7 @@ scheduled ticks (`app.Ticks`, claimed through `ports.Claimer`; `payment-worker t
 provider for the current state of every live subscription and repairs a webhook that never arrived (it also runs every six hours), and `usage.rollup`, which keeps the `usage_daily` rollup (and a member-scoped `Breakdown`
 read) current — `GET /v1/credits` does not read it yet. An operator's reconcile, shard recovery, account rehydrate, dead-letter replay and subscription drift sweep, unblock and adjustment are served as `POST /v1/admin/…`: `paymentd` has no writer, so
 it records the request (the person, the reason, an `Idempotency-Key`; `admin_operations`, audited by the database) and answers `202`, and `payment-worker` does it and
-records how it went (`GET /v1/admin/operations/{id}`). The drift read is served too (`GET /v1/admin/drift`: the recent reconcile runs and the asking realm's findings only), and there is no UI. The provider adapters have met their sandboxes once
+records how it went (`GET /v1/admin/operations/{id}`). The drift read is served too (`GET /v1/admin/drift`: the recent reconcile runs and the asking realm's findings only), and the credits UI (`ui/`: the `credits-ui` package and its reference binding) is built and tested in jsdom (checked once by hand in a browser; there is no automated browser test), not published, and never run against a live `paymentd`. The provider adapters have met their sandboxes once
 ([docs/sandbox.md](docs/sandbox.md)), not a buyer approving a PayPal order, a paid Polar order or a live account. Do not write code,
 docs or comments that imply more or less than that.
 
@@ -42,6 +42,7 @@ docs or comments that imply more or less than that.
 | `migrations/` `migrate/` `cmd/payment-migrate` | Forward-only schema and its migrator |
 | `specs/001-metering-billing-core/` | `spec`, `plan`, `tasks`, `design-decisions`, and the normative `contracts/` |
 | `specs/002-postpaid-invoicing/` | Phase 2 — designed, not built; its schema is a draft that never ships from `migrations/` |
+| `ui/` | The browser-facing half: `credits-ui/` (a framework-free `ports.ts` and pure `model.ts`, React components over them, a stylesheet that reads tokens and defines none) and `examples/llm-credits/` (the reference binding: every product-specific thing). An npm workspace on TypeScript 6.0. `.ts` in the package is framework-free by lint rule; `scripts/check-credits-ui.sh` keeps a unit and a colour out of it |
 | `integration/` `internal/{pgtest,chaos}` `e2e/` | Testcontainers stack tests, fixtures and fault injection, Playwright |
 | `scripts/` `deploy/` | Every verification gate; compose stack, Dockerfile, Redis ACL |
 
@@ -58,6 +59,7 @@ docs or comments that imply more or less than that.
 | `make ci` | Before a PR: build, tests, fuzz, integration, lint, portability, boundary, vuln, hot path, deploy. Not `verify-schema`, `verify-clients` (node + python + network), e2e, or the two branch-history gates above |
 | `make verify-schema` / `verify-hot-path` / `verify-deploy` | Changed a migration / the Redis Lua / the image or ACL |
 | `scripts/check-spec-drift.sh` | Changed any document or contract |
+| `make ui-ci` | Changed anything under `ui/`: lint and the boundary guards (and proof each rejects a plant), types, tests, and pack-install-build into an unrelated app (Node ≥ 22.12, network) |
 
 ## How work is done here
 

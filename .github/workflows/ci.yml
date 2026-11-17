@@ -194,6 +194,18 @@ jobs:
       # The runner's own python3 (>= 3.11) and pip are enough: the script uses uv when present and venv otherwise.
       - run: make verify-clients
 
+  # The browser-facing half (ui/): the credits-ui package and its reference binding. Lint and the boundary guards (and the proof that
+  # each guard rejects a planted violation), types, the unit / property / render tests, and SC-012 — the package is packed, installed
+  # into an unrelated app with a different unit, and that app builds.
+  ui:
+    name: credits UI (lint · boundary guards · types · tests · pack and install into an unrelated app)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: 24, cache: npm, cache-dependency-path: ui/package-lock.json }
+      - run: make ui-ci
+
   migrations:
     name: schema (apply · seed · assert · phase-2 draft)
     runs-on: ubuntu-latest

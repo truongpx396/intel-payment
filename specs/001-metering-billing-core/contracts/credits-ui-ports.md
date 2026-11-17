@@ -49,6 +49,8 @@ SOURCE (any) ── our BFF · a fixture · a billing vendor's API · an in-proc
         BillingSlots (optional) → plan card · anchor pointer · receipts link
 ```
 
+The panel's billing section is exactly one of: the host's `billing.planCard` (the host's own billing UI, drawn instead of anything below, and the catalogue is not asked for); a pointer, when the snapshot has an `anchor` (and the catalogue is not asked for); the catalogue with a portal link, when a `CheckoutSource` is passed; or nothing, when it is not — no plan affordance and no error. A catalogue that cannot be drawn is an alert in its own place and does not take the balance with it. A snapshot the model refuses is refused whole: an alert with the reason and a retry, never a half-drawn screen.
+
 Four seams a host swaps independently: the **`CreditsSource`** (its transport), the **`LedgerColumnRegistry`** (its spend vocabulary), the **`BillingSlots`** + `BillingAnchor` (its commercial model), and the **theme contract** (its design tokens). The reference implementation uses our BFF and an LLM column set, but nothing in the port signatures requires either.
 
 ---
@@ -63,10 +65,16 @@ Four seams a host swaps independently: the **`CreditsSource`** (its transport), 
  *  never be rendered under the wrong product's labels. */
 export interface Scope { readonly realm?: string; readonly kind: string; readonly id: string; }
 
+declare const integerBrand: unique symbol;
+/** An integer, and only an integer. `number` cannot say so, and a float that reaches a balance, a delta or a total is how a
+ *  reconciliation discrepancy gets rounded out of sight of the person best placed to notice it. A value becomes an `Int` where it
+ *  enters the package (`quantity()` in model.ts), which REFUSES anything that is not a safe integer instead of rounding it. */
+export type Int = number & { readonly [integerBrand]: true };
+
 /** Integer minor units. Never a float — the money rule from metering-ports.md holds
  *  identically in the view layer, where a rounded display is how a reconciliation
  *  discrepancy gets hidden from the person best placed to notice it. */
-export type Quantity = number;
+export type Quantity = Int;
 
 /** What the host meters. `credits` is OUR value, not the package's vocabulary. */
 export interface UnitLabels {
@@ -76,8 +84,8 @@ export interface UnitLabels {
   /** Internal units per displayed unit. The books keep a FINE unit (the reference is
    *  1 credit = 1 µ$ of list price); a host shows dollars with scale 1_000_000 and 2 decimals,
    *  or "credits" of $0.001 with scale 1000. Integer division plus a remainder — never a float. */
-  readonly scale?: number;
-  readonly decimals?: number;
+  readonly scale?: Int;
+  readonly decimals?: Int;
   readonly format?: (q: Quantity) => string;  // default: grouped integer ÷ scale, `decimals` places
 }
 
@@ -100,7 +108,7 @@ export interface LimitView {
    *  not render them the same way. */
   readonly window: "period" | "day" | "hour" | "job" | "call" | "none";
   readonly resetsAt?: string;       // ISO; omitted when window === "call" | "none"
-  readonly warnAtPct: number;       // from Limit.WarnAt — NOT a hardcoded 80
+  readonly warnAtPct: Int;          // from Limit.WarnAt, a whole percent — NOT a hardcoded 80; 0 = no warning (as in the engine)
   readonly denyCode?: string;       // maps to the host's 402/429 ([metering-ports.md](./metering-ports.md))
   readonly scopeHint?: string;      // "all members" | "you" — set for a subject limit (Limit.Subject)
 }
@@ -108,7 +116,7 @@ export interface LimitView {
 export interface BalanceView {
   readonly remaining: Quantity;
   readonly granted: Quantity;
-  readonly primaryLimitKey: string; // which LimitView the hero mirrors
+  readonly primaryLimitKey: string; // which LimitView the hero mirrors; "" when the realm shows no limit
   readonly burnRatePerDay?: Quantity;
   /** Per credit pool, in draw order, when the realm defines pools beyond `general` — e.g.
    *  promotional credits that are spent first, or credits usable only on some resources. */
@@ -186,9 +194,9 @@ export interface PlanOffer {
   readonly tagline?: string;
   /** null = not self-serve (invoiced). Renders a `contact` action, NOT a disabled
    *  buy button — a greyed-out purchase control implies checkout that doesn't exist. */
-  readonly price: { readonly minor: number; readonly currency: string } | null;
+  readonly price: { readonly minor: Int; readonly currency: string } | null;
   readonly interval?: "month" | "year";
-  readonly creditAllotment: number | null;     // null = custom/negotiated
+  readonly creditAllotment: Quantity | null;   // null = custom/negotiated
   readonly features?: ReadonlyArray<{ readonly label: string; readonly value: string }>;
   readonly current?: boolean;                  // renders inert, never a no-op button
   /** Set when this offer cannot be taken from the current position. The package
@@ -207,6 +215,8 @@ export interface PlanCatalog {
   readonly canPurchase: boolean;
   readonly cannotPurchaseReason?: string;
   readonly requestPath?: { readonly label: string; readonly href: string };
+  /** Where an offer that is not self-serve (`price: null`) sends the viewer. Absent: the offer says so in words and exposes no control. */
+  readonly contact?: { readonly label: string; readonly href: string };
 }
 
 /** Fulfilment is webhook-driven, so `granted` is a state the SERVER reports —
@@ -231,19 +241,19 @@ export interface CheckoutSource {
 
 ## Invariants every implementation MUST uphold
 
-1. **The meter fill encodes consumption, never remainder.** A hero reading "12,480 left" beside a bar filled to 82% is only coherent under one reading, and it must be the same reading on every screen. The component derives fill from `used/cap` and refuses to accept a pre-computed percentage.
-2. **`warnAtPct` comes from the limit, never from a constant.** The threshold is admin-configurable; a hardcoded 80 in the view silently overrides an operator's setting.
-3. **Never a silent failure state.** A limit at or past `cap` renders a blocking notice carrying `denyCode` and a remedy affordance. "Renders nothing" is not a permitted state for an exhausted limit.
-4. **Money is integer, end to end.** No float reaches a balance, a delta or a total. Display rounding never changes a rendered figure's value.
-5. **Totals shown together must reconcile.** If the panel shows both a total and its parts, the parts sum to the total, or the panel renders an explicit residual row. This is the view-layer half of SC-002 — a screen selling exact reconciliation must not itself present arithmetic that does not close.
-6. **The package never interprets `unit`, `operationType`, or an `attributes` key.** Any behavior conditioned on the string `"credits"`, `"query"`, or `"model"` inside `credits-ui/**` is a defect.
+1. **The meter fill encodes consumption, never remainder.** A hero reading "12,480 left" beside a bar filled to 82% is only coherent under one reading, and it must be the same reading on every screen. The component derives fill from `used/cap` and refuses to accept a pre-computed percentage: a `LimitView` has no percentage field, and one that arrives under any name (`pct`, `percent`, `fill`, …) is a `SnapshotError`, not trusted and not quietly dropped. The fill is a whole percent, floored, and is 100 exactly when the cap is reached. **Where the hero mirrors a balance** — whose `used` is the overdraft it is into, empty while the account is healthy — the bar is the share of what was granted that is gone, `(granted − remaining) / granted`: the same reading, consumed and never remainder.
+2. **`warnAtPct` comes from the limit, never from a constant.** The threshold is admin-configurable; a hardcoded 80 in the view silently overrides an operator's setting. A limit warns when `used × 100 ≥ warnAtPct × cap`, in exact integer arithmetic (a double cannot tell the two sides apart near 2^53); `warnAtPct` 0 means no warning, as in the engine (it warns only when `WarnAt > 0` and `Max > 0`).
+3. **Never a silent failure state.** A limit at or past `cap` renders a blocking notice carrying `denyCode` and a remedy affordance. "Renders nothing" is not a permitted state for an exhausted limit. *A remedy affordance* is the host's: the panel asks `remedyFor(limit)` (a `denyCode` → a link) and draws what comes back; a limit with no remedy still renders the alert, the code and a line saying to ask someone — never a notice with nothing to do. A limit that is merely near its threshold raises a `status` notice, not an alert. *At or past `cap`* is `used ≥ cap` for a counter. A **balance** (`window: "none"`) is blocked when what is left plus the permitted overdraft is nothing — `remaining + cap ≤ 0`, as the engine decides it — because its own `used` and `cap` are the overdraft: a healthy balance with no overdraft has `used = cap = 0` and is not blocked.
+4. **Money is integer, end to end.** No float reaches a balance, a delta or a total. Display rounding never changes a rendered figure's value. `quantity()` makes a number a `Quantity` and refuses a float, `NaN`, an infinity, or an integer a double cannot hold exactly; a total, sum or residual the panel derives that would leave the safe-integer range is refused (`out_of_range`), never wrapped. Display divides by `scale` with integer arithmetic and rounds half away from zero to `decimals` places; the value it is drawn from is untouched.
+5. **Totals shown together must reconcile.** If the panel shows both a total and its parts, the parts sum to the total, or the panel renders an explicit residual row. The balance's pools are parts of `balance.remaining`; the breakdown's members are parts of the spend series' total (of their own sum when there is no series). The ramp has six slots (`SERIES_SLOTS`, tokens `--cu-series-1…6`) assigned by the member's index in the list the host supplied — not by rank or size, so a scope switch repaints nothing — members past the ramp fold into one `Other` row, and any remaining gap is one `residual` row, last. A zero residual is never emitted. This is the view-layer half of SC-002 — a screen selling exact reconciliation must not itself present arithmetic that does not close.
+6. **The package never interprets `unit`, `operationType`, or an `attributes` key.** Any behavior conditioned on the string `"credits"`, `"query"`, or `"model"` inside `credits-ui/**` is a defect. The model's only reading of a ledger row is the sign of its `delta`. The check is `scripts/check-credits-ui.sh`: no token containing `credit` (any case) in `ui/credits-ui/src/**` — a string, a comment, JSX text, a CSS property or an identifier — except the identifiers this contract itself defines (`CreditsPanel`, `CreditsPanelProps`, `CreditsSource`, `CreditsSnapshot`, `creditAllotment`) and the package's own name `credits-ui`. The contract's own names make a literal "no occurrence" unsatisfiable, so they are the exemption, matched as whole tokens: a longer identifier that merely contains one is refused.
 7. **Colour never carries identity alone.** Every series renders its label and value as text; the categorical ramp is decoration on top of an already-readable row.
 8. **Status hues and categorical hues are disjoint sets** (see the host's design system). A limit's tone comes from its threshold state; a series' colour comes from its index. Neither borrows from the other.
 9. **Every meter is a `role="progressbar"`** with `aria-valuenow` and an `aria-valuetext` that states the ratio in the host's units.
-10. **`granted` is never inferred from a checkout return.** The package renders `processing` on return and only shows `granted` when `CheckoutSource.fulfilment()` reports it. Any client-side optimism here produces the single worst failure this surface can have — a user who believes a payment failed and pays twice.
+10. **`granted` is never inferred from a checkout return.** The package renders `processing` on return and only shows `granted` when `CheckoutSource.fulfilment()` reports it. Any client-side optimism here produces the single worst failure this surface can have — a user who believes a payment failed and pays twice. The decision is one pure function, `deriveFulfilment(returned, reported)`: its result is `granted` exactly when the server reported `granted`, and nothing is claimed at all when the browser did not just return. The panel (`returnedFromCheckout`) renders `processing` at once on return and keeps asking `fulfilment()` — backing off to 30 s, for as long as it is mounted — and a server that cannot be reached, or says nothing, is not a failed payment. On `granted` it shows the amount in the host's unit and the receipt, stops asking and reloads the snapshot once; on `failed` it shows the reason and a retry and stops. `begin()`'s URL is followed only if it is `https:` or a path of this site.
 11. **A blocked offer exposes no checkout action.** `PlanOffer.blocked` renders reason + remedy; there is no override affordance, because the block exists to prevent a change that would silently shrink someone else's budget.
-12. **A non-purchasing viewer is told, not tested.** When `canPurchase` is false the package states the reason, offers the request path, and renders every purchase control **inert** — never live. The distinction from invariant 11 matters: a `blocked` offer exposes *no* action because the purchase itself is invalid, whereas here the purchase is valid and the *viewer* lacks authority, so the control is shown disabled to convey exactly that. Either way the 403 is a server guarantee, never a UI surprise.
-13. **Provider identifiers and card data never enter the package.** `PlanOffer.code` is a host slug; a `provider_price_id` reaching this layer is a defect.
+12. **A non-purchasing viewer is told, not tested.** When `canPurchase` is false the package states the reason, offers the request path, and renders every purchase control **inert** — never live. The distinction from invariant 11 matters: a `blocked` offer exposes *no* action because the purchase itself is invalid, whereas here the purchase is valid and the *viewer* lacks authority, so the control is shown disabled (`disabled` and `aria-disabled`) to convey exactly that. Either way the 403 is a server guarantee, never a UI surprise.
+13. **Provider identifiers and card data never enter the package.** `PlanOffer.code` is a host slug; a `provider_price_id` reaching this layer is a defect, and `deriveCatalog` refuses one (`provider_identifier`): a field named for a provider, a price id, a customer, a payment method or card data — on the offer or inside it — or a `code` that is itself a Stripe object id, a UUID or a PayPal plan id. An ordinary slug (`pro`, `plan_enterprise`) is not mistaken for one.
 14. **Role checks live in one place.** A host surface that links to the catalogue must not re-implement the purchase-permission test — it navigates, and the catalogue degrades. Two copies of an authorization rule is one copy too many.
 
 ---
@@ -263,7 +273,7 @@ const columns: LedgerColumn[] = [
 ];
 
 <CreditsPanel
-  source={new BffCreditsSource("/credits")}
+  source={new RestCreditsSource({ baseUrl: "/api/payments" })}   // the host's proxy: /v1/… one to one, behind its own session
   scope={{ kind: "workspace", id: workspaceId }}
   labels={labels}
   columns={columns}
@@ -299,7 +309,7 @@ The panel needs materially more than a balance figure, and it needs it in one sh
 | `ledger[]` + `idempotent` | `credit_ledger` | the `deduped` tag is how "charged at most once" becomes *observable to the person it protects*, rather than a claim in a spec |
 | `anchor` | resolved by the host | absent when this scope *is* the billing entity |
 
-**What is built today.** `balance.remaining` / `granted` / `pools`, `limits[]` and `ledger[]` are served by `GET /v1/credits` ([rest-api.md](./rest-api.md)); `balance.burnRatePerDay`, `series[]` and `breakdown[]` are absent — `breakdown` is an empty list — until the snapshot reads the `usage_daily` rollup. The rollup itself is built (`billing.usage.rollup.tick`; a member-scoped `Breakdown` read: [data-model.md](../data-model.md#usage_daily)); `GET /v1/credits` does not serve it yet. A limit view is the kernel's `Limit` with `window` mapped to the view's vocabulary in exactly one place (`app.Credits`); `warnAtPct` is the limit's own, as a whole percent; `resetsAt` is the instant the counter starts over, in the limit's own zone, and only a calendar window has one; and a balance's `used` is the overdraft it is into. `scopeHint` is set only in a member's view.
+**What is built today.** `balance.remaining` / `granted` / `pools`, `limits[]` and `ledger[]` are served by `GET /v1/credits` ([rest-api.md](./rest-api.md)); `balance.burnRatePerDay`, `series[]` and `breakdown[]` are absent — `breakdown` is an empty list — until the snapshot reads the `usage_daily` rollup. The rollup itself is built (`billing.usage.rollup.tick`; a member-scoped `Breakdown` read: [data-model.md](../data-model.md#usage_daily)); `GET /v1/credits` does not serve it yet. A limit view is the kernel's `Limit` with `window` mapped to the view's vocabulary in exactly one place (`app.Credits`); `warnAtPct` is the limit's own, as a whole percent; `resetsAt` is the instant the counter starts over, in the limit's own zone, and only a calendar window has one; and a balance's `used` is the overdraft it is into. `scopeHint` is set only in a member's view. `ledger[].idempotent` is not served: a replay writes no ledger row (it answers `applied: false`), so the snapshot has nothing to mark; the `deduped` tag renders when a host's source sets it.
 
 See [rest-api.md](./rest-api.md) for the full endpoint contract and [entitlement-ports.md](./entitlement-ports.md) for the admin gate on `breakdown[]`.
 
@@ -315,13 +325,24 @@ ui/credits-ui/                    # THE PACKAGE — publishable, zero host impor
     model.ts                      #   pure snapshot → view derivation (no React, no fetch)
     CreditsPanel.tsx              #   composition root
     components/{BalanceHero,LimitMeter,SpendChart,Breakdown,LedgerTable,PlanCatalog}.tsx
+    copy.ts                       #   every word the package says itself — none names a unit; a host replaces any
+    index.ts                      #   the public surface (the plan-catalogue component is exported as `PlanCatalogView`, the port type keeps `PlanCatalog`)
     theme.css                     #   reads design tokens ONLY — no hex, no palette utility
 
 ui/examples/llm-credits/          # THE REFERENCE BINDING — every product specific
   RestCreditsSource.ts  labels.ts  columns.tsx  OrgPlanPointer.tsx
+  LlmCreditsScreen.tsx  tokens.css      # the product assembled; the token values the package's stylesheet reads
 ```
 
-Enforced by an ESLint `no-restricted-paths` rule (`credits-ui/**` may not import `examples/**`) plus a static scan for the string `credit` inside the package. The litmus: **`npm pack` the package, install it in an unrelated app, `npm run build` — compiles with zero edits.**
+Enforced by `import-x/no-restricted-paths` (`credits-ui/**` may not import `examples/**`, and a binding uses the package only through its entry point), by ESLint rules that keep every `.ts` file in the package free of React and of any transport or DOM global (a `.ts` file is the framework-free half; a `.tsx` file is where React binds), and by a static scan (`scripts/check-credits-ui.sh`) for a unit or a colour the package must be handed. `scripts/verify-ui-boundary.sh` plants a violation per rule and requires each to be rejected for its own reason. The litmus: **`npm pack` the package, install it in an unrelated app, `npm run build` — compiles with zero edits.**
+
+---
+
+## Tokens and links
+
+`theme.css` defines no value: it reads `--cu-surface`, `--cu-text`, `--cu-muted`, `--cu-border`, `--cu-radius`, `--cu-font-mono`; the status set `--cu-status-ok`, `--cu-status-warn`, `--cu-status-blocked` (a limit's tone, from its threshold state); and the series set `--cu-series-1` … `--cu-series-6` and `--cu-series-other` (a member's colour, from its index). The two sets are disjoint (invariant 8) and a test holds the stylesheet to it.
+
+A destination the host supplies — a remedy, a request path, a contact link, a blocked offer's remedy — is drawn as a link only if it is `http(s):`, `mailto:`, a path or a fragment. `javascript:`, `data:` and a protocol-relative `//host` are drawn as text: these strings come from the host's data, and from there from whoever can write it.
 
 ---
 
