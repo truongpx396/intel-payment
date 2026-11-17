@@ -260,21 +260,23 @@ describe("a person can tell what they are looking at", () => {
     const f = fakes();
     render(panel(f));
     await flush();
-    expect(headings()).toEqual(["Limits", "Spend over time", "Spend by member", "Activity", "Billing"]);
+    expect(headings()).toEqual(["Limits", "Spend over time", "Spend breakdown", "Activity", "Billing"]);
   });
 
   test("and the titles are there when there is nothing to show", async () => {
     const f = fakes({ snapshot: panelSnapshot(1, { series: undefined as never, breakdown: [], ledger: [] }) });
     render(panel(f));
     await flush();
-    expect(headings()).toEqual(["Limits", "Spend over time", "Spend by member", "Activity", "Billing"]);
-    expect(document.body.textContent).toContain("No spend in this window yet.");
+    expect(headings()).toEqual(["Limits", "Spend over time", "Spend breakdown", "Activity", "Billing"]);
+    // no series was sent, so what the screen knows about spend is nothing: it says that, not that nothing was spent
+    expect(document.body.textContent).toContain("Spend over time is not available here.");
+    expect(document.body.textContent).not.toContain("No spend in this window yet.");
   });
 
   test("a screen with nothing to sell has no Billing title either", async () => {
     render(<CreditsPanel source={fakes().source} scope={scope} labels={llm} />);
     await flush();
-    expect(headings()).toEqual(["Limits", "Spend over time", "Spend by member", "Activity"]);
+    expect(headings()).toEqual(["Limits", "Spend over time", "Spend breakdown", "Activity"]);
   });
 });
 

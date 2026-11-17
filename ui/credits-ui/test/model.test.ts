@@ -400,3 +400,16 @@ describe("a snapshot that cannot be shown is refused loudly, not half-drawn", ()
     refuses(() => derivePanel(snapshot({ limits: [limit({ warnAtPct: int(-1) })] })), "invalid_limit");
   });
 });
+
+describe("an absent figure is not a zero", () => {
+  test("the breakdown is known when a series came with it, and not known when none did — an empty list means two different things", () => {
+    expect(derivePanel(snapshot({ series: [{ at: "2026-01-01T00:00:00Z", amount: q(0) }], breakdown: [] })).breakdown.known).toBe(true);
+    expect(derivePanel(snapshot({ breakdown: [] })).breakdown.known).toBe(false);
+    expect(derivePanel(snapshot({ breakdown: [series("a", 5)] })).breakdown.known).toBe(false); // rows with no series is still not a statement about the window
+  });
+
+  test("a series of zeros is a spend of nothing and is kept, so the panel can say so; no series is no spend model at all", () => {
+    expect(derivePanel(snapshot({ series: [{ at: "2026-01-01T00:00:00Z", amount: q(0) }] })).spend).toMatchObject({ total: 0, peak: 0 });
+    expect(derivePanel(snapshot({})).spend).toBeNull();
+  });
+});
