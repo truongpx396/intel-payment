@@ -3,6 +3,7 @@ package app_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -89,6 +90,33 @@ func TestTheBacklogGaugeFallsToZeroOnceTheWriterHasSettledTheLastEntriesAndNothi
 	if got := r.met.gauges[ports.MetricJournalPending]; got != 0 {
 		t.Fatalf("the journal is empty but metering_journal_pending still says %d: the page for undrained deferred usage would never clear", got)
 	}
+}
+
+// Two replays at once — the worker's own loop and a `payment-worker tick journal` run by hand — share the set of realms
+// the replayer has reported. An unguarded map there is not a wrong number but a crash ("concurrent map writes").
+func TestReplaysRunningAtOnceDoNotRaceOnTheRealmsTheReplayerHasReported(t *testing.T) {
+	t.Parallel()
+	r := newRig(t, rigOpt{})
+	r.journal.due = []ports.JournalEntry{journalEntry("a", "k1", 0)}
+	r.journal.pending = 1
+	r.bal.debit = func(c domain.Charge) (domain.Receipt, error) {
+		return domain.Receipt{IdemKey: c.IdemKey, Applied: true, Seq: 5}, nil
+	}
+	jr := replayer(t, r)
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				if _, err := jr.Replay(context.Background(), 10); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestReplayBacksOffWhileTheHotTierIsDownAndNeverDropsAnEntry(t *testing.T) {
