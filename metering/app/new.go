@@ -24,6 +24,7 @@ type Deps struct {
 	Archive   ports.UsageArchive   // required when LedgerGranularity=rollup
 	Usage     ports.UsageReader    // optional: the window counters, for the credits snapshot
 	Ledger    ports.LedgerReader   // optional: the booked rows, for the credits snapshot
+	Rollup    ports.UsageStore     // optional: the usage_daily rollup, for the credits snapshot's burn rate, series and breakdown
 	Stream    ports.IntentStream   // the writer's view of the outbox (redisstreams); unused by the Meter
 	Clock     ports.Clock          // required: the core reads no clock. adapters/driven/system.Clock{}
 	IDs       ports.IDSource       // required by the writer; adapters/driven/system.IDs

@@ -32,6 +32,13 @@ func (m *meter) Credits(ctx context.Context, q ports.SnapshotQuery) (ports.Credi
 	if (q.SubjectKind == "") != (q.SubjectID == "") {
 		return ports.CreditsSnapshot{}, fmt.Errorf("%w: a member's snapshot needs both subject_kind and subject_id", domain.ErrInvalid)
 	}
+	days := q.Days
+	switch {
+	case days == 0:
+		days = ports.DefaultSeriesDays
+	case days < 0 || days > domain.MaxSeriesDays:
+		return ports.CreditsSnapshot{}, fmt.Errorf("%w: days must be from 1 to %d", domain.ErrInvalid, domain.MaxSeriesDays)
+	}
 	if m.d.Usage == nil || m.d.Ledger == nil {
 		return ports.CreditsSnapshot{}, errors.New("metering: the credits snapshot needs Deps.Usage and Deps.Ledger: it cannot be whole without the counters and the books")
 	}
@@ -103,7 +110,46 @@ func (m *meter) Credits(ctx context.Context, q ports.SnapshotQuery) (ports.Credi
 	if snap.Balance.Granted, err = m.d.Ledger.Granted(ctx, s); err != nil {
 		return ports.CreditsSnapshot{}, err
 	}
+	// The rollup is keyed by the actor an event names, which an ordinary event does not carry, so a member's own days cannot be told from a
+	// colleague's. A member's snapshot therefore has no spend section, and the rollup is not read for it: absent is the honest answer, and the
+	// only one that cannot show a member someone else's usage (D20).
+	if m.d.Rollup != nil && !member {
+		spend, err := m.spend(ctx, s, days)
+		if err != nil {
+			return ports.CreditsSnapshot{}, err
+		}
+		snap.Spend = &spend
+	}
 	return snap, nil
+}
+
+// spend is the scope's burn rate, series and breakdown over the `days` days ending today, in the rollup's own (UTC) days. An unreadable rollup
+// is an error: a section that quietly said "no spend" because the read failed would be a screen that lies about the one thing it is for.
+func (m *meter) spend(ctx context.Context, s domain.Scope, days int) (ports.SpendView, error) {
+	to := domain.DayOf(m.d.Clock.Now(), time.UTC)
+	end, err := time.Parse(time.DateOnly, to)
+	if err != nil {
+		return ports.SpendView{}, fmt.Errorf("metering: the clock's day %q: %w", to, err)
+	}
+	from := end.AddDate(0, 0, -(days - 1)).Format(time.DateOnly)
+	q := domain.BreakdownQuery{Scope: s, From: from, To: to, AllMembers: true}
+	rows, err := m.d.Rollup.Series(ctx, q)
+	if err != nil {
+		return ports.SpendView{}, fmt.Errorf("metering: spend series: %w", err)
+	}
+	series, err := domain.FillDays(rows, from, to)
+	if err != nil {
+		return ports.SpendView{}, err
+	}
+	burn, err := domain.BurnRate(series)
+	if err != nil {
+		return ports.SpendView{}, err
+	}
+	by, err := m.d.Rollup.Breakdown(ctx, q)
+	if err != nil {
+		return ports.SpendView{}, fmt.Errorf("metering: spend breakdown: %w", err)
+	}
+	return ports.SpendView{BurnRatePerDay: burn, Series: series, Breakdown: by}, nil
 }
 
 // poolViews lists the realm's pools in draw order — by priority then name, general after them — and then any
