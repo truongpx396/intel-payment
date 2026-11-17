@@ -2,10 +2,12 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/truongpx396/intel-payment/metering/domain"
@@ -100,4 +102,47 @@ func (u *Usage) Breakdown(ctx context.Context, q domain.BreakdownQuery) ([]domai
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// Series is the spend series: the days of one scope between two dates, of one member or of everyone, oldest first. The query is the
+// breakdown's and so is the filter, which is the point — the days and the dimensions are the same rows, summed two ways.
+func (u *Usage) Series(ctx context.Context, q domain.BreakdownQuery) ([]domain.DailyRow, error) {
+	if err := q.Validate(); err != nil {
+		return nil, err
+	}
+	s := q.Scope.Normalized()
+	rows, err := u.pool.Query(ctx, `
+		SELECT to_char(day, 'YYYY-MM-DD'), sum(credits)::bigint
+		FROM usage_daily
+		WHERE realm = $1 AND scope_kind = $2 AND scope_id = $3 AND day BETWEEN $4::date AND $5::date AND ($6 OR actor_id = $7)
+		GROUP BY day ORDER BY day`,
+		string(s.Realm), s.Kind, s.ID, q.From, q.To, q.AllMembers, q.Member)
+	if err != nil {
+		return nil, seriesErr(err)
+	}
+	defer rows.Close()
+	var out []domain.DailyRow
+	for rows.Next() {
+		var r domain.DailyRow
+		var c int64
+		if err := rows.Scan(&r.Day, &c); err != nil {
+			return nil, seriesErr(err)
+		}
+		r.Credits = domain.Credits(c)
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, seriesErr(err)
+	}
+	return out, nil
+}
+
+// seriesErr says what a failed read was. A day whose dimensions add up past a bigint makes sum(...)::bigint raise numeric_value_out_of_range
+// (22003); the model calls that ErrUsageOverflow and so does the store, so a caller tells an overflow from an outage by the error, not the text.
+func seriesErr(err error) error {
+	var pe *pgconn.PgError
+	if errors.As(err, &pe) && pe.Code == "22003" {
+		return fmt.Errorf("%w: a day's credits in usage_daily", domain.ErrUsageOverflow)
+	}
+	return fmt.Errorf("postgres: series: %w", err)
 }

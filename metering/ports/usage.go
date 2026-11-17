@@ -18,4 +18,9 @@ type UsageStore interface {
 	Rollup(ctx context.Context, from, to time.Time, loc *time.Location) (changed int, err error)
 	// Breakdown is a scope's spend by dimension over a range of days, one member's or — when the query says so by name — everyone's.
 	Breakdown(ctx context.Context, q domain.BreakdownQuery) ([]domain.BreakdownRow, error)
+	// Series is a scope's spend by day over a range of days, oldest first — one row for each day that has a rollup row, so a quiet day is
+	// absent (domain.FillDays makes it a zero) — of one member or, when the query says so by name, of everyone. It reads the same rows
+	// Breakdown does, so for any query the days add up to the dimensions. A day whose dimensions add up to more than an int64 is
+	// domain.ErrUsageOverflow, never a wrapped figure and never a database error. It is the model's domain.DailySpend over the stored rows.
+	Series(ctx context.Context, q domain.BreakdownQuery) ([]domain.DailyRow, error)
 }
