@@ -6,10 +6,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	pgadapter "github.com/truongpx396/intel-payment/metering/adapters/driven/postgres"
@@ -294,3 +296,89 @@ func TestARollupWindowThatEndsBeforeItStartsIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// R141 (FR-039): the spend series, read from usage_daily, is the pure model's (domain.DailySpend) on a random ledger — the days of one member's
+// spend or everyone's, oldest first — and it reconciles with the breakdown of the same query. A day whose dimensions add up to more than an
+// int64 is the model's ErrUsageOverflow, not a database error and not a wrapped figure.
+func TestTheSeriesIsTheModelsAndReconcilesWithTheBreakdownAndAMemberReadsOnlyTheirOwn(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	p := db(t)
+	u := pgadapter.NewUsage(p)
+	lo, hi := time.Date(2026, 10, 25, 0, 0, 0, 0, time.UTC), time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
+	uses := randomLedger(rand.New(rand.NewPCG(9, 9)), 500, lo, hi)
+	// the same kind and id in another realm: only the realm tells the two scopes apart, and a series must never read across it
+	other := domain.Scope{Realm: "beta", Kind: usageScope.Kind, ID: usageScope.ID}
+	for i := range 30 {
+		uses = append(uses, domain.LedgerUse{Scope: other, At: lo.Add(time.Duration(i) * 11 * time.Hour), Dimension: "gpt", Actor: "u1", Credits: domain.Credits(1000 + i), Events: 1})
+	}
+	for i, x := range uses {
+		insertUsage(t, p, i, x, "usage")
+	}
+	if _, err := u.Rollup(ctx, lo, hi, time.UTC); err != nil {
+		t.Fatal(err)
+	}
+	model, _ := domain.Rollup(uses, time.UTC)
+	for _, q := range []domain.BreakdownQuery{
+		{Scope: usageScope, From: "2026-10-28", To: "2026-11-05", AllMembers: true},
+		{Scope: usageScope, From: "2026-10-28", To: "2026-11-05", Member: "u1"},
+		{Scope: usageScope, From: "2026-10-28", To: "2026-11-05", Member: "u2"},
+		{Scope: usageScope, From: "2026-10-25", To: "2026-11-08", Member: "u3"},
+		{Scope: domain.Scope{Realm: "beta", Kind: "user", ID: "x"}, From: "2026-10-25", To: "2026-11-08", AllMembers: true},
+		{Scope: other, From: "2026-10-25", To: "2026-11-08", AllMembers: true},
+		{Scope: usageScope, From: "2026-10-28", To: "2026-11-05", Member: "nobody"},
+		{Scope: usageScope, From: "2026-12-01", To: "2026-12-09", AllMembers: true}, // a window nothing happened in
+	} {
+		got, err := u.Series(ctx, q)
+		if err != nil {
+			t.Fatalf("%+v: %v", q, err)
+		}
+		want, _ := domain.DailySpend(model, q)
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("%+v:\n store %+v\n model %+v", q, got, want)
+		}
+		// the same query by dimension: the days and the parts must close
+		parts, err := u.Breakdown(ctx, q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var byDay, byDimension int64
+		for _, r := range got {
+			byDay += int64(r.Credits)
+		}
+		for _, r := range parts {
+			byDimension += int64(r.Credits)
+		}
+		if byDay != byDimension {
+			t.Errorf("%+v: the days add up to %d and the dimensions to %d", q, byDay, byDimension)
+		}
+	}
+
+	// by omission there is no aggregate: neither a member nor everyone is refused, and so is both at once
+	for name, q := range map[string]domain.BreakdownQuery{
+		"neither":  {Scope: usageScope, From: "2026-10-28", To: "2026-11-05"},
+		"both":     {Scope: usageScope, From: "2026-10-28", To: "2026-11-05", Member: "u1", AllMembers: true},
+		"backward": {Scope: usageScope, From: "2026-11-05", To: "2026-10-28", AllMembers: true},
+	} {
+		if _, err := u.Series(ctx, q); !errors.Is(err, domain.ErrInvalid) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+func TestADaySummingPastInt64IsTheModelsOverflowNotADatabaseError(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	p := db(t)
+	// each dimension's day fits; the day does not. usage_daily holds them as the rollup would have written them.
+	for dim, credits := range map[string]int64{"gpt": math.MaxInt64, "embed": 1} {
+		must(t, execErr(p.Exec(ctx, `INSERT INTO usage_daily (realm, scope_kind, scope_id, day, dimension, actor_id, credits, cost_micros, events)
+			VALUES ('acme', 'workspace', 'w1', '2026-11-03', $1, '', $2, 0, 1)`, dim, credits)))
+	}
+	_, err := pgadapter.NewUsage(p).Series(ctx, domain.BreakdownQuery{Scope: usageScope, From: "2026-11-01", To: "2026-11-05", AllMembers: true})
+	if !errors.Is(err, domain.ErrUsageOverflow) {
+		t.Fatalf("a day of 2^63 credits across two dimensions was %v", err)
+	}
+}
+
+func execErr(_ pgconn.CommandTag, err error) error { return err }
