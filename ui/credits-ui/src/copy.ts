@@ -39,6 +39,9 @@ export interface Copy {
 
   readonly ledgerHeading: string;
   readonly noLedger: string;
+  readonly moreLedger: string;
+  readonly moreLedgerFailed: string;
+  readonly moreLedgerLoaded: (n: number) => string;
   readonly colOperation: string;
   readonly colActor: string;
   readonly colChange: string;
@@ -114,6 +117,9 @@ export const defaultCopy: Copy = {
   ledgerHeading: "Activity",
   // the ledger lists what the books have booked, and the books trail the balance by a moment: an empty one is not a claim that nothing happened
   noLedger: "No activity has been booked yet.",
+  moreLedger: "Show earlier activity",
+  moreLedgerFailed: "Could not load earlier activity.",
+  moreLedgerLoaded: (n) => `${n} earlier ${n === 1 ? "entry" : "entries"} loaded.`,
   colOperation: "Operation",
   colActor: "By",
   colChange: "Change",

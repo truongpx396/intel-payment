@@ -120,12 +120,25 @@ export interface CreditsSnapshot {
   readonly breakdown: readonly BreakdownSeries[];
   readonly series?: ReadonlyArray<{ readonly at: string; readonly amount: Quantity }>;
   readonly ledger: readonly LedgerRow[];
+  /** An opaque cursor for the next, older page of the ledger. Absent at the end. The panel hands it back to `CreditsSource.moreLedger` and reads nothing in it. */
+  readonly ledgerNext?: string;
   readonly anchor?: BillingAnchor;
   readonly notices?: ReadonlyArray<{ readonly kind: string; readonly title: string; readonly body?: string }>;
 }
 
+/** One older page of the ledger, newest first as the first page is, and the cursor for the page after it (absent at the end). */
+export interface LedgerPage {
+  readonly rows: readonly LedgerRow[];
+  readonly next?: string;
+}
+
 export interface CreditsSource {
   load(scope: Scope): Promise<CreditsSnapshot>;
+  /**
+   * The page of the ledger after `cursor` (a `ledgerNext` the source itself issued). Absent: the panel offers no paging, and draws no control
+   * it cannot back — a button that does nothing is worse than none.
+   */
+  moreLedger?(scope: Scope, cursor: string): Promise<LedgerPage>;
   subscribe?(scope: Scope, onSnapshot: (s: CreditsSnapshot) => void): () => void;
 }
 

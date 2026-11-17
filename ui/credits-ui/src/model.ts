@@ -212,6 +212,8 @@ export interface PanelView {
   readonly spend: SpendModel | null;
   readonly breakdown: BreakdownModel;
   readonly ledger: readonly LedgerModel[];
+  /** The cursor for the next page of the ledger, or null at the end (an empty cursor asks for the first page again, so it is not "more"). */
+  readonly ledgerNext: string | null;
   readonly anchor: BillingAnchor | null;
   readonly notices: NonNullable<CreditsSnapshot["notices"]>;
 }
@@ -350,6 +352,23 @@ function deriveBreakdown(s: CreditsSnapshot): { spend: SpendModel | null; breakd
 
 // ── the whole snapshot ────────────────────────────────────────────────────────────────────────────────────────────────────────
 
+/** Ledger rows as a person is shown them. The first page and every page after it are derived here, so a later page is refused for the same reasons the first would be. */
+export function deriveLedgerRows(rows: readonly LedgerRow[]): LedgerModel[] {
+  return rows.map((r, i) => {
+    const delta = quantity(r.delta, `ledger[${i}].delta`);
+    return {
+      id: r.id,
+      operationType: r.operationType,
+      delta,
+      direction: delta > 0 ? "in" : delta < 0 ? "out" : "none",
+      at: r.at,
+      ...(r.actor === undefined ? {} : { actor: r.actor }),
+      idempotent: r.idempotent === true,
+      attributes: r.attributes,
+    };
+  });
+}
+
 /** Everything a person is shown, from a snapshot and nothing else. Throws a SnapshotError for a snapshot that cannot be shown. */
 export function derivePanel(s: CreditsSnapshot): PanelView {
   const remaining = quantity(s.balance.remaining, "balance.remaining");
@@ -367,19 +386,8 @@ export function derivePanel(s: CreditsSnapshot): PanelView {
     pools: derivePools(s.balance, remaining),
     spend,
     breakdown,
-    ledger: s.ledger.map((r, i) => {
-      const delta = quantity(r.delta, `ledger[${i}].delta`);
-      return {
-        id: r.id,
-        operationType: r.operationType,
-        delta,
-        direction: delta > 0 ? "in" : delta < 0 ? "out" : "none",
-        at: r.at,
-        ...(r.actor === undefined ? {} : { actor: r.actor }),
-        idempotent: r.idempotent === true,
-        attributes: r.attributes,
-      };
-    }),
+    ledger: deriveLedgerRows(s.ledger),
+    ledgerNext: s.ledgerNext === undefined || s.ledgerNext === "" ? null : s.ledgerNext,
     anchor: s.anchor ?? null,
     notices: s.notices ?? [],
   };

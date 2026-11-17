@@ -1,9 +1,9 @@
-import type { ReactNode } from "react";
+import type { ReactNode, RefObject } from "react";
 import type { LedgerModel } from "../model.js";
 import { resolveCopy, type Copy } from "../copy.js";
 import type { LedgerColumn, UnitLabels } from "../ports.js";
 import { defaultFormatTime } from "./LimitMeter.js";
-import { Figure } from "./shared.js";
+import { Figure, Notice } from "./shared.js";
 
 // What a row says when no registered column claimed it: every attribute, as text, in the order it came. The package reads no key — it
 // lists them — so a product whose columns are not registered still sees what happened instead of a blank.
@@ -21,12 +21,19 @@ function Generic({ attributes }: { attributes: LedgerModel["attributes"] }) {
   );
 }
 
+/** The control for older rows, when the panel can back it. `announcement` is said to a screen reader when rows arrive. */
+export interface LedgerMore {
+  readonly state: "idle" | "busy" | "failed";
+  readonly onMore: () => void;
+  readonly announcement: string | null;
+}
+
 /**
  * The durable record, newest first as the server sends it. One signed column — "−42" for consumption, "+50,000" for a grant — so a
  * purchase, a refund and a chargeback land in the same place with no schema-shaped change. The product's own columns come from the
  * host; a replayed operation carries a `deduped` tag, which is how "charged at most once" becomes visible to the person it protects.
  */
-export function LedgerTable({ rows, columns = [], labels, copy, formatTime = defaultFormatTime }: { rows: readonly LedgerModel[]; columns?: readonly LedgerColumn[] | undefined; labels: UnitLabels; copy?: Partial<Copy> | undefined; formatTime?: ((iso: string) => string) | undefined }) {
+export function LedgerTable({ rows, columns = [], labels, copy, formatTime = defaultFormatTime, more, announcement = null, sectionRef }: { rows: readonly LedgerModel[]; columns?: readonly LedgerColumn[] | undefined; labels: UnitLabels; copy?: Partial<Copy> | undefined; formatTime?: ((iso: string) => string) | undefined; more?: LedgerMore | undefined; announcement?: string | null; sectionRef?: RefObject<HTMLElement | null> | undefined }) {
   const c = resolveCopy(copy);
   if (rows.length === 0) {
     return (
@@ -38,7 +45,7 @@ export function LedgerTable({ rows, columns = [], labels, copy, formatTime = def
   }
   return (
     // tabIndex: the box scrolls sideways on a narrow screen, and a scroll box a keyboard cannot focus cannot be scrolled by one
-    <section className="cu-ledger" aria-label={c.ledgerHeading} tabIndex={0}>
+    <section className="cu-ledger" aria-label={c.ledgerHeading} tabIndex={0} ref={sectionRef}>
       <h2 className="cu-heading">{c.ledgerHeading}</h2>
       <table>
         <thead>
@@ -85,6 +92,23 @@ export function LedgerTable({ rows, columns = [], labels, copy, formatTime = def
           })}
         </tbody>
       </table>
+      {more?.state === "failed" ? (
+        <Notice role="alert" tone="blocked">
+          {c.moreLedgerFailed}
+        </Notice>
+      ) : null}
+      {more !== undefined ? (
+        // never disabled for good: a failed page is asked for again with the same button; busy is the only time it is not pressable
+        <button type="button" className="cu-more" onClick={more.onMore} disabled={more.state === "busy"} aria-busy={more.state === "busy"}>
+          {c.moreLedger}
+        </button>
+      ) : null}
+      {/* said when rows arrive, so a screen-reader user is told what a press did; the element is there before the news, or it is not announced */}
+      {more !== undefined || announcement !== null ? (
+        <p className="cu-sr-only" role="status">
+          {announcement}
+        </p>
+      ) : null}
     </section>
   );
 }
