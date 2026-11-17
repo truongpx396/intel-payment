@@ -189,6 +189,8 @@ export interface BreakdownRow {
 export interface BreakdownModel {
   readonly total: Quantity;
   readonly rows: readonly BreakdownRow[];
+  /** A series came with the breakdown, so an empty list says nothing was spent. Without one, an empty list says only that nothing was sent. */
+  readonly known: boolean;
 }
 
 export interface LedgerModel {
@@ -342,7 +344,7 @@ function deriveBreakdown(s: CreditsSnapshot): { spend: SpendModel | null; breakd
   const peak = points === undefined ? 0 : points.reduce((m, p) => (p.amount > m ? p.amount : m), 0);
   return {
     spend: points === undefined || spendTotal === null ? null : { points, total: spendTotal, peak: peak as Quantity },
-    breakdown: { total, rows },
+    breakdown: { total, rows, known: points !== undefined },
   };
 }
 

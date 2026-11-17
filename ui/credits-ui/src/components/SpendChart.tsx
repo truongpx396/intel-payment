@@ -14,11 +14,13 @@ const PAD = 3;
  */
 export function SpendChart({ spend, labels, copy }: { spend: SpendModel | null; labels: UnitLabels; copy?: Partial<Copy> | undefined }) {
   const c = resolveCopy(copy);
-  if (spend === null || spend.points.length === 0) {
+  // Two different silences. No series at all is a snapshot that knows nothing about spend, and says so. A series that adds up to nothing —
+  // including one with no points — is a statement: nothing was spent, and it is not drawn as a line along the floor of a chart.
+  if (spend === null || spend.total === 0) {
     return (
       <section className="cu-spend" aria-label={c.spendHeading}>
         <h2 className="cu-heading">{c.spendHeading}</h2>
-        <p className="cu-muted">{c.noSpend}</p>
+        <p className="cu-muted">{spend === null ? c.spendUnavailable : c.noSpend}</p>
       </section>
     );
   }
