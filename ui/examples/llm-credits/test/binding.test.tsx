@@ -383,6 +383,24 @@ describe("the screen, over a server that has spend, more history, and members", 
     for (const c of asks) expect(c.url.searchParams.get("limit")).toBe("25");
   });
 
+  test("a quiet chart and an empty breakdown say they trail the ledger: the rollup runs every few minutes, so a spend that is in the ledger may not be here yet", async () => {
+    const quiet = { ...creditsWire, series: spendWire.series.map((p) => ({ ...p, amount: 0 })), breakdown: [] };
+    const f = fakeFetch({ ...standardRoutes, "GET /api/payments/v1/credits": () => quiet });
+    render(<LlmCreditsScreen baseUrl={BASE} scope={scope} currency="USD" fetch={f.fetch} />);
+    const chart = await region("Spend over time");
+    expect(chart.textContent).toContain("No spend in this window yet.");
+    expect(chart.textContent).toMatch(/trails the ledger by a few minutes/);
+    expect((await region("Spend by feature")).textContent).toMatch(/trails the ledger by a few minutes/);
+  });
+
+  test("a chart that has spend to show does not carry the apology", async () => {
+    const f = fakeFetch({ ...standardRoutes, "GET /api/payments/v1/credits": () => spendWire });
+    render(<LlmCreditsScreen baseUrl={BASE} scope={scope} currency="USD" fetch={f.fetch} />);
+    const chart = await screen.findByRole("figure", { name: "Spend over time" }); // a chart with data is a figure; only an empty one is a region
+    expect(chart.textContent).toContain("over 14 days");
+    expect(chart.textContent).not.toMatch(/trails the ledger/);
+  });
+
   test("a member's view, which the server sends no series for, says the spend is not available — it does not say they spent nothing", async () => {
     const f = fakeFetch(standardRoutes); // creditsWire has no series: what a member's snapshot looks like
     render(<LlmCreditsScreen baseUrl={BASE} scope={scope} currency="USD" fetch={f.fetch} member={{ kind: "user", id: "u1" }} />);
