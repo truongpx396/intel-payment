@@ -171,12 +171,22 @@ export interface CreditsSnapshot {
   readonly breakdown: readonly BreakdownSeries[];
   readonly series?: ReadonlyArray<{ readonly at: string; readonly amount: Quantity }>;
   readonly ledger: readonly LedgerRow[];
+  /** An opaque cursor for the next, older page of the ledger; absent at the end. The panel hands it back and reads nothing in it. */
+  readonly ledgerNext?: string;
   readonly anchor?: BillingAnchor;
   readonly notices?: ReadonlyArray<{ readonly kind: string; readonly title: string; readonly body?: string }>;
 }
 
+/** One older page of the ledger, newest first, and the cursor for the page after it (absent at the end). */
+export interface LedgerPage {
+  readonly rows: readonly LedgerRow[];
+  readonly next?: string;
+}
+
 export interface CreditsSource {
   load(scope: Scope): Promise<CreditsSnapshot>;
+  /** The page of the ledger after `cursor`, a `ledgerNext` this source issued. Absent: the panel draws no paging control. */
+  moreLedger?(scope: Scope, cursor: string): Promise<LedgerPage>;
   subscribe?(scope: Scope, onSnapshot: (s: CreditsSnapshot) => void): () => void;
 }
 ```
@@ -255,6 +265,8 @@ export interface CheckoutSource {
 12. **A non-purchasing viewer is told, not tested.** When `canPurchase` is false the package states the reason, offers the request path, and renders every purchase control **inert** — never live. The distinction from invariant 11 matters: a `blocked` offer exposes *no* action because the purchase itself is invalid, whereas here the purchase is valid and the *viewer* lacks authority, so the control is shown disabled (`disabled` and `aria-disabled`) to convey exactly that. Either way the 403 is a server guarantee, never a UI surprise.
 13. **Provider identifiers and card data never enter the package.** `PlanOffer.code` is a host slug; a `provider_price_id` reaching this layer is a defect, and `deriveCatalog` refuses one (`provider_identifier`): a field named for a provider, a price id, a customer, a payment method or card data — on the offer or inside it — or a `code` that is itself a Stripe object id, a UUID or a PayPal plan id. An ordinary slug (`pro`, `plan_enterprise`) is not mistaken for one.
 14. **Role checks live in one place.** A host surface that links to the catalogue must not re-implement the purchase-permission test — it navigates, and the catalogue degrades. Two copies of an authorization rule is one copy too many.
+15. **An absent figure is not a zero.** A snapshot with no `series` knows nothing about spend, and the chart and the breakdown say so ("not available here"); a snapshot whose series adds up to nothing says that nothing was spent, and draws no line along the floor of the chart. `breakdown: []` alone cannot tell the two apart, so the model does (`breakdown.known`, true when a series came with it). A member's snapshot, and a server with no rollup, send no series, and a member who read "No spend in this window yet." would believe they had spent nothing. By the same rule the ledger's empty state says nothing has been **booked**, not that nothing happened: the books trail the balance by a moment, so a balance that has moved beside an empty ledger is not a contradiction the screen may assert. The breakdown's default title is neutral ("Spend breakdown"): a row is a member of a dimension the host names, which is not necessarily a person, and the host's copy says which.
+16. **The ledger pages through the cursor the server issued, and a control the panel cannot back is not drawn.** `ledgerNext` is opaque: the panel hands it to `CreditsSource.moreLedger` and reads nothing in it. The control appears only when there is a cursor *and* a source that can fetch it (a button that does nothing is worse than none); it is disabled while a page is in flight and never for good, so a failed page — which is said, and leaves what is shown as it was — is asked for again with the same button. Older rows go below the newer, a row already on the screen is not put there twice, and a page is derived and refused exactly as the first would be (a float is not shown). A fresh snapshot, or another scope, starts the list over, and a page that arrives for a list that is gone is dropped. An empty cursor is the end. When the control goes, focus moves to the ledger instead of being lost, and the rows that arrived are announced.
 
 ---
 
@@ -305,11 +317,13 @@ The panel needs materially more than a balance figure, and it needs it in one sh
 | `limits[]` | kernel `[]Limit` for the realm | pass-through, including `warnAtPct` and `denyCode` — **no translation table on either side** |
 | `balance.burnRatePerDay` | `usage_daily` rollup | drives "runs out in ~N days", the figure people actually act on |
 | `series[]` | `usage_daily` rollup | default 14 days, `?days=` configurable |
-| `breakdown[]` | `usage_daily` grouped by dimension | **scoped to the caller's own spend** unless they hold the admin entitlement — a member must not learn colleagues' usage from a credits screen |
+| `breakdown[]` | `usage_daily` grouped by dimension | everyone's, in the scope-wide snapshot; **none in a member's snapshot** — a member must not learn colleagues' usage from a credits screen, and the rollup cannot yet tell a member's own days from a colleague's (it is keyed by an actor an ordinary event does not carry), so a member's view is empty rather than risk it |
 | `ledger[]` + `idempotent` | `credit_ledger` | the `deduped` tag is how "charged at most once" becomes *observable to the person it protects*, rather than a claim in a spec |
 | `anchor` | resolved by the host | absent when this scope *is* the billing entity |
 
-**What is built today.** `balance.remaining` / `granted` / `pools`, `limits[]` and `ledger[]` are served by `GET /v1/credits` ([rest-api.md](./rest-api.md)); `balance.burnRatePerDay`, `series[]` and `breakdown[]` are absent — `breakdown` is an empty list — until the snapshot reads the `usage_daily` rollup. The rollup itself is built (`billing.usage.rollup.tick`; a member-scoped `Breakdown` read: [data-model.md](../data-model.md#usage_daily)); `GET /v1/credits` does not serve it yet. A limit view is the kernel's `Limit` with `window` mapped to the view's vocabulary in exactly one place (`app.Credits`); `warnAtPct` is the limit's own, as a whole percent; `resetsAt` is the instant the counter starts over, in the limit's own zone, and only a calendar window has one; and a balance's `used` is the overdraft it is into. `scopeHint` is set only in a member's view. `ledger[].idempotent` is not served: a replay writes no ledger row (it answers `applied: false`), so the snapshot has nothing to mark; the `deduped` tag renders when a host's source sets it.
+**What is built today.** `balance.remaining` / `granted` / `pools`, `limits[]` and `ledger[]` are served by `GET /v1/credits` ([rest-api.md](./rest-api.md)); `balance.burnRatePerDay`, `series[]` and `breakdown[]` are served too, from the `usage_daily` rollup ([data-model.md](../data-model.md#usage_daily)), **by the scope-wide snapshot only**: `series[]` is one `{at, amount}` per UTC day ending today (the default 14, `?days=` 1 to 366), a quiet day a `0`; `breakdown[]` is the same days' spend by resource, largest first, and `key` is `unspecified` for spend whose row names no resource; `burnRatePerDay` is what the scope spends in a day, counted from the first day with spend in the window and **rounded up** so the runway the panel states is never overstated, and `0` when the window holds no spend (the panel then offers no estimate). A member's snapshot carries none of the three (`breakdown` is `[]`), an engine with no rollup wired omits them the same way, and a rollup that cannot be read fails the snapshot instead of saying nothing was spent. The rollup is a few minutes behind the books, and `series` and `breakdown` are two reads of the same rows, so a rewrite between them can make them differ for one response — which is what the residual row (invariant 5) is for. A limit view is the kernel's `Limit` with `window` mapped to the view's vocabulary in exactly one place (`app.Credits`); `warnAtPct` is the limit's own, as a whole percent; `resetsAt` is the instant the counter starts over, in the limit's own zone, and only a calendar window has one; and a balance's `used` is the overdraft it is into. `scopeHint` is set only in a member's view. `ledger[].idempotent` is not served: a replay writes no ledger row (it answers `applied: false`), so the snapshot has nothing to mark; the `deduped` tag renders when a host's source sets it.
+
+**The reference binding over this wire** (`ui/examples/llm-credits`): `RestCreditsSource` sends nothing beyond the scope unless asked — `days` and `pageSize` are opt-in, because the server's defaults are the server's to choose — and implements `moreLedger` as the same endpoint with `cursor`. A **member's view** (`member: { kind, id }`) names the member on the snapshot **and on every older page**: a page a member scrolls to must still be theirs, or paging would be the way to read a colleague's usage. The cursor is decoded as a non-empty string or nothing (`null` is the server's end, and is not carried). The screen titles the breakdown "Spend by feature", because the rows the engine sends are resources; the package's own default is neutral.
 
 See [rest-api.md](./rest-api.md) for the full endpoint contract and [entitlement-ports.md](./entitlement-ports.md) for the admin gate on `breakdown[]`.
 

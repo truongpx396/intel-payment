@@ -6,7 +6,7 @@ MODULE  := github.com/truongpx396/intel-payment
 
 .DEFAULT_GOAL := help
 .PHONY: help build test test-integration fuzz mutation mutation-diff verify-red-green verify-tdd-gates verify-equivalence verify-clients lint arch-lint check-plan-branches verify-portability \
-        ui-install ui-lint ui-test ui-build ui-ci verify-ui-boundary verify-ui-portability verify-boundary verify-schema verify-hot-path verify-deploy e2e e2e-install up up-jetstream down down-volumes logs \
+        ui-install ui-lint ui-test ui-build ui-ci verify-ui-boundary verify-ui-portability verify-boundary verify-schema verify-hot-path verify-deploy e2e e2e-install e2e-seed up up-jetstream down down-volumes logs \
         migrate seed proto proto-tools proto-check fmt vuln secrets ci clean
 
 help: ## Show this help
@@ -115,6 +115,9 @@ verify-deploy: ## Build the image; migrate an empty Postgres; prove the Redis AC
 ## ---- end-to-end (Playwright against a running stack) -----------------------
 e2e-install: ## Install the e2e dependencies
 	cd e2e && npm ci
+
+e2e-seed: ## Give the running stack's realm what the browser tests need: a rate card and two ceilings (idempotent)
+	$(COMPOSE) exec -T postgres psql -U payment -d payment -v ON_ERROR_STOP=1 < e2e/seed.sql
 
 e2e: ## Run the e2e suite against E2E_BASE_URL (default: the local `make up` stack)
 	cd e2e && E2E_BASE_URL=$${E2E_BASE_URL:-http://localhost:8080} npx playwright test

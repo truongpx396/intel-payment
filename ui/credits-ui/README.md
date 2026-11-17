@@ -26,5 +26,4 @@ blocked offer as buyable; draw a fraction as money; or follow a `javascript:` UR
 [`credits-ui-ports.md`](../../specs/001-metering-billing-core/contracts/credits-ui-ports.md); a complete binding is in
 [`../examples/llm-credits`](../examples/llm-credits/src/RestCreditsSource.ts).
 
-**Status.** Built and tested in jsdom, shown to pack, install into an unrelated app and build, and looked at once in Chromium by hand. No automated browser test
-yet; not published to a registry; not yet used against a live server.
+**Status.** Built and tested in jsdom, shown to pack, install into an unrelated app and build, and driven in Chromium over a live `paymentd` by the e2e `ui` project (with an axe-core audit). Not published to a registry; only Chromium has run it, and no screen reader has.

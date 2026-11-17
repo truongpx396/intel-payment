@@ -24,7 +24,7 @@ const noTransport = ["fetch", "XMLHttpRequest", "WebSocket", "window", "document
 );
 
 export default defineConfig([
-  globalIgnores(["**/dist/**", "**/node_modules/**"]),
+  globalIgnores(["**/dist/**", "**/dist-host/**", "**/node_modules/**"]),
   js.configs.recommended,
   tseslint.configs.recommended,
   {

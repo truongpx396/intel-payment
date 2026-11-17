@@ -7,9 +7,9 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { CreditsPanel } from "../src/index.js";
 import { deriveFulfilment } from "../src/model.js";
-import type { CheckoutSource, CreditsSnapshot, CreditsSource, FulfilmentState, Scope } from "../src/ports.js";
+import type { CheckoutSource, CreditsSnapshot, CreditsSource, FulfilmentState, LedgerPage, Scope } from "../src/ports.js";
 import { catalog, exhausted, llm, panelSnapshot } from "./fixtures.js";
-import { q } from "./support.js";
+import { q, row } from "./support.js";
 
 const scope: Scope = { kind: "workspace", id: "w1" };
 const never = <T,>() => new Promise<T>(() => undefined);
@@ -260,21 +260,23 @@ describe("a person can tell what they are looking at", () => {
     const f = fakes();
     render(panel(f));
     await flush();
-    expect(headings()).toEqual(["Limits", "Spend over time", "Spend by member", "Activity", "Billing"]);
+    expect(headings()).toEqual(["Limits", "Spend over time", "Spend breakdown", "Activity", "Billing"]);
   });
 
   test("and the titles are there when there is nothing to show", async () => {
     const f = fakes({ snapshot: panelSnapshot(1, { series: undefined as never, breakdown: [], ledger: [] }) });
     render(panel(f));
     await flush();
-    expect(headings()).toEqual(["Limits", "Spend over time", "Spend by member", "Activity", "Billing"]);
-    expect(document.body.textContent).toContain("No spend in this window yet.");
+    expect(headings()).toEqual(["Limits", "Spend over time", "Spend breakdown", "Activity", "Billing"]);
+    // no series was sent, so what the screen knows about spend is nothing: it says that, not that nothing was spent
+    expect(document.body.textContent).toContain("Spend over time is not available here.");
+    expect(document.body.textContent).not.toContain("No spend in this window yet.");
   });
 
   test("a screen with nothing to sell has no Billing title either", async () => {
     render(<CreditsPanel source={fakes().source} scope={scope} labels={llm} />);
     await flush();
-    expect(headings()).toEqual(["Limits", "Spend over time", "Spend by member", "Activity"]);
+    expect(headings()).toEqual(["Limits", "Spend over time", "Spend breakdown", "Activity"]);
   });
 });
 
@@ -355,5 +357,154 @@ describe("the seams — what the host may leave out, or swap", () => {
     await act(async () => answers.get("A")!(snap(1_111)));
     expect(document.querySelector(".cu-hero-figure")!.textContent).toContain("2,222");
     expect(document.body.textContent).not.toContain("1,111");
+  });
+});
+
+// R145 — the ledger pages. The snapshot carries the newest rows and an opaque cursor for older ones (`ledgerNext`); the panel offers them
+// when, and only when, it can fetch them. A paging control is mostly failure handling — a second press while the first is in flight, a page
+// that fails, one that overlaps what is shown, a late answer for a scope the screen has left, a fresh snapshot that starts the list over — and
+// each is a way a person is shown a ledger that is not the books'.
+describe("the ledger pages", () => {
+  const firstPage = (next?: string) => panelSnapshot(1, { ledger: [row({ id: "a" }), row({ id: "b" })], ...(next === undefined ? {} : { ledgerNext: next }) });
+  const older = (ids: string[], next?: string): LedgerPage => ({ rows: ids.map((id, i) => row({ id, delta: q(-(i + 1)) })), ...(next === undefined ? {} : { next }) });
+  const showMore = () => screen.queryByRole("button", { name: "Show earlier activity" });
+  const rowIds = () => [...document.querySelectorAll("[data-row]")].map((r) => r.getAttribute("data-row"));
+  const press = async () => {
+    fireEvent.click(showMore()!);
+    await flush();
+  };
+  const paged = (first: CreditsSnapshot, more: NonNullable<CreditsSource["moreLedger"]>) => ({
+    load: vi.fn<CreditsSource["load"]>(async () => first),
+    moreLedger: vi.fn<NonNullable<CreditsSource["moreLedger"]>>(more),
+  });
+  const mount = (source: CreditsSource, props: Record<string, unknown> = {}) => render(<CreditsPanel source={source} scope={scope} labels={llm} {...props} />);
+
+  test("a control that does nothing is not drawn: no cursor, or a source that cannot page, and there is no button", async () => {
+    mount(paged(firstPage(), async () => older([])));
+    await flush();
+    expect(showMore()).toBeNull();
+    expect(rowIds()).toEqual(["a", "b"]);
+  });
+
+  test("a cursor and a source that cannot fetch it is not a button either", async () => {
+    mount({ load: async () => firstPage("c1") });
+    await flush();
+    expect(showMore()).toBeNull();
+  });
+
+  test("the button asks for exactly the cursor it was given, appends the older rows after the newer, and goes when the books run out", async () => {
+    const pages = new Map<string, LedgerPage>([["c1", older(["c", "d"], "c2")], ["c2", older(["e"])]]);
+    const source = paged(firstPage("c1"), async (_s, cursor) => pages.get(cursor)!);
+    mount(source);
+    await flush();
+    expect(showMore()).not.toBeNull();
+
+    await press();
+    expect(source.moreLedger).toHaveBeenLastCalledWith(scope, "c1");
+    expect(rowIds()).toEqual(["a", "b", "c", "d"]); // newest first, older below: the order the books keep
+    expect(showMore()).not.toBeNull(); // c2 says there is more
+    expect(within(screen.getByRole("region", { name: "Activity" })).getByRole("status").textContent).toBe("2 earlier entries loaded.");
+
+    await press();
+    expect(source.moreLedger).toHaveBeenLastCalledWith(scope, "c2");
+    expect(rowIds()).toEqual(["a", "b", "c", "d", "e"]);
+    expect(showMore()).toBeNull(); // the end: no cursor, no button
+    expect(source.moreLedger).toHaveBeenCalledTimes(2);
+  });
+
+  test("when the button goes, focus goes to the ledger and is not lost to the page", async () => {
+    mount(paged(firstPage("c1"), async () => older(["c"])));
+    await flush();
+    showMore()!.focus();
+    await press();
+    expect(showMore()).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("region", { name: "Activity" }));
+  });
+
+  test("a second press while the first is in flight asks once, and the button says it is busy", async () => {
+    let release: (p: LedgerPage) => void = () => undefined;
+    const source = paged(firstPage("c1"), () => new Promise<LedgerPage>((r) => (release = r)));
+    mount(source);
+    await flush();
+    fireEvent.click(showMore()!);
+    fireEvent.click(showMore()!);
+    fireEvent.click(showMore()!);
+    await flush();
+    expect(source.moreLedger).toHaveBeenCalledTimes(1);
+    expect(showMore()!.getAttribute("aria-busy")).toBe("true");
+    expect((showMore() as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => release(older(["c"])));
+    expect(rowIds()).toEqual(["a", "b", "c"]);
+  });
+
+  test("a page that fails is said, leaves what is shown as it was, and can be asked for again", async () => {
+    let n = 0;
+    const source = paged(firstPage("c1"), async () => (++n === 1 ? Promise.reject(new Error("network")) : older(["c"])));
+    mount(source);
+    await flush();
+    await press();
+    expect(screen.getByRole("alert").textContent).toContain("Could not load earlier activity.");
+    expect(rowIds()).toEqual(["a", "b"]);
+    expect((showMore() as HTMLButtonElement).disabled).toBe(false); // a failure is not a dead end
+
+    await press();
+    expect(rowIds()).toEqual(["a", "b", "c"]);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  test("an empty cursor from a source is the end, not another page: asking for it would ask for the first page again", async () => {
+    const source = paged(firstPage("c1"), async () => ({ ...older(["c"]), next: "" }));
+    mount(source);
+    await flush();
+    await press();
+    expect(rowIds()).toEqual(["a", "b", "c"]);
+    expect(showMore()).toBeNull();
+  });
+
+  test("a row the screen already shows is not shown twice, however the pages overlap", async () => {
+    mount(paged(firstPage("c1"), async () => older(["b", "c", "c"])));
+    await flush();
+    await press();
+    expect(rowIds()).toEqual(["a", "b", "c"]);
+  });
+
+  test("a page with an amount that is not an integer is refused like any other figure, and none of it is shown", async () => {
+    const bad: LedgerPage = { rows: [row({ id: "c", delta: 1.5 as never })] };
+    mount(paged(firstPage("c1"), async () => bad));
+    await flush();
+    await press();
+    expect(screen.getByRole("alert").textContent).toContain("Could not load earlier activity.");
+    expect(rowIds()).toEqual(["a", "b"]);
+  });
+
+  test("a fresh snapshot starts the list over, with its own cursor", async () => {
+    let push: (s: CreditsSnapshot) => void = () => undefined;
+    const source = { ...paged(firstPage("c1"), async () => older(["c"], "c2")), subscribe: (_s: Scope, on: (s: CreditsSnapshot) => void) => ((push = on), () => undefined) };
+    mount(source);
+    await flush();
+    await press();
+    expect(rowIds()).toEqual(["a", "b", "c"]);
+
+    act(() => push(panelSnapshot(1, { ledger: [row({ id: "x" })], ledgerNext: "n9" })));
+    expect(rowIds()).toEqual(["x"]); // the rows of the old list do not outlive the snapshot they were fetched against
+    await press();
+    expect(source.moreLedger).toHaveBeenLastCalledWith(scope, "n9");
+  });
+
+  test("a late page for a scope the screen has left is not put under the new scope's ledger", async () => {
+    let release: (p: LedgerPage) => void = () => undefined;
+    const other: Scope = { kind: "workspace", id: "w2" };
+    const source = {
+      load: vi.fn<CreditsSource["load"]>(async (s) => (s.id === "w2" ? panelSnapshot(1, { ledger: [row({ id: "z" })] }) : firstPage("c1"))),
+      moreLedger: vi.fn<NonNullable<CreditsSource["moreLedger"]>>(() => new Promise<LedgerPage>((r) => (release = r))),
+    };
+    const view = mount(source);
+    await flush();
+    fireEvent.click(showMore()!);
+    await flush();
+    view.rerender(<CreditsPanel source={source} scope={other} labels={llm} />);
+    await flush();
+    await act(async () => release(older(["late"])));
+    expect(rowIds()).toEqual(["z"]);
   });
 });

@@ -8,6 +8,7 @@ import {
   type CreditsSnapshot,
   type CreditsSource,
   type FulfilmentState,
+  type LedgerPage,
   type LedgerRow,
   type LimitView,
   type PlanCatalog,
@@ -71,6 +72,7 @@ export function toSnapshot(wire: unknown): CreditsSnapshot {
   const scope = rec(w.scope, "snapshot.scope");
   const realm = optStr(scope.realm, "snapshot.scope.realm");
   const balance = rec(w.balance, "snapshot.balance");
+  const ledgerNext = optStr(w.ledgerNext, "snapshot.ledgerNext"); // absent, null and empty are all the end: a cursor is a non-empty string or nothing
   const burn = balance.burnRatePerDay === undefined || balance.burnRatePerDay === null ? undefined : int(balance.burnRatePerDay, "snapshot.balance.burnRatePerDay");
   const pools = balance.pools === undefined ? undefined : arr(balance.pools, "snapshot.balance.pools").map((p, i) => {
     const path = `snapshot.balance.pools[${i}]`;
@@ -107,6 +109,8 @@ export function toSnapshot(wire: unknown): CreditsSnapshot {
         attributes: o.attributes === undefined ? {} : rec(o.attributes, `${path}.attributes`),
       };
     }),
+    // null is the server's end of the ledger, not a cursor: the package reads absence as the end, so null is not carried
+    ...(ledgerNext === undefined ? {} : { ledgerNext }),
   };
 }
 
@@ -189,13 +193,44 @@ function query(params: Record<string, string | undefined>): string {
 
 const scopeParams = (s: Scope) => ({ scope_kind: s.kind, scope_id: s.id, scope_realm: s.realm });
 
+export interface RestCreditsOptions extends RestOptions {
+  /**
+   * A member's view: the scope-wide ceilings and that member's own, with only that member's ledger rows, and no spend section (the server's
+   * rollup cannot tell a member's days from a colleague's). It is named on the snapshot and on EVERY older page — a page the member scrolls to
+   * must still be theirs, or paging would be the way to read a colleague's usage.
+   */
+  readonly member?: { readonly kind: string; readonly id: string };
+  /** The length of the spend series, in days. Not sent unless set: the server's default is the server's to choose. */
+  readonly days?: number;
+  /** The ledger page size. Not sent unless set, for the same reason. */
+  readonly pageSize?: number;
+}
+
 export class RestCreditsSource implements CreditsSource {
   readonly #http: Http;
-  constructor(options: RestOptions) {
+  readonly #o: RestCreditsOptions;
+  constructor(options: RestCreditsOptions) {
     this.#http = new Http(options);
+    this.#o = options;
+  }
+  #params(scope: Scope, cursor?: string): Record<string, string | undefined> {
+    const { member, days, pageSize } = this.#o;
+    return {
+      ...scopeParams(scope),
+      subject_kind: member?.kind,
+      subject_id: member?.id,
+      days: days === undefined ? undefined : String(days),
+      limit: pageSize === undefined ? undefined : String(pageSize),
+      cursor,
+    };
   }
   async load(scope: Scope): Promise<CreditsSnapshot> {
-    return toSnapshot(await this.#http.get("/v1/credits", scopeParams(scope)));
+    return toSnapshot(await this.#http.get("/v1/credits", this.#params(scope)));
+  }
+  /** An older page is the same endpoint with the cursor: the contract's snapshot, of which the page is the ledger. */
+  async moreLedger(scope: Scope, cursor: string): Promise<LedgerPage> {
+    const s = toSnapshot(await this.#http.get("/v1/credits", this.#params(scope, cursor)));
+    return { rows: s.ledger, ...(s.ledgerNext === undefined ? {} : { next: s.ledgerNext }) };
   }
 }
 

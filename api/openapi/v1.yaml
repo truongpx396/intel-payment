@@ -285,7 +285,9 @@ paths:
         - name: days
           in: query
           schema: { type: integer, minimum: 1, maximum: 366 }
-          description: Sizes the spend series. Accepted and checked so a request keeps its meaning when the series arrives; until then the series is absent.
+          description: |
+            The length of the spend series, in UTC days ending today — and the window the breakdown and the burn rate cover. Default 14.
+            A member's snapshot (`subject_kind` and `subject_id`) carries no spend section whatever this says.
       responses:
         "200":
           description: The snapshot.
@@ -2254,6 +2256,12 @@ components:
             remaining: { type: integer, format: int64 }
             granted: { type: integer, format: int64 }
             primaryLimitKey: { type: string }
+            burnRatePerDay:
+              type: integer
+              format: int64
+              description: |
+                What the scope spends in a day, rounded up so a "runs out in about N days" is never overstated, counted from the first
+                day with spend in the series. 0 when the window holds none. Absent in a member's snapshot, and when the engine has no rollup.
             pools:
               type: array
               items:
@@ -2279,10 +2287,30 @@ components:
               warnAtPct: { type: integer }
               denyCode: { type: string }
               scopeHint: { type: string }
+        series:
+          type: array
+          description: |
+            The scope's spend, one point per UTC day ending today and as long as `days`, oldest first; a day with no spend is a 0, not a gap. From the
+            usage_daily rollup, so a few minutes behind the books. Absent in a member's snapshot, and when the engine has no rollup.
+          items:
+            type: object
+            required: [at, amount]
+            properties:
+              at: { type: string, format: date-time, description: "The instant the day starts, in UTC." }
+              amount: { type: integer, format: int64, description: Credits spent that day. }
         breakdown:
           type: array
-          items: { type: object }
-          description: Absent of rows until the usage rollup exists; never invented.
+          description: |
+            The same days' spend by dimension (the resource that was metered), largest first. Always a list: empty in a member's snapshot, and
+            when the engine has no rollup or the window holds no spend. It is read separately from `series`, so a rollup rewrite between the two
+            reads can make them differ for one response; a screen shows the difference, it does not hide it.
+          items:
+            type: object
+            required: [key, label, amount]
+            properties:
+              key: { type: string, description: 'The dimension. A spend whose ledger row names no resource is "unspecified".' }
+              label: { type: string }
+              amount: { type: integer, format: int64 }
         ledger:
           type: array
           items:

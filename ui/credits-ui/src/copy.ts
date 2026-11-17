@@ -31,11 +31,17 @@ export interface Copy {
   readonly spendHeading: string;
   readonly spendSummary: (total: string, peak: string, days: number) => string;
   readonly noSpend: string;
+  /** The snapshot carried no series (a member's view, or a server with no rollup): what is known about spend is nothing, and that is not "nothing was spent". */
+  readonly spendUnavailable: string;
   readonly breakdownHeading: string;
   readonly noBreakdown: string;
+  readonly breakdownUnavailable: string;
 
   readonly ledgerHeading: string;
   readonly noLedger: string;
+  readonly moreLedger: string;
+  readonly moreLedgerFailed: string;
+  readonly moreLedgerLoaded: (n: number) => string;
   readonly colOperation: string;
   readonly colActor: string;
   readonly colChange: string;
@@ -102,11 +108,18 @@ export const defaultCopy: Copy = {
   spendHeading: "Spend over time",
   spendSummary: (total, peak, days) => `${total} over ${days} ${days === 1 ? "day" : "days"}, at most ${peak} in one day`,
   noSpend: "No spend in this window yet.",
-  breakdownHeading: "Spend by member",
+  spendUnavailable: "Spend over time is not available here.",
+  // a row is a member of a dimension the host names (a feature, a model, a team), not necessarily a person: the host says which, and until it does this does not
+  breakdownHeading: "Spend breakdown",
   noBreakdown: "No spend to break down yet.",
+  breakdownUnavailable: "The spend breakdown is not available here.",
 
   ledgerHeading: "Activity",
-  noLedger: "No activity yet.",
+  // the ledger lists what the books have booked, and the books trail the balance by a moment: an empty one is not a claim that nothing happened
+  noLedger: "No activity has been booked yet.",
+  moreLedger: "Show earlier activity",
+  moreLedgerFailed: "Could not load earlier activity.",
+  moreLedgerLoaded: (n) => `${n} earlier ${n === 1 ? "entry" : "entries"} loaded.`,
   colOperation: "Operation",
   colActor: "By",
   colChange: "Change",

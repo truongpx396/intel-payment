@@ -1,5 +1,5 @@
 {
   "extends": "../../credits-ui/tsconfig.json",
   "compilerOptions": { "rootDir": "." },
-  "include": ["src", "test", "vitest.config.ts"]
+  "include": ["src", "test", "host", "vitest.config.ts", "vite.host.config.ts"]
 }

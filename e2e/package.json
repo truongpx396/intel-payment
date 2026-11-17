@@ -1,7 +1,7 @@
 {
   "name": "intel-payment-e2e",
   "private": true,
-  "description": "End-to-end tests against a running stack (make up). Playwright drives the REST surface today; the credits-ui package is not yet driven in a browser.",
+  "description": "End-to-end tests against a running stack (make up). Playwright drives the REST surface, and the credits-ui reference screen in Chromium over it.",
   "scripts": {
     "test": "playwright test",
     "test:list": "playwright test --list",
@@ -11,6 +11,7 @@
     "node": ">=22"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.14.0",
     "@playwright/test": "^1.63.0",
     "@types/node": "^26.6.3",
     "typescript": "^7.0.2"

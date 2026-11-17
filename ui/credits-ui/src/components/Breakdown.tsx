@@ -4,7 +4,7 @@ import type { UnitLabels } from "../ports.js";
 import { Figure } from "./shared.js";
 
 /**
- * Spend by member. Each row is its label and its amount as text; the swatch is a colour from the ramp by the member's index, and it
+ * Spend by a dimension the host names. Each row is its label and its amount as text; the swatch is a colour from the ramp by the row's index, and it
  * is aria-hidden because colour never carries identity alone (invariant 7). Other and the residual row are labelled, never blank.
  */
 export function Breakdown({ breakdown, labels, copy }: { breakdown: BreakdownModel; labels: UnitLabels; copy?: Partial<Copy> | undefined }) {
@@ -13,7 +13,7 @@ export function Breakdown({ breakdown, labels, copy }: { breakdown: BreakdownMod
     return (
       <section className="cu-breakdown" aria-label={c.breakdownHeading}>
         <h2 className="cu-heading">{c.breakdownHeading}</h2>
-        <p className="cu-muted">{c.noBreakdown}</p>
+        <p className="cu-muted">{breakdown.known ? c.noBreakdown : c.breakdownUnavailable}</p>
       </section>
     );
   }

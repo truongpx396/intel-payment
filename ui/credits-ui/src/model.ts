@@ -189,6 +189,8 @@ export interface BreakdownRow {
 export interface BreakdownModel {
   readonly total: Quantity;
   readonly rows: readonly BreakdownRow[];
+  /** A series came with the breakdown, so an empty list says nothing was spent. Without one, an empty list says only that nothing was sent. */
+  readonly known: boolean;
 }
 
 export interface LedgerModel {
@@ -210,6 +212,8 @@ export interface PanelView {
   readonly spend: SpendModel | null;
   readonly breakdown: BreakdownModel;
   readonly ledger: readonly LedgerModel[];
+  /** The cursor for the next page of the ledger, or null at the end (an empty cursor asks for the first page again, so it is not "more"). */
+  readonly ledgerNext: string | null;
   readonly anchor: BillingAnchor | null;
   readonly notices: NonNullable<CreditsSnapshot["notices"]>;
 }
@@ -342,11 +346,28 @@ function deriveBreakdown(s: CreditsSnapshot): { spend: SpendModel | null; breakd
   const peak = points === undefined ? 0 : points.reduce((m, p) => (p.amount > m ? p.amount : m), 0);
   return {
     spend: points === undefined || spendTotal === null ? null : { points, total: spendTotal, peak: peak as Quantity },
-    breakdown: { total, rows },
+    breakdown: { total, rows, known: points !== undefined },
   };
 }
 
 // ── the whole snapshot ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** Ledger rows as a person is shown them. The first page and every page after it are derived here, so a later page is refused for the same reasons the first would be. */
+export function deriveLedgerRows(rows: readonly LedgerRow[]): LedgerModel[] {
+  return rows.map((r, i) => {
+    const delta = quantity(r.delta, `ledger[${i}].delta`);
+    return {
+      id: r.id,
+      operationType: r.operationType,
+      delta,
+      direction: delta > 0 ? "in" : delta < 0 ? "out" : "none",
+      at: r.at,
+      ...(r.actor === undefined ? {} : { actor: r.actor }),
+      idempotent: r.idempotent === true,
+      attributes: r.attributes,
+    };
+  });
+}
 
 /** Everything a person is shown, from a snapshot and nothing else. Throws a SnapshotError for a snapshot that cannot be shown. */
 export function derivePanel(s: CreditsSnapshot): PanelView {
@@ -365,19 +386,8 @@ export function derivePanel(s: CreditsSnapshot): PanelView {
     pools: derivePools(s.balance, remaining),
     spend,
     breakdown,
-    ledger: s.ledger.map((r, i) => {
-      const delta = quantity(r.delta, `ledger[${i}].delta`);
-      return {
-        id: r.id,
-        operationType: r.operationType,
-        delta,
-        direction: delta > 0 ? "in" : delta < 0 ? "out" : "none",
-        at: r.at,
-        ...(r.actor === undefined ? {} : { actor: r.actor }),
-        idempotent: r.idempotent === true,
-        attributes: r.attributes,
-      };
-    }),
+    ledger: deriveLedgerRows(s.ledger),
+    ledgerNext: s.ledgerNext === undefined || s.ledgerNext === "" ? null : s.ledgerNext,
     anchor: s.anchor ?? null,
     notices: s.notices ?? [],
   };

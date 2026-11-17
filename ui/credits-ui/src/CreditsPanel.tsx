@@ -7,7 +7,7 @@ import { LimitMeters } from "./components/LimitMeter.js";
 import { PlanCatalogView } from "./components/PlanCatalog.js";
 import { SpendChart } from "./components/SpendChart.js";
 import { Notice, SafeLink, type Remedy } from "./components/shared.js";
-import { SnapshotError, deriveCatalog, deriveFulfilment, derivePanel, formatWithUnit, type CatalogModel, type FulfilmentView, type LimitModel, type PanelView } from "./model.js";
+import { SnapshotError, deriveCatalog, deriveFulfilment, deriveLedgerRows, derivePanel, formatWithUnit, type CatalogModel, type FulfilmentView, type LedgerModel, type LimitModel, type PanelView } from "./model.js";
 import type { CheckoutSource, CreditsSnapshot, CreditsSource, LedgerColumn, Scope, UnitLabels } from "./ports.js";
 
 /** The host's own billing UI, where it has one. A `planCard` IS the billing section: the panel draws it instead of a catalogue or a pointer. */
@@ -80,6 +80,45 @@ export function CreditsPanel({ source, scope, labels, columns, checkout, billing
   }, [source, key, attempt]);
 
   const view = load.state === "ready" ? load.view : null;
+
+  // The older pages of the ledger. They belong to the snapshot they were fetched against: a fresh snapshot, or another scope, starts the list
+  // over, and an answer that arrives after that is for a list that is gone. `epoch` is how a late answer knows. A second press while one is in
+  // flight cannot happen: the press sets `busy` before it awaits, React flushes a discrete event's update before the next one, and a disabled
+  // button is not pressed — so `disabled` is the one mechanism, and there is no second one to disagree with it.
+  type More = { readonly rows: readonly LedgerModel[]; /** undefined: not paged yet, so the snapshot's own cursor is the one to use */ readonly next: string | null | undefined; readonly state: "idle" | "busy" | "failed"; readonly loaded: number | null; readonly finished: boolean };
+  const [more, setMore] = useState<More>({ rows: [], next: undefined, state: "idle", loaded: null, finished: false });
+  const epoch = useRef(0);
+  const ledgerRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    epoch.current += 1;
+    setMore({ rows: [], next: undefined, state: "idle", loaded: null, finished: false });
+  }, [view, key]);
+  // read in the render that has the snapshot, not copied into state after it: the control is there with the rows, not a frame later
+  const cursor = more.next === undefined ? (view?.ledgerNext ?? null) : more.next;
+  const canPage = source.moreLedger !== undefined && cursor !== null;
+  const loadMore = useCallback(async () => {
+    if (cursor === null || source.moreLedger === undefined || view === null) return;
+    const mine = epoch.current;
+    setMore((m) => ({ ...m, state: "busy" }));
+    try {
+      const page = await source.moreLedger(scope, cursor);
+      const derived = deriveLedgerRows(page.rows); // a later page is refused for the reasons the first would be: a float is not shown
+      if (mine !== epoch.current) return;
+      setMore((m) => {
+        const shown = new Set([...view.ledger, ...m.rows].map((r) => r.id));
+        const fresh = derived.filter((r) => !shown.has(r.id) && (shown.add(r.id), true)); // a row already on the screen is not put there twice
+        const next = page.next === undefined || page.next === "" ? null : page.next;
+        return { rows: [...m.rows, ...fresh], next, state: "idle", loaded: fresh.length, finished: next === null };
+      });
+    } catch {
+      if (mine === epoch.current) setMore((m) => ({ ...m, state: "failed" }));
+    }
+  }, [cursor, source, key, view]);
+  // the button goes when the books run out; focus must not go with it
+  useEffect(() => {
+    if (more.finished) ledgerRef.current?.focus();
+  }, [more.finished]);
+
   const hasPlanCard = billing?.planCard !== undefined;
   const hasAnchor = view?.anchor !== null && view?.anchor !== undefined;
 
@@ -261,7 +300,16 @@ export function CreditsPanel({ source, scope, labels, columns, checkout, billing
       </section>
       <SpendChart spend={v.spend} labels={labels} copy={copy} />
       <Breakdown breakdown={v.breakdown} labels={labels} copy={copy} />
-      <LedgerTable rows={v.ledger} columns={columns} labels={labels} copy={copy} formatTime={formatTime} />
+      <LedgerTable
+        rows={[...v.ledger, ...more.rows]}
+        columns={columns}
+        labels={labels}
+        copy={copy}
+        formatTime={formatTime}
+        more={canPage ? { state: more.state, onMore: () => void loadMore(), announcement: more.loaded === null ? null : c.moreLedgerLoaded(more.loaded) } : undefined}
+        announcement={more.loaded === null ? null : c.moreLedgerLoaded(more.loaded)}
+        sectionRef={ledgerRef}
+      />
       {billingNode !== null ? (
         <section aria-label={c.billingHeading}>
           <h2 className="cu-heading">{c.billingHeading}</h2>

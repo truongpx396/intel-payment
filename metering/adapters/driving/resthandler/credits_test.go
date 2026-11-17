@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -260,5 +261,141 @@ func TestTheSnapshotRouteExistsOnlyWhenItsReaderDoes(t *testing.T) {
 	t.Parallel()
 	if rec := newAPI(t, &stubMeter{}, apiOpts{}).do("all", creditsRoute("")); rec.Code != 404 {
 		t.Fatalf("%d", rec.Code)
+	}
+}
+
+// FR-039: the spend section, in the credits contract's own names. A snapshot with a Spend carries `balance.burnRatePerDay`, `series` and a
+// populated `breakdown`; one without carries none of the three (the shape test above holds that side).
+func spendSnapshot(q ports.SnapshotQuery) ports.CreditsSnapshot {
+	s := fullSnapshot(q)
+	s.Spend = &ports.SpendView{
+		BurnRatePerDay: 111,
+		Series:         []domain.DailyRow{{Day: "2026-09-27", Credits: 300}, {Day: "2026-09-28"}, {Day: "2026-09-29", Credits: 805}},
+		Breakdown: []domain.BreakdownRow{
+			{Dimension: "gpt", Credits: 1000, CostMicros: 55, Events: 9}, {Dimension: "embed", Credits: 105}, {Dimension: "", Credits: 3},
+		},
+	}
+	return s
+}
+
+func TestTheSpendSectionIsTheCreditsContractsShape(t *testing.T) {
+	t.Parallel()
+	c := &stubCredits{fn: func(_ context.Context, q ports.SnapshotQuery) (ports.CreditsSnapshot, error) {
+		return spendSnapshot(q), nil
+	}}
+	rec := newAPI(t, &stubMeter{}, apiOpts{credits: c}).do("record", creditsRoute(""))
+	if rec.Code != 200 {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+	var m map[string]any
+	mustDecode(t, rec.Body.Bytes(), &m)
+
+	if bal, _ := m["balance"].(map[string]any); bal["burnRatePerDay"] != float64(111) {
+		t.Errorf("balance.burnRatePerDay: %v", bal["burnRatePerDay"])
+	}
+	series, _ := m["series"].([]any)
+	if len(series) != 3 {
+		t.Fatalf("series: %v", m["series"])
+	}
+	for i, want := range []struct {
+		at     string
+		amount float64
+	}{{"2026-09-27T00:00:00Z", 300}, {"2026-09-28T00:00:00Z", 0}, {"2026-09-29T00:00:00Z", 805}} {
+		p, _ := series[i].(map[string]any)
+		if p["at"] != want.at || p["amount"] != want.amount || len(p) != 2 { // a point is the day's start instant and the spend, and nothing else
+			t.Errorf("series[%d] = %v, want %s %v", i, p, want.at, want.amount)
+		}
+	}
+	rows, _ := m["breakdown"].([]any)
+	if len(rows) != 3 {
+		t.Fatalf("breakdown: %v", m["breakdown"])
+	}
+	for i, want := range []struct {
+		key    string
+		amount float64
+	}{{"gpt", 1000}, {"embed", 105}, {"unspecified", 3}} { // largest first; a row that names no resource is named, not blank
+		r, _ := rows[i].(map[string]any)
+		if r["key"] != want.key || r["label"] != want.key || r["amount"] != want.amount || len(r) != 3 {
+			t.Errorf("breakdown[%d] = %v, want %s %v (key, label, amount: a cost and an event count are not the contract's)", i, r, want.key, want.amount)
+		}
+	}
+}
+
+func TestAQuietWindowIsAZeroBurnAndZeroPointsNotAnAbsence(t *testing.T) {
+	t.Parallel()
+	c := &stubCredits{fn: func(_ context.Context, q ports.SnapshotQuery) (ports.CreditsSnapshot, error) {
+		s := fullSnapshot(q)
+		s.Spend = &ports.SpendView{Series: []domain.DailyRow{{Day: "2026-09-28"}, {Day: "2026-09-29"}}}
+		return s, nil
+	}}
+	rec := newAPI(t, &stubMeter{}, apiOpts{credits: c}).do("record", creditsRoute(""))
+	var m map[string]any
+	mustDecode(t, rec.Body.Bytes(), &m)
+	if bal, _ := m["balance"].(map[string]any); bal["burnRatePerDay"] != float64(0) {
+		t.Errorf("a window with no spend says so (0), it does not say nothing: %v", bal["burnRatePerDay"])
+	}
+	if s, _ := m["series"].([]any); len(s) != 2 {
+		t.Errorf("two quiet days are two points: %v", m["series"])
+	}
+	if b, ok := m["breakdown"].([]any); !ok || len(b) != 0 {
+		t.Errorf("no dimensions is an empty list, not null and not absent: %v", m["breakdown"])
+	}
+}
+
+func TestTheDaysTheCallerAsksForReachTheSnapshotAndNoneMeansTheEnginesDefault(t *testing.T) {
+	t.Parallel()
+	c := &stubCredits{}
+	a := newAPI(t, &stubMeter{}, apiOpts{credits: c})
+	if rec := a.do("record", creditsRoute("&days=30")); rec.Code != 200 || c.got.Days != 30 {
+		t.Fatalf("%d, days %d", rec.Code, c.got.Days)
+	}
+	for _, edge := range []int{1, domain.MaxSeriesDays} { // the shortest and the longest window are both windows
+		if rec := a.do("record", creditsRoute(fmt.Sprintf("&days=%d", edge))); rec.Code != 200 || c.got.Days != edge {
+			t.Fatalf("days=%d: %d, days %d", edge, rec.Code, c.got.Days)
+		}
+	}
+	if rec := a.do("record", creditsRoute("")); rec.Code != 200 || c.got.Days != 0 {
+		t.Fatalf("%d, days %d: no ?days= is the engine's default (0), not a number the handler picks", rec.Code, c.got.Days)
+	}
+}
+
+func TestEveryNumberInTheSpendSectionIsAnInteger(t *testing.T) {
+	t.Parallel()
+	c := &stubCredits{fn: func(_ context.Context, q ports.SnapshotQuery) (ports.CreditsSnapshot, error) {
+		return spendSnapshot(q), nil
+	}}
+	rec := newAPI(t, &stubMeter{}, apiOpts{credits: c}).do("record", creditsRoute(""))
+	dec := json.NewDecoder(bytes.NewReader(rec.Body.Bytes()))
+	dec.UseNumber()
+	var v map[string]any
+	if err := dec.Decode(&v); err != nil {
+		t.Fatal(err)
+	}
+	seen := 0
+	check := func(path string, x any) {
+		n, ok := x.(json.Number)
+		if !ok {
+			t.Errorf("%s = %v is not a number", path, x)
+			return
+		}
+		seen++
+		if _, err := n.Int64(); err != nil || strings.ContainsAny(n.String(), ".eE") {
+			t.Errorf("%s = %s is not an integer", path, n)
+		}
+	}
+	bal, _ := v["balance"].(map[string]any)
+	check("balance.burnRatePerDay", bal["burnRatePerDay"])
+	series, _ := v["series"].([]any) // an absent section is a failure below, not a panic here
+	for _, p := range series {
+		pt, _ := p.(map[string]any)
+		check("series[].amount", pt["amount"])
+	}
+	rows, _ := v["breakdown"].([]any)
+	for _, r := range rows {
+		row, _ := r.(map[string]any)
+		check("breakdown[].amount", row["amount"])
+	}
+	if seen != 7 {
+		t.Fatalf("checked %d figures, want 7: is the walk reading the spend section?", seen)
 	}
 }

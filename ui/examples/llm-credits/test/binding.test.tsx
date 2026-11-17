@@ -267,3 +267,166 @@ describe("a different product is a different binding, and the package is not edi
     expect(llmLabels).toMatchObject({ unit: "credits", one: "credit", abbr: "cr" });
   });
 });
+
+// R146 — what only a real server showed the binding (T143–T145): the ledger has more pages, a member's view exists, and the breakdown's rows
+// are resources, not people.
+describe("the ledger's cursor and a member's view, on the wire", () => {
+  const scope = { realm: "acme", kind: "workspace", id: "w1" };
+  const older = {
+    ...creditsWire,
+    ledger: [
+      { id: "id-3", operationType: "query", delta: -10, at: "2026-09-27T09:00:00Z", attributes: { model: "gpt-4o-mini", tokens: "40" }, pool: "general", idemKey: "e3", eventCount: 1 },
+      { id: "id-4", operationType: "query", delta: -20, at: "2026-09-27T08:00:00Z", attributes: {}, pool: "general", idemKey: "e4", eventCount: 1 },
+    ],
+    ledgerNext: null,
+  };
+
+  test("the cursor is carried when there is one and absent when there is none — null is the server's end, not a cursor", () => {
+    expect(toSnapshot(creditsWire).ledgerNext).toBe("cur-2");
+    expect("ledgerNext" in toSnapshot({ ...creditsWire, ledgerNext: null })).toBe(false);
+    expect("ledgerNext" in toSnapshot({ ...creditsWire, ledgerNext: undefined })).toBe(false);
+    expect(() => toSnapshot({ ...creditsWire, ledgerNext: 7 })).toThrow(WireError); // an opaque cursor is a string; anything else is not the server
+  });
+
+  test("an older page is the same endpoint with the cursor, and comes back as rows and the next cursor", async () => {
+    const f = fakeFetch({ ...standardRoutes, "GET /api/payments/v1/credits": (c) => (c.url.searchParams.get("cursor") === "cur-2" ? older : creditsWire) });
+    const src = new RestCreditsSource({ baseUrl: BASE, fetch: f.fetch });
+    const page = await src.moreLedger(scope, "cur-2");
+    expect(page.rows.map((r) => [r.id, r.delta])).toEqual([["id-3", -10], ["id-4", -20]]);
+    expect(page.next).toBeUndefined();
+    expect(Object.fromEntries(f.calls[0]!.url.searchParams)).toEqual({ scope_kind: "workspace", scope_id: "w1", scope_realm: "acme", cursor: "cur-2" });
+  });
+
+  test("a page that is not the last carries its own cursor, so the chain goes on", async () => {
+    const f = fakeFetch({ ...standardRoutes, "GET /api/payments/v1/credits": () => ({ ...older, ledgerNext: "cur-3" }) });
+    const page = await new RestCreditsSource({ baseUrl: BASE, fetch: f.fetch }).moreLedger(scope, "cur-2");
+    expect(page.next).toBe("cur-3");
+  });
+
+  test("a page with a fraction in it is refused, as the first page's is", async () => {
+    const bad = { ...older, ledger: [{ ...older.ledger[0]!, delta: -0.5 }] };
+    const f = fakeFetch({ ...standardRoutes, "GET /api/payments/v1/credits": () => bad });
+    await expect(new RestCreditsSource({ baseUrl: BASE, fetch: f.fetch }).moreLedger(scope, "cur-2")).rejects.toThrow(SnapshotError); // refused by the package's own integer check, as every figure on the wire is
+  });
+
+  test("nothing is added to the request unless asked for: the server decides the window and the page size", async () => {
+    const f = fakeFetch(standardRoutes);
+    await new RestCreditsSource({ baseUrl: BASE, fetch: f.fetch }).load(scope);
+    expect(Object.keys(Object.fromEntries(f.calls[0]!.url.searchParams)).sort()).toEqual(["scope_id", "scope_kind", "scope_realm"]);
+  });
+
+  test("the days and the page size asked for are sent, to the snapshot and to every page", async () => {
+    const f = fakeFetch(standardRoutes);
+    const src = new RestCreditsSource({ baseUrl: BASE, fetch: f.fetch, days: 30, pageSize: 25 });
+    await src.load(scope);
+    await src.moreLedger(scope, "cur-2");
+    for (const c of f.calls) expect([c.url.searchParams.get("days"), c.url.searchParams.get("limit")]).toEqual(["30", "25"]);
+  });
+
+  test("a member's view names the member on the snapshot AND on every older page: a page the member scrolls to is still theirs", async () => {
+    const f = fakeFetch(standardRoutes);
+    const src = new RestCreditsSource({ baseUrl: BASE, fetch: f.fetch, member: { kind: "user", id: "u1" } });
+    await src.load(scope);
+    await src.moreLedger(scope, "cur-2");
+    expect(f.calls).toHaveLength(2);
+    for (const c of f.calls) expect([c.url.searchParams.get("subject_kind"), c.url.searchParams.get("subject_id")]).toEqual(["user", "u1"]);
+  });
+
+  test("without a member, no request names one: the scope's own view is never a member's by accident", async () => {
+    const f = fakeFetch(standardRoutes);
+    const src = new RestCreditsSource({ baseUrl: BASE, fetch: f.fetch });
+    await src.load(scope);
+    await src.moreLedger(scope, "cur-2");
+    for (const c of f.calls) expect([c.url.searchParams.has("subject_kind"), c.url.searchParams.has("subject_id")]).toEqual([false, false]);
+  });
+});
+
+describe("the screen, over a server that has spend, more history, and members", () => {
+  const scope = { realm: "acme", kind: "workspace", id: "w1" };
+  const spendWire = {
+    ...creditsWire,
+    balance: { ...creditsWire.balance, burnRatePerDay: 1_040 },
+    series: Array.from({ length: 14 }, (_, i) => ({ at: `2026-09-${String(16 + i).padStart(2, "0")}T00:00:00Z`, amount: i === 13 ? 1_040 : 0 })),
+    breakdown: [{ key: "llm.chat", label: "llm.chat", amount: 1_000 }, { key: "unspecified", label: "unspecified", amount: 40 }],
+  };
+  const region = (name: string) => screen.findByRole("region", { name });
+
+  test("the breakdown is titled for what its rows are — a feature — and the package's neutral default is not what a person reads", async () => {
+    const f = fakeFetch({ ...standardRoutes, "GET /api/payments/v1/credits": () => spendWire });
+    render(<LlmCreditsScreen baseUrl={BASE} scope={scope} currency="USD" fetch={f.fetch} />);
+    const by = await region("Spend by feature");
+    expect(by.textContent).toContain("llm.chat");
+    expect(screen.queryByRole("heading", { name: /by member/i })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Spend breakdown" })).toBeNull();
+  });
+
+  test("a feature's empty breakdown says it in the product's words", async () => {
+    const f = fakeFetch({ ...standardRoutes, "GET /api/payments/v1/credits": () => ({ ...creditsWire, series: spendWire.series.map((p) => ({ ...p, amount: 0 })), breakdown: [] }) });
+    render(<LlmCreditsScreen baseUrl={BASE} scope={scope} currency="USD" fetch={f.fetch} />);
+    expect((await region("Spend by feature")).textContent).toContain("No spend to break down yet.");
+  });
+
+  test("the window the product asks for reaches the server", async () => {
+    const f = fakeFetch(standardRoutes);
+    render(<LlmCreditsScreen baseUrl={BASE} scope={scope} currency="USD" fetch={f.fetch} days={30} />);
+    await screen.findByRole("region", { name: "Balance" });
+    expect(f.calls.find((c) => c.url.pathname.endsWith("/v1/credits"))!.url.searchParams.get("days")).toBe("30");
+  });
+
+  test("the page size the product asks for reaches the server, on the snapshot and on every older page", async () => {
+    const f = fakeFetch(standardRoutes);
+    render(<LlmCreditsScreen baseUrl={BASE} scope={scope} currency="USD" fetch={f.fetch} pageSize={25} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Show earlier activity" }));
+    await screen.findByRole("region", { name: "Balance" });
+    const asks = f.calls.filter((c) => c.url.pathname.endsWith("/v1/credits"));
+    expect(asks.length).toBeGreaterThanOrEqual(2);
+    for (const c of asks) expect(c.url.searchParams.get("limit")).toBe("25");
+  });
+
+  test("a quiet chart and an empty breakdown say they trail the ledger: the rollup runs every few minutes, so a spend that is in the ledger may not be here yet", async () => {
+    const quiet = { ...creditsWire, series: spendWire.series.map((p) => ({ ...p, amount: 0 })), breakdown: [] };
+    const f = fakeFetch({ ...standardRoutes, "GET /api/payments/v1/credits": () => quiet });
+    render(<LlmCreditsScreen baseUrl={BASE} scope={scope} currency="USD" fetch={f.fetch} />);
+    const chart = await region("Spend over time");
+    expect(chart.textContent).toContain("No spend in this window yet.");
+    expect(chart.textContent).toMatch(/trails the ledger by a few minutes/);
+    expect((await region("Spend by feature")).textContent).toMatch(/trails the ledger by a few minutes/);
+  });
+
+  test("a chart that has spend to show does not carry the apology", async () => {
+    const f = fakeFetch({ ...standardRoutes, "GET /api/payments/v1/credits": () => spendWire });
+    render(<LlmCreditsScreen baseUrl={BASE} scope={scope} currency="USD" fetch={f.fetch} />);
+    const chart = await screen.findByRole("figure", { name: "Spend over time" }); // a chart with data is a figure; only an empty one is a region
+    expect(chart.textContent).toContain("over 14 days");
+    expect(chart.textContent).not.toMatch(/trails the ledger/);
+  });
+
+  test("a member's view, which the server sends no series for, says the spend is not available — it does not say they spent nothing", async () => {
+    const f = fakeFetch(standardRoutes); // creditsWire has no series: what a member's snapshot looks like
+    render(<LlmCreditsScreen baseUrl={BASE} scope={scope} currency="USD" fetch={f.fetch} member={{ kind: "user", id: "u1" }} />);
+    await screen.findByRole("region", { name: "Balance" });
+    expect(screen.getByText("Spend over time is not available here.")).toBeTruthy();
+    expect(screen.queryByText(/No spend/)).toBeNull();
+    expect(f.calls.find((c) => c.url.pathname.endsWith("/v1/credits"))!.url.searchParams.get("subject_id")).toBe("u1");
+  });
+
+  test("the first page has a button for the rest of the ledger, and pressing it asks for the cursor and adds the older rows below", async () => {
+    const f = fakeFetch({
+      ...standardRoutes,
+      "GET /api/payments/v1/credits": (c) =>
+        c.url.searchParams.get("cursor") === "cur-2"
+          ? { ...creditsWire, ledger: [{ id: "id-3", operationType: "query", delta: -10, at: "2026-09-27T09:00:00Z", attributes: { model: "gpt-4o-mini" }, pool: "general", idemKey: "e3", eventCount: 1 }], ledgerNext: null }
+          : creditsWire,
+    });
+    render(<LlmCreditsScreen baseUrl={BASE} scope={scope} currency="USD" fetch={f.fetch} />);
+    const more = await screen.findByRole("button", { name: "Show earlier activity" });
+    const ids = () => [...document.querySelectorAll("[data-row]")].map((r) => r.getAttribute("data-row"));
+    expect(ids()).toEqual(["id-1", "id-2"]);
+    fireEvent.click(more);
+    await screen.findByText("gpt-4o-mini");
+    expect(ids()).toEqual(["id-1", "id-2", "id-3"]);
+    expect(screen.queryByRole("button", { name: "Show earlier activity" })).toBeNull(); // the older page said it was the last
+    expect(f.calls.filter((c) => c.url.searchParams.get("cursor") === "cur-2")).toHaveLength(1);
+  });
+});
+

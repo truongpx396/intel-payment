@@ -226,12 +226,38 @@ describe("invariant 7 — every series shows its label and its value as text, an
     expect(x).toBe(160);
   });
 
-  test("no data is said in words, never drawn as an empty box", () => {
+  test("a figure that is not there is not a zero: with no series, the chart and the breakdown say the spend is not available", () => {
+    // a member's snapshot, or an engine with no rollup, sends no series: the screen knows nothing about spend, and a member who read "No spend
+    // in this window yet." would believe they had spent nothing
     const view = derivePanel(panelSnapshot(1, { series: undefined as never, breakdown: [] }));
-    const { container } = render(<><SpendChart spend={view.spend} labels={llm} /><Breakdown breakdown={view.breakdown} labels={llm} /><LedgerTable rows={[]} labels={llm} /></>);
+    const { container } = render(<><SpendChart spend={view.spend} labels={llm} /><Breakdown breakdown={view.breakdown} labels={llm} /></>);
+    expect(container.textContent).toContain("Spend over time is not available here.");
+    expect(container.textContent).toContain("The spend breakdown is not available here.");
+    expect(container.textContent).not.toMatch(/No spend/);
+  });
+
+  test("a quiet window is a statement: with a series of zeros they say nothing was spent, and no flat line is drawn", () => {
+    const zeros = Array.from({ length: 14 }, (_, i) => ({ at: `2026-01-${String(i + 1).padStart(2, "0")}T00:00:00Z`, amount: q(0) }));
+    const view = derivePanel(panelSnapshot(1, { series: zeros, breakdown: [] }));
+    const { container } = render(<><SpendChart spend={view.spend} labels={llm} /><Breakdown breakdown={view.breakdown} labels={llm} /></>);
     expect(container.textContent).toContain("No spend in this window yet.");
     expect(container.textContent).toContain("No spend to break down yet.");
-    expect(container.textContent).toContain("No activity yet.");
+    expect(container.textContent).not.toContain("not available");
+    expect(container.querySelector("polyline")).toBeNull(); // a line along the floor of the chart is a drawing of nothing
+    expect(container.querySelector('[role="img"]')).toBeNull();
+  });
+
+  test("an empty ledger says nothing has been booked, not that nothing happened: the books trail the balance", () => {
+    const { container } = render(<LedgerTable rows={[]} labels={llm} />);
+    expect(container.textContent).toContain("No activity has been booked yet.");
+    expect(container.textContent).not.toContain("No activity yet.");
+  });
+
+  test("the breakdown's title does not call its rows people: a row is a member of a dimension the host names, and the engine's is a resource", () => {
+    const view = derivePanel(panelSnapshot(1));
+    const { container } = render(<Breakdown breakdown={view.breakdown} labels={llm} />);
+    expect(container.querySelector("h2")!.textContent).toBe("Spend breakdown");
+    expect(container.textContent).not.toMatch(/by member/i);
   });
 });
 

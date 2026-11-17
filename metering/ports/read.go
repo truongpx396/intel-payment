@@ -73,17 +73,35 @@ type SnapshotQuery struct {
 	SubjectKind, SubjectID string
 	LedgerAfter            string // the ledger page's cursor
 	LedgerLimit            int    // the ledger page's size; 0 is DefaultLedgerPage
+	Days                   int    // the spend series' length in days, ending today (UTC); 0 is DefaultSeriesDays, and at most domain.MaxSeriesDays
 }
 
+// DefaultSeriesDays is the length of the spend series when the query does not say: a fortnight (credits-ui-ports.md).
+const DefaultSeriesDays = 14
+
 // CreditsSnapshot is what a credits panel draws, in one read (FR-036). Its shape is the credits-ui contract's
-// CreditsSnapshot, so the wire needs no translation table. The usage_daily rollup (a burn rate, a series, a
-// breakdown) is a later phase: until then those are absent, not invented.
+// CreditsSnapshot, so the wire needs no translation table. Spend is what the usage_daily rollup says (a burn rate, a
+// series, a breakdown); it is absent, not invented, when the engine has no rollup or the snapshot is a member's.
 type CreditsSnapshot struct {
 	Scope      domain.Scope
 	Balance    BalanceView
 	Limits     []LimitView
 	Ledger     []LedgerEntry
 	LedgerNext string
+	Spend      *SpendView
+}
+
+// SpendView is the rollup's answer over the last Days days, in UTC days as the rollup keeps them. It is derived data — a few minutes behind
+// the books, never a billing input — and its two parts are two reads of the same rows, so they close on each other unless the rollup was
+// rewritten between them (the panel shows any difference as a residual row, never as a figure that quietly does not add up).
+type SpendView struct {
+	// BurnRatePerDay is what the scope spends in a day, rounded up so a runway is never overstated, counted from the first day of spend in the
+	// window (domain.BurnRate). Zero when nothing was spent: the panel then offers no estimate.
+	BurnRatePerDay domain.Credits
+	// Series is one point per day, oldest first; a day with no spend is a zero, not a gap.
+	Series []domain.DailyRow
+	// Breakdown is the spend by dimension over the same days, the largest first. It is everyone's: a member's snapshot has no spend section.
+	Breakdown []domain.BreakdownRow
 }
 
 // BalanceView is the hero: what is left, what was granted, and the parts.
