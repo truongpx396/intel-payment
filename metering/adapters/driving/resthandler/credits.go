@@ -12,24 +12,45 @@ import (
 
 // GET /v1/credits is the credits-ui contract's CreditsSnapshot, in that contract's own names (camelCase): the
 // wire is a pass-through, so the package needs no translation table on either side. Every figure is an
-// integer. A burn rate, a series, a breakdown by dimension, an anchor and notices are absent — not empty,
-// not invented — until the usage_daily rollup and the host-resolved anchor exist.
+// integer. The burn rate, the series and the breakdown come from the usage_daily rollup: a scope-wide snapshot carries them, and a member's
+// carries none (the rollup cannot tell a member's days from a colleague's), so the burn rate and the series are absent there — not empty, not
+// invented — and the breakdown is an empty list. An anchor and notices are the host's, and absent here.
 
 type creditsJSON struct {
-	Scope      scopeJSON       `json:"scope"`
-	Balance    balanceViewJSON `json:"balance"`
-	Limits     []limitViewJSON `json:"limits"`
-	Breakdown  []struct{}      `json:"breakdown"`
-	Ledger     []ledgerRowJSON `json:"ledger"`
-	LedgerNext *string         `json:"ledgerNext"`
+	Scope      scopeJSON         `json:"scope"`
+	Balance    balanceViewJSON   `json:"balance"`
+	Limits     []limitViewJSON   `json:"limits"`
+	Series     []seriesPointJSON `json:"series,omitempty"`
+	Breakdown  []breakdownJSON   `json:"breakdown"`
+	Ledger     []ledgerRowJSON   `json:"ledger"`
+	LedgerNext *string           `json:"ledgerNext"`
 }
 
 type balanceViewJSON struct {
-	Remaining       int64          `json:"remaining"`
-	Granted         int64          `json:"granted"`
-	PrimaryLimitKey string         `json:"primaryLimitKey"`
-	Pools           []poolViewJSON `json:"pools"`
+	Remaining       int64  `json:"remaining"`
+	Granted         int64  `json:"granted"`
+	PrimaryLimitKey string `json:"primaryLimitKey"`
+	// BurnRatePerDay is a pointer so that a real zero (a window with no spend) is on the wire as 0 and an absent one (no spend section) is not.
+	BurnRatePerDay *int64         `json:"burnRatePerDay,omitempty"`
+	Pools          []poolViewJSON `json:"pools"`
 }
+
+// seriesPointJSON is one day of spend: the instant the day starts (UTC, as the rollup keeps its days) and what was spent.
+type seriesPointJSON struct {
+	At     string `json:"at"`
+	Amount int64  `json:"amount"`
+}
+
+// breakdownJSON is one dimension of the spend: the credits contract's BreakdownSeries. The host names its own dimensions; the engine's is the
+// resource that was metered, so key and label are both that, and the cost and event count the rollup also holds are not part of the contract.
+type breakdownJSON struct {
+	Key    string `json:"key"`
+	Label  string `json:"label"`
+	Amount int64  `json:"amount"`
+}
+
+// unspecified names the dimension of spend whose ledger row names no resource: a blank key or label would be a row nobody can read.
+const unspecified = "unspecified"
 
 type poolViewJSON struct {
 	Key       string `json:"key"`
@@ -80,7 +101,7 @@ func creditsToJSON(c ports.CreditsSnapshot) creditsJSON {
 			Pools: make([]poolViewJSON, 0, len(c.Balance.Pools)),
 		},
 		Limits:    make([]limitViewJSON, 0, len(c.Limits)),
-		Breakdown: []struct{}{},
+		Breakdown: []breakdownJSON{},
 		Ledger:    make([]ledgerRowJSON, 0, len(c.Ledger)),
 	}
 	for _, p := range c.Balance.Pools {
@@ -92,6 +113,22 @@ func creditsToJSON(c ports.CreditsSnapshot) creditsJSON {
 			v.ResetsAt = l.ResetsAt.UTC().Format(time.RFC3339Nano)
 		}
 		out.Limits = append(out.Limits, v)
+	}
+	if c.Spend != nil {
+		burn := int64(c.Spend.BurnRatePerDay)
+		out.Balance.BurnRatePerDay = &burn
+		out.Series = make([]seriesPointJSON, 0, len(c.Spend.Series))
+		for _, p := range c.Spend.Series {
+			// a day is YYYY-MM-DD, so its first instant in UTC is that date at midnight
+			out.Series = append(out.Series, seriesPointJSON{At: p.Day + "T00:00:00Z", Amount: int64(p.Credits)})
+		}
+		for _, r := range c.Spend.Breakdown {
+			key := r.Dimension
+			if key == "" {
+				key = unspecified
+			}
+			out.Breakdown = append(out.Breakdown, breakdownJSON{Key: key, Label: key, Amount: int64(r.Credits)})
+		}
 	}
 	for _, e := range c.Ledger {
 		at := e.OccurredAt
@@ -147,13 +184,16 @@ func (h *handler) credits(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = n
 	}
-	// days sizes the spend series, which needs the usage_daily rollup. It is accepted and checked so a caller's
-	// request keeps its meaning when the series arrives; until then the series is absent.
+	// days sizes the spend series (and the window the breakdown and the burn rate cover): 1 to a year's worth, and absent means the
+	// engine's default, which is the engine's to choose and not this handler's.
+	days := 0
 	if v := q.Get("days"); v != "" {
-		if n, err := strconv.Atoi(v); err != nil || n < 1 || n > 366 {
-			h.fail(w, r, "credits", fmt.Errorf("%w: days must be an integer from 1 to 366", domain.ErrInvalid))
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > domain.MaxSeriesDays {
+			h.fail(w, r, "credits", fmt.Errorf("%w: days must be an integer from 1 to %d", domain.ErrInvalid, domain.MaxSeriesDays))
 			return
 		}
+		days = n
 	}
 	scope, err := p.Resolve(domain.Scope{Realm: domain.Realm(q.Get("scope_realm")), Kind: q.Get("scope_kind"), ID: q.Get("scope_id")})
 	if err != nil {
@@ -161,7 +201,7 @@ func (h *handler) credits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	snap, err := h.cfg.Credits.Credits(r.Context(), ports.SnapshotQuery{
-		Scope: scope, SubjectKind: q.Get("subject_kind"), SubjectID: q.Get("subject_id"), LedgerAfter: q.Get("cursor"), LedgerLimit: limit,
+		Scope: scope, SubjectKind: q.Get("subject_kind"), SubjectID: q.Get("subject_id"), LedgerAfter: q.Get("cursor"), LedgerLimit: limit, Days: days,
 	})
 	if err != nil {
 		h.fail(w, r, "credits", err)

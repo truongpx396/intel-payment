@@ -178,6 +178,7 @@ func wire(ctx context.Context, s settings, log *slog.Logger, getenv func(string)
 	deps := app.Deps{
 		Pricers: pricers, Balance: st.Hot, Books: st.Books, Limits: st.Config, Pools: st.Config, RateCards: st.Config, Journal: st.Journal, Bus: bus,
 		Quotas: ent.Quotas, Usage: st.Hot, Ledger: st.Books, Clock: system.Clock{}, IDs: &system.IDs{}, Metrics: metrics,
+		Rollup: pgadapter.NewUsage(st.Pool), // the credits snapshot's burn rate, series and breakdown (the worker keeps the rollup current)
 	}
 	if cfg.LedgerGranularity == metering.GranularityRollup {
 		deps.Archive = pgarchive.New(st.Pool)
