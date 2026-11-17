@@ -8,6 +8,7 @@
 # Go
 bin/
 dist/
+dist-host/
 vendor/
 *.test
 coverage.out

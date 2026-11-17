@@ -165,8 +165,20 @@ jobs:
         working-directory: e2e
       - run: npx tsc --noEmit && npx playwright test --list
         working-directory: e2e
+      # The `ui` project drives the credits screen in Chromium over this stack (e2e/README.md): the page is built from ui/, and the stack is
+      # started with a throwaway service credential that only the test host (the product's "backend") holds.
+      - run: npm ci && npm run build -w @intel-payment/credits-ui && npm run build:host -w @intel-payment/example-llm-credits
+        working-directory: ui
+      - run: npx playwright install --with-deps chromium
+        working-directory: e2e
+      - name: A throwaway service credential for this run
+        run: |
+          token=$(openssl rand -hex 24)
+          echo "::add-mask::$token"
+          echo "E2E_SERVICE_TOKEN=$token" >> "$GITHUB_ENV"
+          echo "PAYMENT_SERVICE_TOKENS=e2e:$(printf %s "$token" | sha256sum | cut -d' ' -f1):default:record+grant+admin" >> "$GITHUB_ENV"
       - name: Start the stack
-        run: make up && for i in $(seq 1 60); do curl -sf localhost:8080/readyz && break; sleep 2; done
+        run: make up && for i in $(seq 1 60); do curl -sf localhost:8080/readyz && break; sleep 2; done && make e2e-seed
       - name: Run e2e
         working-directory: e2e
         env: { CI: 'true', E2E_BASE_URL: 'http://localhost:8080' }
