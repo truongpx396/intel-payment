@@ -373,6 +373,16 @@ describe("the screen, over a server that has spend, more history, and members", 
     expect(f.calls.find((c) => c.url.pathname.endsWith("/v1/credits"))!.url.searchParams.get("days")).toBe("30");
   });
 
+  test("the page size the product asks for reaches the server, on the snapshot and on every older page", async () => {
+    const f = fakeFetch(standardRoutes);
+    render(<LlmCreditsScreen baseUrl={BASE} scope={scope} currency="USD" fetch={f.fetch} pageSize={25} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Show earlier activity" }));
+    await screen.findByRole("region", { name: "Balance" });
+    const asks = f.calls.filter((c) => c.url.pathname.endsWith("/v1/credits"));
+    expect(asks.length).toBeGreaterThanOrEqual(2);
+    for (const c of asks) expect(c.url.searchParams.get("limit")).toBe("25");
+  });
+
   test("a member's view, which the server sends no series for, says the spend is not available — it does not say they spent nothing", async () => {
     const f = fakeFetch(standardRoutes); // creditsWire has no series: what a member's snapshot looks like
     render(<LlmCreditsScreen baseUrl={BASE} scope={scope} currency="USD" fetch={f.fetch} member={{ kind: "user", id: "u1" }} />);
