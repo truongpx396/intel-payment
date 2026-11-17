@@ -9,7 +9,7 @@
 > **As built** (`ui/`). The package implements this page and its **Don'ts** as tests, with these differences: the usage chart is a static line in the first
 > categorical slot with a text summary and a table of points — there is **no per-feature toggle**; the near-limit banner is a status notice with the host's
 > remedy; the trial / new-account notice is the host's `notices[]`, drawn generically; and the four anchor figures are the host's `facts[]`. It has been
-> rendered by jsdom and looked at once, by hand, in Chromium (desktop and phone widths); no automated browser test covers it, so treat the layout above as the design, not a verified screen.
+> rendered by jsdom, and in Chromium over a live `paymentd` by the `ui` Playwright project (the layout at 320, 390, 768 and 1000 px, and an axe-core audit); only Chromium has run it and no screen reader has, so treat the layout above as the design and the audit as what an automated one can find. The breakdown's rows are the host's dimension — here the resource that was metered, titled "Spend by feature" — not people; a member's own view carries no spend section, and says the spend is not available rather than that nothing was spent.
 
 ## Purpose
 Show the scope's spendable balance in real time, warn near limits, and explain **each
