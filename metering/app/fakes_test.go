@@ -316,8 +316,9 @@ type rigOpt struct {
 	cards    contracts.StaticCards
 	pricers  ports.PricerRegistry
 	noQuotas bool
-	usage    *fakeUsage  // wired as Deps.Usage when set
-	ledger   *fakeLedger // wired as Deps.Ledger when set
+	usage    *fakeUsage       // wired as Deps.Usage when set
+	ledger   *fakeLedger      // wired as Deps.Ledger when set
+	rollup   ports.UsageStore // wired as Deps.Rollup when set
 }
 
 func tokenCard(t *testing.T) domain.RateCard {
@@ -369,6 +370,9 @@ func newRig(t *testing.T, o rigOpt) *rig {
 	}
 	if o.ledger != nil {
 		r.deps.Ledger = o.ledger
+	}
+	if o.rollup != nil {
+		r.deps.Rollup = o.rollup
 	}
 	m, err := app.New(cfg, r.deps)
 	if err != nil {
