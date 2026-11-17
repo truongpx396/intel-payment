@@ -6,7 +6,7 @@
 import fc from "fast-check";
 import { describe, expect, test } from "vitest";
 import type { CreditsSnapshot, LimitView } from "../src/ports.js";
-import { SERIES_SLOTS, SnapshotError, derivePanel, deriveLimit, formatQuantity, formatSigned, quantity } from "../src/model.js";
+import { SERIES_SLOTS, SnapshotError, derivePanel, deriveLedgerRows, deriveLimit, formatQuantity, formatSigned, quantity } from "../src/model.js";
 import { anyAmount, anyPct, anyQuantity, int, labels, limit, q, row, series, snapshot, usedAndCap, windowedWindow } from "./support.js";
 
 const big = (n: number) => BigInt(n);
@@ -411,5 +411,19 @@ describe("an absent figure is not a zero", () => {
   test("a series of zeros is a spend of nothing and is kept, so the panel can say so; no series is no spend model at all", () => {
     expect(derivePanel(snapshot({ series: [{ at: "2026-01-01T00:00:00Z", amount: q(0) }] })).spend).toMatchObject({ total: 0, peak: 0 });
     expect(derivePanel(snapshot({})).spend).toBeNull();
+  });
+});
+
+describe("the ledger's cursor", () => {
+  test("a cursor in the snapshot is the panel's next page, and none, or an empty one, is the end", () => {
+    expect(derivePanel(snapshot({ ledgerNext: "c1" })).ledgerNext).toBe("c1");
+    expect(derivePanel(snapshot({})).ledgerNext).toBeNull();
+    expect(derivePanel(snapshot({ ledgerNext: "" })).ledgerNext).toBeNull(); // an empty cursor asks for the first page again: it is not "more"
+  });
+
+  test("a page of rows is derived the way the first page is, and refused the same way", () => {
+    const rows = deriveLedgerRows([row({ id: "a", delta: q(-5) }), row({ id: "b", delta: q(7) }), row({ id: "c", delta: q(0) })]);
+    expect(rows.map((r) => [r.id, r.direction])).toEqual([["a", "out"], ["b", "in"], ["c", "none"]]);
+    refuses(() => deriveLedgerRows([row({ delta: 0.5 as never })]), "not_an_integer");
   });
 });

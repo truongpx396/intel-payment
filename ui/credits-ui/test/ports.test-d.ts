@@ -14,6 +14,7 @@ import type {
   FulfilmentState,
   Int,
   LedgerColumn,
+  LedgerPage,
   LedgerRow,
   LimitView,
   PlanCatalog,
@@ -139,4 +140,11 @@ test("a purchase permission is data the host supplies, and the billing anchor is
 test("a source loads a snapshot for a scope, and may push", () => {
   expectTypeOf<CreditsSource["load"]>().toEqualTypeOf<(scope: Scope) => Promise<CreditsSnapshot>>();
   expectTypeOf<Scope["realm"]>().toEqualTypeOf<string | undefined>();
+});
+
+test("the ledger pages through an opaque cursor, and a source may or may not be able to page it", () => {
+  expectTypeOf<CreditsSnapshot["ledgerNext"]>().toEqualTypeOf<string | undefined>();
+  expectTypeOf<CreditsSource["moreLedger"]>().toEqualTypeOf<((scope: Scope, cursor: string) => Promise<LedgerPage>) | undefined>();
+  expectTypeOf<LedgerPage["next"]>().toEqualTypeOf<string | undefined>();
+  expectTypeOf<LedgerPage["rows"][number]>().toEqualTypeOf<LedgerRow>();
 });
