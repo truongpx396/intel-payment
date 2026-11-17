@@ -33,11 +33,11 @@ func (m *meter) Credits(ctx context.Context, q ports.SnapshotQuery) (ports.Credi
 		return ports.CreditsSnapshot{}, fmt.Errorf("%w: a member's snapshot needs both subject_kind and subject_id", domain.ErrInvalid)
 	}
 	days := q.Days
-	switch {
-	case days == 0:
-		days = ports.DefaultSeriesDays
-	case days < 0 || days > domain.MaxSeriesDays:
+	if days < 0 || days > domain.MaxSeriesDays { // checked before the default is applied, so that 0 means "not asked" and nothing else does
 		return ports.CreditsSnapshot{}, fmt.Errorf("%w: days must be from 1 to %d", domain.ErrInvalid, domain.MaxSeriesDays)
+	}
+	if days == 0 {
+		days = ports.DefaultSeriesDays
 	}
 	if m.d.Usage == nil || m.d.Ledger == nil {
 		return ports.CreditsSnapshot{}, errors.New("metering: the credits snapshot needs Deps.Usage and Deps.Ledger: it cannot be whole without the counters and the books")
