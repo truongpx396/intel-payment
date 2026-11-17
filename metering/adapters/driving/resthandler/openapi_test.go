@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -234,6 +235,11 @@ func TestEveryOperationsRequestsAndResponsesValidateAgainstTheDocument(t *testin
 				return fullSnapshot(q), nil
 			}
 		}},
+		{"credits with a spend section", "record", "GET", "/v1/credits?scope_kind=workspace&scope_id=w1&days=3", "", nil, 200, func(_ *stubMeter, _ *stubReads, c *stubCredits, _ *stubAdmin) {
+			c.fn = func(_ context.Context, q ports.SnapshotQuery) (ports.CreditsSnapshot, error) {
+				return spendSnapshot(q), nil
+			}
+		}},
 		{"transfer status", "grant", "GET", "/v1/transfers/alloc-1", "", nil, 200, func(_ *stubMeter, r *stubReads, _ *stubCredits, _ *stubAdmin) {
 			settled := mustTime("2026-09-29T12:00:01Z")
 			r.xfer = func(_ context.Context, realm domain.Realm, k string) (ports.TransferRecord, bool, error) {
@@ -365,5 +371,78 @@ func sampleOperation() ports.AdminOperation {
 		ID: "5b0e6f2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b", Realm: "acme", Kind: ports.AdminReconcile, Params: json.RawMessage(`{"shard":3,"kind":"full"}`),
 		Actor: "alice", Reason: "INC-1", Key: "k-1", Via: "ops-tool", Status: ports.AdminSucceeded, Result: json.RawMessage(`{"outcome":"ran"}`),
 		Attempts: 1, CreatedAt: at, StartedAt: &started, FinishedAt: &done,
+	}
+}
+
+// The document describes the spend section the endpoint serves, by name and type, and does not merely tolerate it: a client generated from the
+// document has to be able to read the burn rate, the series and the breakdown. The burn rate and the series are optional (a member's snapshot
+// and an engine with no rollup carry neither), the breakdown is always a list.
+func TestTheDocumentDescribesTheCreditsSpendSection(t *testing.T) {
+	t.Parallel()
+	doc := loadSpec(t)
+	ref := doc.Components.Schemas["Credits"]
+	if ref == nil || ref.Value == nil {
+		t.Fatal("the document has no Credits schema")
+	}
+	credits := ref.Value
+	prop := func(s *openapi3.Schema, name string) *openapi3.Schema {
+		t.Helper()
+		p := s.Properties[name]
+		if p == nil || p.Value == nil {
+			t.Fatalf("the schema has no %q", name)
+		}
+		return p.Value
+	}
+	isInt64 := func(s *openapi3.Schema) bool { return s.Type != nil && s.Type.Is("integer") && s.Format == "int64" }
+	required := func(s *openapi3.Schema, names ...string) {
+		t.Helper()
+		for _, n := range names {
+			if !slices.Contains(s.Required, n) {
+				t.Errorf("%q is not required", n)
+			}
+		}
+	}
+
+	balance := prop(credits, "balance")
+	if burn := prop(balance, "burnRatePerDay"); !isInt64(burn) {
+		t.Errorf("balance.burnRatePerDay is %v %q, want an int64", burn.Type, burn.Format)
+	}
+	if slices.Contains(balance.Required, "burnRatePerDay") || slices.Contains(credits.Required, "series") {
+		t.Error("the burn rate and the series are optional: a member's snapshot carries neither")
+	}
+
+	series := prop(credits, "series")
+	if series.Type == nil || !series.Type.Is("array") || series.Items == nil || series.Items.Value == nil {
+		t.Fatalf("series is %v, want an array of points", series.Type)
+	}
+	pt := series.Items.Value
+	if at := prop(pt, "at"); at.Type == nil || !at.Type.Is("string") || at.Format != "date-time" {
+		t.Errorf("series[].at is %v %q, want a date-time", at.Type, at.Format)
+	}
+	if !isInt64(prop(pt, "amount")) {
+		t.Error("series[].amount is not an int64")
+	}
+	required(pt, "at", "amount")
+
+	rows := prop(credits, "breakdown")
+	if rows.Items == nil || rows.Items.Value == nil {
+		t.Fatal("breakdown has no item schema")
+	}
+	for _, k := range []string{"key", "label"} {
+		if p := prop(rows.Items.Value, k); p.Type == nil || !p.Type.Is("string") {
+			t.Errorf("breakdown[].%s is not a string", k)
+		}
+	}
+	if !isInt64(prop(rows.Items.Value, "amount")) {
+		t.Error("breakdown[].amount is not an int64")
+	}
+	required(rows.Items.Value, "key", "label", "amount")
+	required(credits, "breakdown")
+
+	days := doc.Paths.Find("/v1/credits").Get
+	for _, p := range days.Parameters {
+		if p.Value != nil && p.Value.Name == "days" && strings.Contains(p.Value.Description, "until the series arrives") {
+			t.Error("the days parameter still says the series has not arrived")
+		}
 	}
 }
