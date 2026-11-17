@@ -26,17 +26,19 @@ export interface LlmCreditsScreenProps {
   readonly member?: { readonly kind: string; readonly id: string };
   /** The length of the spend series, in days; the server's default when unset. */
   readonly days?: number;
+  /** How many ledger rows a page holds, on the snapshot and on every older page; the server's default when unset. */
+  readonly pageSize?: number;
 }
 
 const here = (query: string) => `${window.location.origin}${window.location.pathname}${query}`;
 
 /** The LLM-credits product, assembled: its unit, its columns, its names, its remedy, its way to the server. No component is edited. */
-export function LlmCreditsScreen({ baseUrl, scope, currency, fetch: f, returnedFromCheckout, topUpHref = "/billing", organisation, canPurchase = true, navigate, member, days }: LlmCreditsScreenProps) {
+export function LlmCreditsScreen({ baseUrl, scope, currency, fetch: f, returnedFromCheckout, topUpHref = "/billing", organisation, canPurchase = true, navigate, member, days, pageSize }: LlmCreditsScreenProps) {
   const memberKind = member?.kind;
   const memberId = member?.id;
   const source = useMemo(
-    () => new RestCreditsSource({ baseUrl, ...(f === undefined ? {} : { fetch: f }), ...(memberKind === undefined || memberId === undefined ? {} : { member: { kind: memberKind, id: memberId } }), ...(days === undefined ? {} : { days }) }),
-    [baseUrl, f, memberKind, memberId, days],
+    () => new RestCreditsSource({ baseUrl, ...(f === undefined ? {} : { fetch: f }), ...(memberKind === undefined || memberId === undefined ? {} : { member: { kind: memberKind, id: memberId } }), ...(days === undefined ? {} : { days }), ...(pageSize === undefined ? {} : { pageSize }) }),
+    [baseUrl, f, memberKind, memberId, days, pageSize],
   );
   const checkout = useMemo(
     () => (organisation === undefined ? new RestCheckoutSource({ baseUrl, ...(f === undefined ? {} : { fetch: f }), currency, successUrl: here("?checkout=done"), cancelUrl: here(""), returnUrl: here(""), canPurchase, ...(canPurchase ? {} : { cannotPurchaseReason: "Only an owner can change the plan.", requestPath: { label: "Ask an owner", href: "/members" } }) }) : undefined),
