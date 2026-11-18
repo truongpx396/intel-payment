@@ -288,6 +288,9 @@ func (cw *chaosWorld) diagnoseJournal(t *testing.T, label string) {
 	tx, err := cw.pool.Begin(ctx)
 	must(t, err)
 	defer func() { _ = tx.Rollback(ctx) }()
+	// The same transaction-local setting Journal.Due applies, so this is the plan production gets.
+	_, err = tx.Exec(ctx, `SELECT set_config('enable_bitmapscan', 'off', true)`)
+	must(t, err)
 	rows, err := tx.Query(ctx, `EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF) WITH due AS (
 			SELECT id FROM spend_journal WHERE status = 'pending' AND next_attempt_at <= now()
 			ORDER BY next_attempt_at, created_at LIMIT 200 FOR UPDATE SKIP LOCKED)
