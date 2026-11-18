@@ -357,15 +357,16 @@ as specified; the answer is no, and nothing below is a mutation result.
 | Input | Value | How |
 |---|---|---|
 | Mutants in `metering/app` | **674**, of which **423 are reachable by the unit tier and 251 are not** | `gremlins unleash --dry-run ./metering/app` (v0.6.0, the operators `scripts/mutation.sh` uses): *Runnable 423, Not covered 251* |
-| The integration tier, whole | **177 s** wall time (the `integration` package alone: **104 s**) | `go test -race -count=1 -shuffle=on -p 2 -tags=integration ./...` with `GOMAXPROCS=4`, 54 packages `ok`, on one laptop, load average peaking at 21 |
+| The integration tier, whole | **139–177 s** wall time over two runs (the `integration` package alone: **76–104 s**) | `go test -race -count=1 -shuffle=on -p 2 -tags=integration ./...` with `GOMAXPROCS=4`, 54 packages `ok` both times, on one laptop, load average peaking at 21 |
 
 The 251 uncovered mutants are the point: booking, reconcile, recover and the writer are exercised only by real Redis and Postgres, which is
 why the app floor is 30 (`scripts/mutation.sh`).
 
 **What that implies**, as arithmetic on those two numbers and gremlins' documented `--integration` behaviour ("run the complete test suite for
-each mutation"), not as a run: 251 mutants × 177 s is **≈ 12 hours** sequentially, and ≈ 7 hours even if only the `integration` package were
+each mutation"), not as a run: 251 mutants × 139–177 s is **≈ 10–12 hours** sequentially, and ≈ 5–7 hours even if only the `integration` package were
 run each time. More workers do not rescue it: a single suite at `-p 2` already took the machine to a load of 21, and every worker needs its own
-containers. GitHub's hosted-runner job limit is six hours. So a nightly job as specified cannot finish.
+containers. GitHub's hosted-runner job limit is six hours. So a nightly job as specified cannot be expected to finish (the lower bound, 5 hours,
+is for running only one package and leaves no margin).
 
 **What could work, not built**: choose, for each mutant, only the tests that execute its line (a coverage profile per test with
 `-coverpkg=./metering/app`), so a mutant costs one or two tests (1–30 s each in the runs above, container start included) and not the suite.
