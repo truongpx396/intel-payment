@@ -192,6 +192,8 @@ indistinguishable from a bug.
 
 ## Pre-production checklist
 
+What a deployment must also decide, and which of it has been tried, is in [production.md](production.md).
+
 - [ ] `PAYMENT_SERVICE_AUTH` is `mtls` or `bearer`; `none` only on loopback/UDS.
 - [ ] Every caller credential is realm-bound and privilege-scoped; no host holds `grant` or `admin` unless it must.
 - [ ] No browser holds a `/v1/*` credential; the host proxies.

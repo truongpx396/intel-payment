@@ -23,8 +23,10 @@ across rate cards over three disjoint unit spaces, so that is a test result rath
 > messages the bus gave up on are built, and **post-paid invoicing**
 > ([Phase 2](specs/002-postpaid-invoicing/)) is designed, not built. The provider adapters have met their sandboxes
 > once ([docs/sandbox.md](docs/sandbox.md)): not a buyer approving a PayPal order, a paid Polar order, or a live account.
-> Sub-millisecond admission is the design target; nothing has been load tested. The task count and the gap list are in
-> [ROADMAP.md](ROADMAP.md), which CI checks against the task lists.
+> Sub-millisecond admission is the design target; it was load tested once, on a laptop, and the 99th percentile at the target
+> load was not shown ([docs/hardening.md](docs/hardening.md)). What a production deployment still has to decide and try is
+> [docs/production.md](docs/production.md). The task count and the gap list are in [ROADMAP.md](ROADMAP.md), which CI checks
+> against the task lists.
 >
 > **Scope:** a *metering, credits and payment-collection engine* for products that need an internal credit unit with
 > refuse-before-spend enforcement on the request path. If you do not need that, [ROADMAP.md](ROADMAP.md) names the
@@ -558,7 +560,7 @@ answers to are the [constitution](.specify/memory/constitution.md); [CLAUDE.md](
 | `depguard` · `go-arch-lint` | No provider SDK outside its adapter, no `os.Getenv` outside `cmd/`, no float for money, metering imports nothing above it | `make lint` | Gate |
 | `buf` | The protobuf definitions lint, the generated Go is current, and nothing released breaks | `make proto-check` | Gate |
 
-- ⚠️ **Not done:** the checklists in [docs/security.md](docs/security.md) exist, and **none has been executed**. A load test of the hot path has not been run (the [scale envelope](specs/001-metering-billing-core/plan.md#scale-envelope) states targets, and none is a measurement until it is).
+- ⚠️ **Done in part, on a laptop** ([docs/hardening.md](docs/hardening.md)): what a repository can execute of the [docs/security.md](docs/security.md) checklist was executed against the real binaries and a real Redis, and every attack tried was refused; the hot path was load tested once, and its 99th percentile **at the target load** was not shown (the [scale envelope](specs/001-metering-billing-core/plan.md#scale-envelope) states the targets). **Not done:** every checklist item a deployment owns (a secret manager, Postgres TLS, a restored backup, network policy), Redis Cluster, and a production network. [docs/production.md](docs/production.md) lists them.
 - 🔑 A real `.env` is never committed; `.env.example` holds names, never values.
 
 * * *
@@ -658,7 +660,7 @@ design-system/         the credits screen design the UI was built from
 - **The provider adapters have met their sandboxes once.** Still owed before a real order: PayPal with a buyer approving an order; a paid Polar order, refund and renewal; PayPal subscriptions; Stripe test clocks; and a live-mode account's own settings. PayPal's `PAYMENT.SALE.REFUNDED` is ignored.
 - **Auto top-up works on Stripe only**; Polar and PayPal cannot charge a saved method.
 - **A provider's `4xx` reaches a host as `500 internal`** rather than `502 provider_error`, and a webhook about a customer not yet linked (`PUT /v1/admin/customers`) is ignored.
-- **Not load tested, not security reviewed, runbook not exercised.** The scale envelope states targets, the security checklists have not been executed, and [docs/operations.md](docs/operations.md) is written from reasoning.
+- **Load tested, security reviewed and the runbook exercised, each in part, once, on a laptop** ([docs/hardening.md](docs/hardening.md)). The 99th percentile at the target load, Redis Cluster, a production network, the Postgres half of a region failover and every checklist item a deployment owns are not shown; [docs/production.md](docs/production.md) lists what to try before real money.
 - **A GDPR erasure story** is designed nowhere yet. The billing tables hold `billing_email` and `actor_id`, and ledger rows must survive an erasure request for audit, so the answer is pseudonymization rather than deletion.
 - **Dunning's `suspend-after` is read by nothing.** Entitlements lapse when the grace window ends; no suspension stage after it is built.
 - **One Postgres connection per shard** per `payment-worker`, so a worker at 256 shards needs about 272.
@@ -699,7 +701,7 @@ design-system/         the credits screen design the UI was built from
 | [Design decisions](specs/001-metering-billing-core/design-decisions.md) | Every decision, with what was rejected, including the two design reviews |
 | [Plan](specs/001-metering-billing-core/plan.md) · [Tasks](specs/001-metering-billing-core/tasks.md) | The scale envelope, the build order, the task list |
 | [Post-paid invoicing (Phase 2)](specs/002-postpaid-invoicing/) | Rating, tiered schedules, commitments, immutable invoices, credit notes |
-| [Configuration](docs/configuration.md) · [Security](docs/security.md) · [Operations](docs/operations.md) · [Testing](docs/testing.md) | Every knob · the threat model · the runbook · how the TDD gates work |
+| [Configuration](docs/configuration.md) · [Production](docs/production.md) · [Security](docs/security.md) · [Operations](docs/operations.md) · [Testing](docs/testing.md) | Every knob · what a deployment decides and has not yet tried · the threat model · the runbook · how the TDD gates work |
 | [Migrations](migrations/README.md) · [Redis ACL](deploy/redis/README.md) · [End-to-end tests](e2e/README.md) | Why they are forward-only · the money store's access rules · running Playwright |
 | [Constitution](.specify/memory/constitution.md) | The thirteen principles every change to the money path answers to |
 
