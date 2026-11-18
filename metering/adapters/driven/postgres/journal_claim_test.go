@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	pgadapter "github.com/truongpx396/intel-payment/metering/adapters/driven/postgres"
 )
 
@@ -65,5 +67,26 @@ func TestClaimingABatchOfTheJournalReadsTheBatchAndNotTheBacklog(t *testing.T) {
 	})
 	if read > 5*batch {
 		t.Fatalf("claiming %d entries read %d entries of the pending index (the backlog is %d): the claim costs the backlog, not the batch", batch, read, backlog)
+	}
+}
+
+// The claim turns bitmap scans off to stay cheap, and that must be local to its own transaction: a setting that outlived
+// it would stay on a pooled connection and quietly change the plan of every later query that connection runs. A pool of
+// ONE connection makes "the next query on the same connection" deterministic.
+func TestClaimingTheJournalLeavesTheConnectionAsItFoundIt(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cfg, err := pgxpool.ParseConfig(pg.NewDB(t))
+	must(t, err)
+	cfg.MaxConns = 1
+	p, err := pgxpool.NewWithConfig(ctx, cfg)
+	must(t, err)
+	t.Cleanup(p.Close)
+
+	if _, err := pgadapter.NewJournal(p).Due(ctx, time.Now(), 10); err != nil {
+		t.Fatal(err)
+	}
+	if got := scalar[string](t, p, `SHOW enable_bitmapscan`); got != "on" {
+		t.Fatalf("after a claim the connection has enable_bitmapscan = %q: the setting leaked out of the claim's transaction", got)
 	}
 }
