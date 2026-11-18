@@ -20,9 +20,11 @@ const (
 	plainToken      = "plaintext-token-do-not-echo"
 )
 
-// base is the least a bearer-mode paymentd needs.
+// base is the least a bearer-mode paymentd needs. The default API listener is every interface, and /metrics carries no
+// credential, so it also says where the metrics are served (TestMetricsAreNotServedOnAListenerOthersCanReach...).
 func base() map[string]string {
 	return map[string]string{
+		"PAYMENT_METRICS_ADDR":      "127.0.0.1:9092",
 		"PAYMENT_BALANCE_REDIS_URL": redisWithSecret,
 		"PAYMENT_LEDGER_DSN":        dsnWithSecret,
 		"PAYMENT_SERVICE_AUTH":      "bearer",
@@ -340,6 +342,61 @@ func TestTheSellingSettingsAreReadAndCheckedLikeTheRest(t *testing.T) {
 	for name, bad := range map[string]string{"PAYMENT_PLAN_CHANGE_POLICY": "never", "PAYMENT_TAX_STRATEGY": "external_hook", "PAYMENT_CHECKOUT_RETURN_HOSTS": "https://app.example.com"} {
 		if _, err := parseSettings(getenv(with(name, bad))); err == nil || !strings.Contains(err.Error(), name) {
 			t.Errorf("%s=%q: %v, want a refusal naming the variable", name, bad, err)
+		}
+	}
+}
+
+// /metrics carries no credential — a scraper does not hold a service token — and it names every realm and its traffic. It is
+// therefore never served on a listener others can reach beside the API: a deployment that exposes the API says where the
+// metrics go, and one that keeps the API on loopback or a unix socket may leave them there.
+
+func TestMetricsAreNotServedOnAListenerOthersCanReachWithoutAnAddressOfTheirOwn(t *testing.T) {
+	t.Parallel()
+	for _, addr := range []string{":8080", "0.0.0.0:8080", "[::]:8080", "10.0.0.5:8080", "203.0.113.7:8080", "api.internal:8080"} {
+		_, err := parseSettings(getenv(with("PAYMENT_HTTP_ADDR", addr, "PAYMENT_METRICS_ADDR", "-")))
+		if err == nil {
+			t.Errorf("PAYMENT_HTTP_ADDR=%q with no PAYMENT_METRICS_ADDR was accepted: /metrics would be served, with no credential, to whoever can reach the API", addr)
+			continue
+		}
+		if !strings.Contains(err.Error(), "PAYMENT_METRICS_ADDR") {
+			t.Errorf("PAYMENT_HTTP_ADDR=%q: the error does not name the variable to set: %v", addr, err)
+		}
+	}
+}
+
+func TestMetricsMayStayOnAnAPIListenerOnlyTheHostCanReach(t *testing.T) {
+	t.Parallel()
+	for _, addr := range []string{"127.0.0.1:8080", "localhost:8080", "[::1]:8080", "unix:/run/paymentd.sock"} {
+		if _, err := parseSettings(getenv(with("PAYMENT_HTTP_ADDR", addr, "PAYMENT_GRPC_ADDR", "127.0.0.1:9090", "PAYMENT_METRICS_ADDR", "-"))); err != nil {
+			t.Errorf("PAYMENT_HTTP_ADDR=%q with no PAYMENT_METRICS_ADDR was refused: %v", addr, err)
+		}
+	}
+}
+
+func TestMetricsOnAListenerOfTheirOwnAreAcceptedBesideAReachableAPI(t *testing.T) {
+	t.Parallel()
+	for _, addr := range []string{":9092", "0.0.0.0:9092", "10.0.0.5:9092", "127.0.0.1:9092", "unix:/run/metrics.sock"} {
+		if _, err := parseSettings(getenv(with("PAYMENT_HTTP_ADDR", ":8080", "PAYMENT_METRICS_ADDR", addr))); err != nil {
+			t.Errorf("PAYMENT_METRICS_ADDR=%q beside a reachable API was refused: %v", addr, err)
+		}
+	}
+}
+
+func TestAMetricsAddressThatCollidesOrIsMalformedIsRefusedNamingTheVariable(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, addr string }{
+		{"the REST listener's own address", "127.0.0.1:8080"},
+		{"the gRPC listener's own address", "127.0.0.1:9090"},
+		{"a port and no host separator", "9092"},
+		{"a host and no port", "metrics.internal"},
+		{"a port that is not a number", "127.0.0.1:metrics"},
+		{"a port out of range", "127.0.0.1:70000"},
+	} {
+		_, err := parseSettings(getenv(with("PAYMENT_HTTP_ADDR", "127.0.0.1:8080", "PAYMENT_GRPC_ADDR", "127.0.0.1:9090", "PAYMENT_METRICS_ADDR", tc.addr)))
+		if err == nil {
+			t.Errorf("%s (%q) was accepted", tc.name, tc.addr)
+		} else if !strings.Contains(err.Error(), "PAYMENT_METRICS_ADDR") {
+			t.Errorf("%s (%q): the error does not name the variable: %v", tc.name, tc.addr, err)
 		}
 	}
 }

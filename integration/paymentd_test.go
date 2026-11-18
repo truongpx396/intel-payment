@@ -332,6 +332,31 @@ func openScope(t *testing.T, addr, realm, dsn string, sc domain.Scope) {
 	must(t, store.OpenShard(ctx, sh, rec.Gen))
 }
 
+// /metrics carries no credential, so with a listener of its own for it the API listener does not serve it at all, and the
+// listener it is on serves nothing but it: a scraper's address is not a second way into the API.
+func TestPaymentdServesMetricsOnAListenerOfItsOwnAndNotOnTheAPIOne(t *testing.T) {
+	t.Parallel()
+	realm, dsn := seededRealm(t)
+	d := startPaymentd(t, paymentdEnv(realm, dsn, "PAYMENT_METRICS_ADDR", "127.0.0.1:0"))
+	base := d.httpURL(t)
+	c := &http.Client{Timeout: 10 * time.Second}
+	awaitReady(t, d, c, base)
+
+	if code, _ := httpDo(t, c, "GET", base+"/metrics", "", ""); code != http.StatusNotFound {
+		t.Fatalf("the API listener served /metrics (%d) although they have a listener of their own", code)
+	}
+	metrics := "http://" + d.listening(t, "metrics")
+	code, body := httpDo(t, c, "GET", metrics+"/metrics", "", "")
+	if code != 200 || !strings.Contains(body, "# TYPE metering_admit_denied_total counter") {
+		t.Errorf("the metrics listener's /metrics = %d and does not declare the catalogue:\n%.400s", code, body)
+	}
+	for _, path := range []string{"/healthz", "/readyz", "/v1/credits", "/webhooks/stripe/acct"} {
+		if code, _ := httpDo(t, c, "GET", metrics+path, "", ""); code != http.StatusNotFound {
+			t.Errorf("the metrics listener answered %s with %d: it serves /metrics and nothing else", path, code)
+		}
+	}
+}
+
 func TestPaymentdServesThePlatformEndpoints(t *testing.T) {
 	t.Parallel()
 	realm, dsn := seededRealm(t)
