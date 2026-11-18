@@ -517,11 +517,17 @@ rebuilt from the books.
 | | `outbox` settlement | `journal` settlement |
 |---|---|---|
 | **RPO** | undrained intents at the moment of loss + Postgres replication lag | Postgres replication lag |
-| **RTO target** | standby promotion + service start + lazy rebuild — rehearse it (T133) | same |
+| **RTO target** | standby promotion + service start + lazy rebuild — the Redis half is rehearsed ([hardening.md](./hardening.md#t133--recovery-rehearsals)); the Postgres promotion is not | same |
 
 1. Promote the Postgres standby. Point `PAYMENT_LEDGER_DSN` at it.
-2. Start Redis (empty, `noeviction`, AOF), `payment-worker`, then `paymentd` in the DR region. Every
-   shard opens at a new generation; scopes rebuild from the books.
+2. Start Redis (empty, `noeviction`, AOF), install the hot-path functions (`payment-migrate functions`),
+   then `payment-worker` and `paymentd` in the DR region. Every shard is opened at the generation the books
+   record — **not** a new one: an empty Redis holds no account or intent of an older generation to tell
+   apart, so nothing is bumped. Scopes rebuild from the books lazily, on their first call. Rehearsed on one
+   laptop with 256 scopes and a small ledger ([hardening.md](./hardening.md#t133--recovery-rehearsals)): every shard
+   open 56 ms after the new Redis answered, every scope serving after 413 ms. Callers that retry what they had in flight
+   are charged again by the empty hot tier (it has lost its idempotency guards) and the books refuse every duplicate —
+   the documented late replay — so the figure to watch is `metering_late_replay_total`.
 3. Re-point provider webhook URLs for each provider account at the DR region's `/webhooks/...`.
    Deliveries that failed meanwhile are retried by the providers; the inbox dedups any that landed
    twice.
@@ -568,7 +574,8 @@ SELECT encode(payload, 'escape') FROM dead_letters WHERE id = '<id>';  -- the me
 Never edit a rate card — the database refuses it. Publish a version:
 
 ```bash
-curl -X POST localhost:8080/v1/admin/rate-cards -d '{
+curl -X POST localhost:8080/v1/admin/rate-cards -H "Authorization: Bearer $ADMIN_TOKEN" -d '{
+  "actor": "alice@example.com", "reason": "repricing 2026-10-01",
   "version": "2026-10-01", "retire_previous": true,
   "entries": [ {"rate_key":"gpt-4o","unit":"llm_input_token","credits_per_block":2500000,"block_size":1000000} ]
 }'
@@ -582,8 +589,8 @@ plus the inserts, in one transaction — still audited, attributed to your datab
 ## Changing a ceiling
 
 ```bash
-curl -X PUT localhost:8080/v1/admin/limits/project_hourly -d '{
-  "subject_kind":"project","unit":"credit","max":500000,"window":"hourly","warn_at":0.8,"deny_code":"limit_reached"}'
+curl -X PUT localhost:8080/v1/admin/limits/project_hourly -H "Authorization: Bearer $ADMIN_TOKEN" -d '{
+  "actor":"alice@example.com","reason":"raise the hourly ceiling","subject_kind":"project","unit":"credit","max":500000,"window":"hourly","warn_at":0.8,"deny_code":"limit_reached"}'
 ```
 
 No deploy and no UI change — the panel renders `LimitView[]`. If the ceiling should differ by plan,

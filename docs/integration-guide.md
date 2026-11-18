@@ -50,6 +50,7 @@ per seat-day, per second — publish a rate card for the built-in `table` pricer
 
 ```bash
 curl -X POST $PAYMENT/v1/admin/rate-cards -H "Authorization: Bearer $PAYMENT_ADMIN_TOKEN" -d '{
+  "actor": "alice@example.com", "reason": "launch pricing",
   "version": "2026-10-01", "retire_previous": true,
   "entries": [
     {"rate_key": "standard", "unit": "enrichment",  "credits_per_block": 2000,   "block_size": 1},
@@ -57,7 +58,8 @@ curl -X POST $PAYMENT/v1/admin/rate-cards -H "Authorization: Bearer $PAYMENT_ADM
   ]}'
 ```
 
-A price is a **rational** — `credits_per_block` credits for every `block_size` units — so $0.15 per
+Every admin write names a person and a reason (`actor`, `reason`) and is refused without them — the call above, sent
+without those two fields, is `400 invalid_request: actor is required`. A price is a **rational** — `credits_per_block` credits for every `block_size` units — so $0.15 per
 million is exact. Pick a **fine accounting unit** (the reference is 1 credit = 1 µ$ of list price) and
 let the UI's `UnitLabels.scale` decide how it is displayed.
 
@@ -92,6 +94,13 @@ example. Through the admin API every change is validated, audited with your name
 immediately. The two decisions most teams get wrong:
 
 - **Which ceilings belong to a subject** (a member's daily budget) and which to the scope (the balance).
+  A new realm needs the balance ceiling configured — it is the limit that turns an empty scope into `402 payment_required`:
+
+  ```bash
+  curl -X PUT $PAYMENT/v1/admin/limits/scope_balance -H "Authorization: Bearer $PAYMENT_ADMIN_TOKEN" -d '{
+    "actor": "alice@example.com", "reason": "launch",
+    "unit": "credit", "max": 0, "window": "balance", "deny_code": "payment_required"}'
+  ```
 - **Which ceilings depend on the plan** — set `max_entitlement` and give each plan and the free tier a
   quota, instead of one number for everyone.
 
@@ -101,16 +110,26 @@ immediately. The two decisions most teams get wrong:
 
 ### Library
 
+An embedded engine still needs **the one durable writer**: run `payment-worker` for the realm (same `PAYMENT_REALM`,
+`PAYMENT_SHARDS`, Redis and Postgres). It opens the shards and books what the hot tier accepts; the library is only the
+request path. The wiring below is an excerpt of `TestAdoptionAnEmbeddedGoHostWiresTheLibraryAndMetersItsFirstCustomer` in
+[integration/adoption_test.go](../integration/adoption_test.go), which CI compiles and runs, so it cannot name a constructor that
+does not exist:
+
 ```go
-meter, err := app.New(metering.Config{
-    Realm: "acme-crm", BalanceRedisURL: …, LedgerDSN: …,
-    Settlement: metering.SettlementOutbox, AdmitFail: metering.FailClosed,
-}, app.Deps{
-    Pricers:   pricing.Registry{"table": table.Pricer{}, "enrichment": EnrichmentPricer{}},
-    Balance:   redisstore.New(rdb), Books: pgstore.New(db), Journal: pgstore.NewJournal(db),
-    Limits:    pgstore.NewLimitStore(db), Pools: pgstore.NewPoolStore(db),
-    RateCards: pgstore.NewRateCardStore(db), Bus: redisstreams.New(rdb),
-    Quotas:    entitlementapp.NewQuotaSource(entitler),
+cfg := metering.Config{Realm: "acme-crm", BalanceRedisURL: redisURL, LedgerDSN: dsn, Shards: 8}.WithDefaults()
+rdb := goredis.NewClient(&goredis.Options{Addr: redisAddr})
+pool, _ := pgadapter.Connect(ctx, dsn)
+store, _ := pgadapter.NewConfigStore(ctx, pool, pgadapter.ConfigOptions{}) // limits, pools, rate cards: kept fresh by NOTIFY
+hot, _ := hotredis.New(rdb, hotredis.Options{Config: cfg, Pools: store, Limits: store, Clock: system.Clock{}})
+bus, _ := redisstreams.NewBus(rdb, redisstreams.BusOptions{Clock: system.Clock{}, Consumer: hostname})
+
+meter, err := app.New(cfg, app.Deps{
+    Pricers: ports.PricerRegistry{"table": pricingtable.New(0), "enrichment": EnrichmentPricer{}},
+    Balance: hot, Books: pgadapter.NewBooks(pool), Journal: pgadapter.NewJournal(pool),
+    Limits: store, Pools: store, RateCards: store,
+    Bus: bus, Clock: system.Clock{}, IDs: &system.IDs{},
+    // Quotas: entitlementapp.NewQuotaSource(entitler), // only if a ceiling names a max_entitlement
 })
 ```
 
