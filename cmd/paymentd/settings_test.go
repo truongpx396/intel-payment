@@ -430,3 +430,51 @@ func TestAnUnusableRequestTimeoutStopsTheServiceNamingTheVariable(t *testing.T) 
 		}
 	}
 }
+
+// Two defaults are permissive on purpose and so must be loud: a checkout return URL may name any host until the deployment lists
+// the hosts it may (an open redirect after payment), and bearer tokens are accepted on a listener others can reach with no TLS of
+// its own (the usual shape behind a proxy that terminates it — and so a thing to have chosen). Each is a warning at start that
+// names the variable to set, and goes away when the variable is set.
+
+func warned(t *testing.T, env map[string]string, variable string) bool {
+	t.Helper()
+	s, err := parseSettings(getenv(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range s.Warnings() {
+		if strings.Contains(w, variable) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestAnEmptyReturnHostListIsWarnedAboutUntilHostsAreListed(t *testing.T) {
+	t.Parallel()
+	if !warned(t, base(), "PAYMENT_CHECKOUT_RETURN_HOSTS") {
+		t.Error("no warning that a checkout return URL may name any host while PAYMENT_CHECKOUT_RETURN_HOSTS is empty")
+	}
+	if warned(t, with("PAYMENT_CHECKOUT_RETURN_HOSTS", "shop.example.com"), "PAYMENT_CHECKOUT_RETURN_HOSTS") {
+		t.Error("warned about the return hosts although they are listed")
+	}
+}
+
+func TestBearerTokensOverAReachablePlaintextListenerAreWarnedAboutUnlessTLSIsConfigured(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		env  map[string]string
+		want bool
+	}{
+		{"every interface, no TLS", base(), true},
+		{"a private network address, no TLS", with("PAYMENT_HTTP_ADDR", "10.0.0.5:8080"), true},
+		{"only the gRPC listener reachable, no TLS", with("PAYMENT_HTTP_ADDR", "127.0.0.1:8080", "PAYMENT_GRPC_ADDR", ":9090"), true},
+		{"the API on loopback and gRPC on a unix socket", with("PAYMENT_HTTP_ADDR", "127.0.0.1:8080", "PAYMENT_GRPC_ADDR", "unix:/run/paymentd.sock"), false},
+		{"every interface, with TLS", with("PAYMENT_TLS_CERT_FILE", "/tls/cert.pem", "PAYMENT_TLS_KEY_FILE", "/tls/key.pem"), false},
+	} {
+		if got := warned(t, tc.env, "PAYMENT_TLS_CERT_FILE"); got != tc.want {
+			t.Errorf("%s: warned = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
