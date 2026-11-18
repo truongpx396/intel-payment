@@ -40,7 +40,7 @@ threshold.
 | Task | State | In one line |
 |---|---|---|
 | **T130** load | measured, **open** | every primary-side target and the writer's rate met; exactly-once held across ~1.1 million records; SC-001 at the target load **not shown** on this machine |
-| **T131** chaos | six of seven run, **open** | each ends exact (nothing twice, nothing lost after retries) and pages where the contract says; one real defect found and fixed; a lagging-replica failover was **not** re-run under load |
+| **T131** chaos | six of seven run, **open** | each ends exact (nothing twice, nothing lost after retries) and pages where the contract says; one real defect found and fixed (a gauge that never cleared), and one query plan whose worst case is now bounded; a lagging-replica failover was **not** re-run under load |
 | **T132** security | executed, **open** | what the repository can execute was executed and refused every attack; two findings (one fixed, one open); the checklist items a deployment owns are listed, not claimed |
 | **T133** recovery | partly, **open** | an operator's shard recovery under traffic and an empty hot tier rebuilt from the books are timed; the Postgres half of a region failover was **not** rehearsed |
 | **T134** adoption | run, guide corrected | both walkthroughs ran from an empty realm; the guide was wrong in four places and is fixed; the non-Go host ran against the built binaries, **not** the container image |
@@ -182,15 +182,26 @@ an intent would need a forged sequence number, which corrupts the scope it is me
    9 474 settled entries**, and `MeteringDeferredUsageNotDraining` (`> 0` for 15 minutes) would page, and keep paging, while the
    runbook told the operator `billing.journal.tick` was not running. No money was affected. Found by scenario 1; fixed with a
    red/green pair on the commit history (`9ee3c58`, `cb72eac`) and pinned for concurrency by `5c399a1`.
-2. **OPEN — claiming the next batch of the journal costs the whole backlog, not the batch.** The replayer's claim statement asks for
-   200 rows `ORDER BY next_attempt_at, created_at`, but the partial index covers only `next_attempt_at`, so Postgres reads and sorts
-   **every due row** to return 200. The plan, captured by the test at a 12 776-entry backlog: `Bitmap Heap Scan … actual rows=12581`,
-   then `Sort` (1 171 kB), then `Limit (actual rows=200)`, 3 828 buffer hits to claim 200 rows. (At a 1 390-entry backlog the same
-   statement read 231 rows.) The drain of that backlog ran at **332/s in its first half and 489/s in its second**
-   ([T133](#t133--recovery-rehearsals)): faster as the backlog shrinks, consistent with a per-claim cost that grows with it, though at this
-   size other things move too, so this is evidence for the plan's shape, not a fit. A much larger backlog (a heavier first run had ≈ 48 000
-   deferred entries behind a 23 s outage) ended in `journal due: context deadline exceeded` after the tick's 30 s budget. Remedy, not made here
-   because it is a migration: index `(next_attempt_at, created_at) WHERE status = 'pending'`, or order by the indexed column alone.
+2. **FIXED, BUT THE PREMISE WAS OVERSTATED — the journal claim read every due row to return 200, and that was never what made the drain
+   slow.** `Journal.Due` asks for 200 rows `ORDER BY next_attempt_at, created_at`. A backlog forms in seconds and autovacuum's statistics lag
+   it by up to a minute, so the planner believes the table nearly empty and chooses a Bitmap Heap Scan of every due row, a Sort, then a
+   Limit: at a 12 776-entry backlog `Bitmap Heap Scan … actual rows=12581` (3 828 buffer hits to claim 200). With fresh statistics the
+   existing index already gives an ordered scan, which is why a first version of the red test, written with an `ANALYZE`, *passed* on
+   the unfixed code and was not committed. The claim now sends `set_config('enable_bitmapscan', 'off', true)` with its statement as one
+   pgx batch (one round trip, one implicit transaction, so the setting ends with the claim): the same rows, order and lease, and at a
+   comparable backlog the plan is `Index Scan … actual rows=226`. Two things I tried first did not survive measurement: a composite
+   `(next_attempt_at, created_at)` index **does not fix it by itself** (with no statistics the planner still picks the bitmap plan), so no
+   migration was made; and wrapping the claim in an explicit transaction made each claim *slower* (four round trips: 2.49 → 3.67 ms at a
+   50 000-entry backlog), which the batch form removes.
+
+   **What it did not do.** The cost it removes is small: claiming an entire backlog in isolation took **2–3.5 ms per claim at 5 000, 20 000
+   and 50 000 entries, before and after**, within this machine's noise (`TestJournalClaimCostAgainstTheBacklog`). The 12.5k-backlog drain is
+   **unchanged by the fix** (runs of the same test, before and after, ranged 22–41 s and 307–575 entries/s; the noise is larger than any
+   difference), so it is limited by the per-entry replay and booking, **not by the claim**, and the `journal due: context deadline exceeded`
+   of a heavier first run (≈ 48 000 deferred entries behind a 23 s outage) is *not* explained by the claim's cost: finding 3 is the better
+   suspect, and was not re-run at that size. I had suggested the remedy was a migration and that the claim was the drain's cost; both were wrong.
+   What remains is a plan shape whose worst case is now bounded. Red `cd3a2c8`, green `670d641`, `test(mutation)` `bf71b12` (the setting must
+   not leak onto the pooled connection), refactor `7ddced8`.
 3. **OBSERVED — a replay tick that begins during an outage can run for its whole budget.** With ≈ 2 000 deferred calls a second
    the tick that started during the outage ended 30 s later with `journal due: context deadline exceeded`, and a SIGTERM then waited
    for it (a running tick deliberately ignores cancellation and is bounded by `PAYMENT_SHUTDOWN_TIMEOUT`). I believe it is each failed
@@ -198,7 +209,7 @@ an intent would need a forged sequence number, which corrupts the scope it is me
    never loses anything.
 4. **BY DESIGN, WORTH KNOWING — every Redis restart is a failover.** The writer compares the node's replication id on every batch, and a
    restarted Redis has a new one, so scenario 1 (nothing lost, AOF fsynced) still froze, drained, bumped and rebuilt **all 16 shards**.
-   Safe, and invisible when idle, but during the freeze `Record` defers to the journal (finding 2 is what makes that costly).
+   Safe, and invisible when idle, but during the freeze `Record` defers to the journal; how long that usage stays off the hot balance is the drain rate in [T133](#t133--recovery-rehearsals).
 
 ### What this does not show
 
@@ -278,7 +289,7 @@ host to read off the lines below.
 | **An operator's `recover` of the busiest shard, under traffic** (`POST /v1/admin/shards/{n}/recover`) | asked → succeeded in **1.29 s** (shard 2, 4 of the 48 scopes on it), generation 1 → 2, **0 errors** over 1 661 calls, **3 of them landed in the freeze and were deferred** (invariant 16), retry-everything **0 applied / 1 661 replayed**, books exact. *(In an earlier run of the same test none landed in the freeze, so whether a call lands there depends on timing.)* |
 | **Total loss of the hot tier** — `FLUSHALL` and `FUNCTION FLUSH`, then the functions reinstalled as `payment-migrate functions` does | functions installed in 1 ms; **every shard open 55 ms** after the new Redis answered; **all 256 scopes serving 436 ms** after (first call p50 1.4 ms, p99 2.3 ms, max 2.4 ms), each rebuilt lazily from the books; every rebuilt balance equals the books. The rebuild is per scope and lazy, so it grows with the number of scopes; only 256 were timed |
 | …and the callers who then retry everything | **all 1 456 keys were charged again in the hot tier** (it lost its idempotency guards), told `Applied`, refused by the books on their durable key, and put right by the writer's corrections — the documented late replay. The end state is exact once the corrections drain; until then the hot balance is *lower* than the truth by those duplicates, which is the safe direction |
-| **A 12 776-entry journal backlog drained after a 14.3 s outage** | **32 s to empty**: 396/s overall, **332/s in the first half, 489/s in the second**; 14 802 keys retried, **0 applied**; the gauge cleared. This is the host's *exposure window*: usage still in the journal is not on the hot balance, so the hot tier over-admits by that much until it drains. See [finding 2](#findings) |
+| **A 12 556-entry journal backlog drained after a 13.9 s outage** | **33 s to empty**: 378/s overall, **328/s in the first half, 446/s in the second**; 14 477 keys retried, **0 applied**; the gauge cleared. Runs of this test on this machine ranged 22–41 s (307–575/s). This is the host's *exposure window*: usage still in the journal is not on the hot balance, so the hot tier over-admits by that much until it drains. The rate is limited by per-entry replay and booking, **not by the journal claim** ([finding 2](#findings)) |
 
 Two things the rehearsal corrected in the runbook: a total loss does **not** open shards at "a new generation" — a shard whose
 `meta` key is missing is reopened at the generation the books record, and nothing is bumped (an empty Redis holds no account or intent
