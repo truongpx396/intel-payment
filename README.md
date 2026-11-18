@@ -381,7 +381,7 @@ moves credits or changes a subscription, `admin` for configuration. The normativ
 | `/v1/admin/plans` · `/{code}` · `/{code}/provider-prices/{account}/{currency}` | admin | Plans, taking them on or off sale, and mapping a price to the provider's |
 | `/v1/admin/provider-accounts` · `/v1/admin/customers` | admin | Provider accounts (secrets are references) · linking a scope to a provider customer |
 | `POST /webhooks/{provider}/{account}` | signature | The provider's delivery. No credential, no CORS: the signature is the credential |
-| `GET /healthz` · `/readyz` · `/metrics` | none | Up · may be sent traffic · Prometheus exposition |
+| `GET /healthz` · `/readyz` · `/metrics` | none | Up · may be sent traffic · Prometheus exposition (`/metrics` is on `PAYMENT_METRICS_ADDR` unless the API listener is loopback) |
 
 Admin writes take `actor` and `reason` in the body; every change is audited.
 

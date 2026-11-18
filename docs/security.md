@@ -201,6 +201,6 @@ indistinguishable from a bug.
 - [ ] Each provider account's `realms` is as narrow as possible; secrets are references, not values.
 - [ ] Outbound endpoints are `https`; the SSRF guard refuses a private address.
 - [ ] Postgres: TLS, least-privilege role, backups tested by an actual restore.
-- [ ] `/metrics` and admin endpoints not publicly reachable.
+- [ ] `/metrics` is on its own listener (`PAYMENT_METRICS_ADDR`, which `paymentd` requires on a reachable API address) and no public network reaches it; admin endpoints are not publicly reachable.
 - [ ] Verification-failure and drift alerts reach a human.
 - [ ] A tampered webhook, a webhook for an unknown account, a cross-realm scope, a `record`-only caller attempting `Grant`, `Transfer` and an admin write, and a direct SQL config change (which must appear in `audit_log`) have each been tried against the deployment.
