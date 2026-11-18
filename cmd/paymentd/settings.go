@@ -38,7 +38,16 @@ type settings struct {
 	Legacy429       bool
 	LogLevel        slog.Level
 	ShutdownTimeout time.Duration // how long a stop waits for the calls in flight
+	// RequestTimeout is the deadline every request carries (PAYMENT_REQUEST_TIMEOUT), so a query that stalls cannot hold a
+	// pooled connection for ever.
+	RequestTimeout time.Duration
 }
+
+const (
+	// httpWriteTimeout is how long the server allows itself to write a response; a request deadline must end before it.
+	httpWriteTimeout      = 30 * time.Second
+	defaultRequestTimeout = 25 * time.Second
+)
 
 const (
 	authNone   = "none"
@@ -64,6 +73,11 @@ func parseSettings(getenv func(string) string) (settings, error) {
 	s.ShutdownTimeout = 30 * time.Second
 	r.PositiveDuration("PAYMENT_SHUTDOWN_TIMEOUT", &s.ShutdownTimeout, "a stop that waits for nothing drops the calls in flight")
 	s.LogLevel = r.LogLevel()
+	s.RequestTimeout = defaultRequestTimeout
+	r.PositiveDuration("PAYMENT_REQUEST_TIMEOUT", &s.RequestTimeout, "a request with no time to run is refused before it starts")
+	if s.RequestTimeout >= httpWriteTimeout { // an unusable value leaves the default, so this reports only a value that parsed
+		r.Fail("PAYMENT_REQUEST_TIMEOUT", fmt.Sprintf("must be shorter than the %v the server allows itself to write a response in: a request that outlives it is cut off and not answered", httpWriteTimeout))
+	}
 
 	s.TLSCertFile, s.TLSKeyFile, s.TLSClientCAFile = r.Str("PAYMENT_TLS_CERT_FILE"), r.Str("PAYMENT_TLS_KEY_FILE"), r.Str("PAYMENT_TLS_CLIENT_CA_FILE")
 	s.Auth = r.StrOr("PAYMENT_SERVICE_AUTH", authBearer)

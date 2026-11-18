@@ -176,7 +176,7 @@ One shape everywhere:
 | 503 | `hot_store_unavailable` | `Admit` under `fail_closed` with the shard unavailable; any `Grant` or `Transfer` while the hot tier is (`Record` defers instead). A cold shard, a frozen shard, a full outbox and a cold account are all this to a REST caller |
 | 503 | `unavailable` | the entitlements could not be resolved (`/v1/entitlements`, `/v1/entitlements/check`). Fixed text; never "entitled" and never "not entitled" |
 | 503 | `quota_unavailable` | a limit sized by an entitlement that could not be resolved. Never treated as "unlimited" |
-| 504 | `deadline_exceeded` | the caller's deadline passed |
+| 504 | `deadline_exceeded` | the caller's deadline passed, or the request's own did: every request on every surface is given `PAYMENT_REQUEST_TIMEOUT` (default 25s), so a query stalled on Postgres is cancelled and cannot hold a pooled connection after the caller stopped waiting |
 
 The status table is the one table both transports read ([`wire.Table`](../../../metering/adapters/driving/wire/conditions.go)): a gRPC `ErrorInfo.reason` and a REST `code` are columns of the same row, and a test enumerates the exported errors of `domain/errors.go` and fails on any without one. A 5xx message is fixed text — the error chain names the topology (a dial address, a DSN), and goes to the operator's log, whole.
 

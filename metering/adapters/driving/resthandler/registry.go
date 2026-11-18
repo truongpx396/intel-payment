@@ -12,6 +12,7 @@
 package resthandler
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -20,6 +21,7 @@ import (
 	"runtime/debug"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/truongpx396/intel-payment/metering/adapters/driving/auth"
 )
@@ -200,6 +202,10 @@ type Options struct {
 	Auth         auth.Authenticator
 	Logger       *slog.Logger
 	MaxBodyBytes int64 // default 1 MiB
+	// RequestTimeout is the deadline every request's context is given, whichever surface it is on: net/http's WriteTimeout closes
+	// the connection but does not cancel the context, so without it a query the handler waits on outlives the caller that
+	// stopped waiting and holds its pooled connection. Zero gives none, and an embedder that sets none keeps the caller's own.
+	RequestTimeout time.Duration
 }
 
 const defaultMaxBody = 1 << 20
@@ -229,7 +235,7 @@ func (g *Registry) Handler(o Options) (http.Handler, error) {
 		}
 		rt.add(r, h)
 	}
-	return rt.guard(o.MaxBodyBytes), nil
+	return rt.guard(o.MaxBodyBytes, o.RequestTimeout), nil
 }
 
 // authenticate lifts a Credential off the request, authenticates it, and checks the privilege. need == 0
@@ -357,9 +363,9 @@ func (rt *router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// guard caps request bodies and turns a panic into one 500: a Tier-0 service that dies on one bad request
-// has turned that request into an outage.
-func (rt *router) guard(maxBody int64) http.Handler {
+// guard caps request bodies, gives every request its deadline, and turns a panic into one 500: a Tier-0 service that dies on
+// one bad request has turned that request into an outage.
+func (rt *router) guard(maxBody int64, timeout time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if p := recover(); p != nil {
@@ -368,6 +374,11 @@ func (rt *router) guard(maxBody int64) http.Handler {
 			}
 		}()
 		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+		if timeout > 0 {
+			ctx, cancel := context.WithTimeout(r.Context(), timeout)
+			defer cancel()
+			r = r.WithContext(ctx)
+		}
 		rt.ServeHTTP(w, r)
 	})
 }

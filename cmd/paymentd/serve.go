@@ -282,7 +282,7 @@ func wire(ctx context.Context, s settings, log *slog.Logger, getenv func(string)
 	handler, err := resthandler.New(resthandler.Config{
 		Meter: engine, Balance: engine, Credits: engine, Ledger: st.Books, Transfers: st.Books, Admin: admin, Operations: adminOps, Drift: pgadapter.NewDrift(st.Pool),
 		Auth: s.Authenticator, Clock: system.Clock{}, Logger: log, Legacy429ForLimits: s.Legacy429,
-		Ready: readiness{db: st.DB, ms: st.Migrations, books: st.Books, shards: cfg.Shards}, Metrics: apiMetrics,
+		Ready: readiness{db: st.DB, ms: st.Migrations, books: st.Books, shards: cfg.Shards}, Metrics: apiMetrics, RequestTimeout: s.RequestTimeout,
 		Extra: slices.Concat([]resthandler.Route{{Method: http.MethodPost, Path: webhookhttp.Path, Surface: resthandler.Webhook, Handler: door}}, hostRoutes, entRoutes, feedRoutes),
 	})
 	if err != nil {
@@ -299,12 +299,12 @@ func wire(ctx context.Context, s settings, log *slog.Logger, getenv func(string)
 	}
 	svc.http = &http.Server{
 		Handler: handler, TLSConfig: tlsCfg, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
-		WriteTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute,
+		WriteTimeout: httpWriteTimeout, IdleTimeout: 2 * time.Minute,
 	}
 	if s.MetricsAddr != "" {
 		mux := http.NewServeMux()
 		mux.Handle("GET /metrics", metricsHandler)
-		svc.metrics = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute}
+		svc.metrics = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: httpWriteTimeout, IdleTimeout: 2 * time.Minute}
 	}
 	opts := []grpc.ServerOption{grpc.UnaryInterceptor(grpcserver.AuthInterceptor(s.Authenticator, log))}
 	if tlsCfg != nil {
