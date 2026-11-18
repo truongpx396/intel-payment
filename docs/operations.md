@@ -222,6 +222,27 @@ restore the plan, or refund the charge at the provider. The admin API configures
 A `payment-worker` that cannot join the `<prefix>.balance.low.>` subscription exits `1` and says which; it does not run on
 without auto top-up.
 
+## Alert: a payment of nothing was held
+
+**Means:** the provider confirmed a payment whose amount is **zero** for a plan that costs money (a trial invoice, a coupon of
+100%), so `payment-worker` granted **nothing** and is retrying the event on its backoff (`billing_payment_underpaid_total{outcome="held"}`
+counts each attempt). Credits are minted from the plan, not from the amount, which is why it will not grant a pack for nothing.
+Left alone the event ends `dead` and pages again ([webhook inbox age, or dead events](#alert-webhook-inbox-age-or-dead-events)).
+
+The worker's log line `a verified payment settled for less than its plan costs` names the account, the payment, the plan, what was paid and
+what the plan costs. Then decide which of these it is:
+
+- **A trial or a coupon of 100% that you meant**: the engine has no trial and does not know about provider-side discounts. If the
+  customer should have credits, grant them by hand: `POST /v1/admin/adjustments` (a person and a reason are required) for what the
+  trial was meant to give. The held event keeps retrying and ends `dead` on its own, and stays as the record.
+- **A plan whose price is wrong in the catalogue** (it says it costs money and the provider sells it free): put the price right
+  (`PATCH /v1/admin/plans/{code}`). The next retry grants once.
+- **Nothing the operator did** (a leaked promotion code, a mis-mapped price): refund the payment at the provider.
+
+**A discount above nothing is not held.** A coupon that takes a $10.00 pack to $5.00 still grants the whole pack, as the contract says, and
+is counted on `billing_payment_underpaid_total{outcome="granted"}` with the same log line. That counter is the revenue given away; watch
+it if you run coupons, and if you do not, treat any increase as a price or a promotion code you did not mean to have.
+
 ## Alert: outbound deliveries failing
 
 **Means:** a host endpoint is refusing or timing out. A delivery is retried for 72 h (1 m, 5 m, 30 m, 2 h, then every 6 h) and then goes

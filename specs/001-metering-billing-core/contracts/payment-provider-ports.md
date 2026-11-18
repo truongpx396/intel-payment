@@ -941,6 +941,8 @@ paid.
 19. **An account touches only its realms.** A verified event whose customer resolves to a realm outside the account's `realms` is ignored and counted as a security event.
 20. **A refund never claws back what expiry already took.** The clawback names the payment it reverses (`source_key`) and is capped at `credits_granted − Σ lot.Expired`, read from `LotReader.LotsOf`; credits that were spent are still revoked and fall to `NegativeBalancePolicy`. A chargeback is the same clawback by another name and is capped the same way.
 
+21. **A payment of nothing buys nothing, and a discount is counted.** A plan's credits are minted from the catalogue, never from the amount paid (a coupon that takes a pack from $10.00 to $5.00 still grants the whole pack), so a verified payment whose gross amount is **zero** for a plan that costs money (a trial invoice, a coupon of 100%) is **held**: nothing is granted, `billing_payment_underpaid_total{outcome="held"}` counts it, and the event fails and is retried like a charge the processor cannot fulfil, so it pages (`billing_webhook_dead_total`) when its retries run out. A gross amount above nothing and below the plan's price in the currency paid is granted as always and counted `{outcome="granted"}` with a log line naming what was paid and what the plan costs. The comparison is of the gross amount, so tax added on top can hide a shortfall and never invent one; a plan with no price in the currency paid has nothing to be compared with and is neither held nor counted.
+
 ---
 
 ## Contract-test skeleton

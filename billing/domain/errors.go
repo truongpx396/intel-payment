@@ -20,6 +20,11 @@ var (
 	// ErrUnknownPrice is a provider price id (or a plan code and currency) the catalogue does not know. It never
 	// falls back to a default plan (FR-021).
 	ErrUnknownPrice = errors.New("unknown price")
+	// ErrUnderpaid is a verified payment of nothing for a plan that costs money. A plan's credits are minted from the
+	// catalogue, so granting them would sell the whole allotment for no money. It is an error and not an ignore: the customer
+	// has paid something, so the event is retried, and in the end pages a person, rather than either granting in full or taking
+	// the money for nothing.
+	ErrUnderpaid = errors.New("payment is nothing for a plan that costs money")
 	// ErrBelowUsage is a plan change that would take an entitlement below what the scope is using now (FR-029).
 	ErrBelowUsage = errors.New("plan change would take an entitlement below current usage")
 	// ErrUnsupported is an operation the provider cannot do at all — saving a payment method for later, charging one

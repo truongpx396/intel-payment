@@ -17,6 +17,7 @@ const (
 	MetricWebhookFailed       = "billing_webhook_failed_total"        // counter (provider)
 	MetricWebhookDead         = "billing_webhook_dead_total"          // counter (provider) — pages
 	MetricWebhookForeignRealm = "billing_webhook_foreign_realm_total" // counter (provider) — a SECURITY event
+	MetricPaymentUnderpaid    = "billing_payment_underpaid_total"     // counter (provider, outcome: held|granted)
 	MetricAutoRecharge        = "billing_autorecharge_total"          // counter (result)
 	MetricSubdrift            = "billing_subdrift_total"              // counter (outcome: repaired|unchanged|skipped|failed)
 )
@@ -42,6 +43,8 @@ var MetricCatalog = []mports.MetricDef{
 		Help: "Inbox events that failed every attempt: a verified payment event no one has fulfilled"},
 	{Name: MetricWebhookForeignRealm, Kind: mports.KindCounter, Labels: []string{"provider"}, Unit: "{event}",
 		Help: "Verified events whose customer resolves to a realm their account does not serve: a security event"},
+	{Name: MetricPaymentUnderpaid, Kind: mports.KindCounter, Labels: []string{"provider", "outcome"}, Unit: "{payment}",
+		Help: "Verified payments that settled for less than their plan costs, by what was done: held (a payment of nothing: nothing granted, retried, pages) or granted (a discount: the whole allotment, as the contract says)"},
 	{Name: MetricAutoRecharge, Kind: mports.KindCounter, Labels: []string{"result"}, Unit: "{trigger}",
 		Help: "What a low-balance trigger came to: charged, resumed, ignored, refused, declined, failed, disabled, or error (delivered again)"},
 	{Name: MetricSubdrift, Kind: mports.KindCounter, Labels: []string{"outcome"}, Unit: "{subscription}",

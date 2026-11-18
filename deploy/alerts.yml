@@ -155,6 +155,13 @@ groups:
           summary: A webhook event exhausted its retries and will never be leased again; the customer has paid.
           runbook: docs/operations.md#alert-webhook-inbox-age-or-dead-events
 
+      - alert: BillingPaymentHeldUnderpaid
+        expr: increase(billing_payment_underpaid_total{outcome="held"}[15m]) > 0
+        labels: {severity: page}
+        annotations:
+          summary: A verified payment of nothing for a plan that costs money was held; nothing was granted, and it pages again when its retries run out.
+          runbook: docs/operations.md#alert-a-payment-of-nothing-was-held
+
       - alert: EventsDeliveryFailed
         expr: increase(events_delivery_failed_total[15m]) > 0
         labels: {severity: page}

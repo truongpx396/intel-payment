@@ -305,6 +305,20 @@ func (p *Processor) paymentSucceeded(ctx context.Context, acct domain.ProviderAc
 		return "", fmt.Errorf("%w: price %s is plan %s of realm %s and customer %s is in realm %s", md.ErrInvalid,
 			obj.ProviderPriceID, plan.Code, plan.Realm.Or(), obj.ProviderCustomerID, scope.Realm.Or())
 	}
+	// A plan's credits are minted from the catalogue, never from the amount paid, so a discount is honoured — and counted. A
+	// payment of NOTHING cannot be: it would mint the whole allotment for no money (constitution I, IV and XII).
+	if price, short := underpaid(plan, *obj.Amount); short {
+		outcome := "granted"
+		if obj.Amount.MinorUnits <= 0 {
+			outcome = "held"
+		}
+		p.d.Metrics.Count(ports.MetricPaymentUnderpaid, 1, mports.Labels{"provider": string(e.Provider), "outcome": outcome})
+		p.d.Log.Warn("a verified payment settled for less than its plan costs", "outcome", outcome, "provider", string(e.Provider),
+			"account", acct.ID, "payment", obj.ProviderPaymentID, "plan", plan.Code, "paid", obj.Amount.MinorUnits, "price", price.MinorUnits, "currency", price.Currency)
+		if outcome == "held" {
+			return "", fmt.Errorf("%w: payment %s settled %d of %d %s for plan %s", domain.ErrUnderpaid, obj.ProviderPaymentID, obj.Amount.MinorUnits, price.MinorUnits, price.Currency, plan.Code)
+		}
+	}
 
 	var announce *domain.Payment
 	_, err = p.d.Payments.Update(ctx, acct.ID, obj.ProviderPaymentID, func(cur domain.Payment, found bool) (domain.Payment, error) {
@@ -352,6 +366,17 @@ func (p *Processor) paymentSucceeded(ctx context.Context, acct domain.ProviderAc
 		p.settleRecharge(ctx, *announce, true, "")
 	}
 	return outcomeProcessed, nil
+}
+
+// underpaid reports whether paid is less than the plan's price in the currency it was paid in, and what that price is. It
+// compares the GROSS amount, so tax added on top can only hide a shortfall, never invent one: a customer who paid in full is
+// never counted short. A plan with no price in that currency has nothing to be compared with and is not.
+func underpaid(plan domain.Plan, paid md.Money) (price md.Money, short bool) {
+	price, ok := plan.Prices[paid.Currency]
+	if !ok {
+		return md.Money{}, false
+	}
+	return price, paid.MinorUnits < price.MinorUnits
 }
 
 // planOf finds what a verified payment bought. A purchase names the provider's price, and the catalogue maps it back to a
