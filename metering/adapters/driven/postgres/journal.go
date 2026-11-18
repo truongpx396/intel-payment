@@ -99,8 +99,25 @@ func (j *Journal) Put(ctx context.Context, e ports.JournalEntry) (bool, error) {
 // Due claims up to limit pending entries whose next attempt is at or before now, oldest first, by
 // pushing their next attempt out by the lease. Two concurrent ticks therefore never take the same
 // row (and if they did, the replay is idempotent).
+//
+// A claim must cost the BATCH, never the backlog behind it: it runs on every replay tick, up to twenty
+// times a tick, for as long as the backlog of an outage takes to drain. The statement is only cheap if
+// Postgres walks spend_journal_pending_idx in order and stops after limit rows. Whether it does depends on
+// what the planner believes about the table, and a backlog forms in seconds while autovacuum's statistics
+// lag it by up to a minute: believing the table nearly empty, the planner prefers a Bitmap Heap Scan, which
+// cannot return a row until it has found every due one, and a Sort above it — 12 581 rows read to return 200
+// (measured, Phase 7). Bitmap scans are therefore turned off for this transaction only (set_config(…, true)
+// is SET LOCAL); the index then gives the ordered scan that stops after limit rows, whatever the statistics say.
 func (j *Journal) Due(ctx context.Context, now time.Time, limit int) ([]ports.JournalEntry, error) {
-	rows, err := j.pool.Query(ctx, `
+	tx, err := j.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: journal due: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // after rows.Close below: deferred calls run last-in, first-out
+	if _, err := tx.Exec(ctx, `SELECT set_config('enable_bitmapscan', 'off', true)`); err != nil {
+		return nil, fmt.Errorf("postgres: journal due: %w", err)
+	}
+	rows, err := tx.Query(ctx, `
 		WITH due AS (
 			SELECT id FROM spend_journal
 			WHERE status = 'pending' AND next_attempt_at <= $1
@@ -132,7 +149,14 @@ func (j *Journal) Due(ctx context.Context, now time.Time, limit int) ([]ports.Jo
 		e.Charge = d.charge(domain.Scope{Realm: domain.Realm(realm), Kind: kind, ID: id}, key)
 		out = append(out, e)
 	}
-	return out, rows.Err()
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: journal due: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("postgres: journal due: %w", err)
+	}
+	return out, nil
 }
 
 // Retry records a failed replay and schedules the next attempt.
