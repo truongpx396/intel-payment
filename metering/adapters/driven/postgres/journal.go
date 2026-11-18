@@ -109,15 +109,11 @@ func (j *Journal) Put(ctx context.Context, e ports.JournalEntry) (bool, error) {
 // (measured, Phase 7). Bitmap scans are therefore turned off for this transaction only (set_config(…, true)
 // is SET LOCAL); the index then gives the ordered scan that stops after limit rows, whatever the statistics say.
 func (j *Journal) Due(ctx context.Context, now time.Time, limit int) ([]ports.JournalEntry, error) {
-	tx, err := j.pool.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("postgres: journal due: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }() // after rows.Close below: deferred calls run last-in, first-out
-	if _, err := tx.Exec(ctx, `SELECT set_config('enable_bitmapscan', 'off', true)`); err != nil {
-		return nil, fmt.Errorf("postgres: journal due: %w", err)
-	}
-	rows, err := tx.Query(ctx, `
+	// One batch is one round trip and one implicit transaction, so the setting (local to that transaction) and the
+	// claim travel together and the setting is gone when the claim commits.
+	batch := &pgx.Batch{}
+	batch.Queue(`SELECT set_config('enable_bitmapscan', 'off', true)`)
+	batch.Queue(`
 		WITH due AS (
 			SELECT id FROM spend_journal
 			WHERE status = 'pending' AND next_attempt_at <= $1
@@ -128,6 +124,12 @@ func (j *Journal) Due(ctx context.Context, now time.Time, limit int) ([]ports.Jo
 		FROM due WHERE j.id = due.id
 		RETURNING j.id::text, j.realm, j.scope_kind, j.scope_id, j.idem_key, j.fingerprint, j.attempts,
 		          j.next_attempt_at, j.created_at, j.payload`, now, limit, fmt.Sprintf("%d seconds", int(journalLease.Seconds())))
+	br := j.pool.SendBatch(ctx, batch)
+	defer func() { _ = br.Close() }()
+	if _, err := br.Exec(); err != nil {
+		return nil, fmt.Errorf("postgres: journal due: %w", err)
+	}
+	rows, err := br.Query()
 	if err != nil {
 		return nil, fmt.Errorf("postgres: journal due: %w", err)
 	}
@@ -153,7 +155,7 @@ func (j *Journal) Due(ctx context.Context, now time.Time, limit int) ([]ports.Jo
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("postgres: journal due: %w", err)
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := br.Close(); err != nil { // the implicit transaction commits here; an error means the claim did not
 		return nil, fmt.Errorf("postgres: journal due: %w", err)
 	}
 	return out, nil
