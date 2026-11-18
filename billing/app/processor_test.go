@@ -38,6 +38,11 @@ func TestProcessorGrants(t *testing.T) {
 	contracts.ProcessorGrants(t, processorUnderTest)
 }
 
+func TestProcessorAnnouncements(t *testing.T) {
+	t.Parallel()
+	contracts.ProcessorAnnouncements(t, processorUnderTest)
+}
+
 func TestProcessorUnderpayment(t *testing.T) {
 	t.Parallel()
 	contracts.ProcessorUnderpayment(t, processorUnderTest)
