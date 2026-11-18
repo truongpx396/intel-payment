@@ -42,7 +42,9 @@ jobs:
 
       - name: Architecture graph
         run: |
-          go install github.com/fe3dback/go-arch-lint@latest
+          # Pinned, not @latest: a gate whose tool changes under it can turn red or silent with no change of ours. Dependabot cannot
+          # bump a `go install` line, so raising it is a deliberate edit (the version this branch was verified with).
+          go install github.com/fe3dback/go-arch-lint@v1.19.0
           go-arch-lint check --project-path .
 
       # The gates must FAIL when crossed: plant a violation per rule and expect rejection.
@@ -58,7 +60,8 @@ jobs:
 
       - name: govulncheck
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          # The scanner is pinned; the vulnerability database it reads is fetched live, which is the point. Bump it deliberately.
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
           govulncheck ./...
 
   # The wire contract (api/proto). Generated code is checked in, so CI fails on a stale tree; a released
