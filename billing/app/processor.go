@@ -331,6 +331,7 @@ func (p *Processor) paymentSucceeded(ctx context.Context, acct domain.ProviderAc
 	}
 
 	var announce *domain.Payment
+	retried := retriedEvent(le)
 	_, err = p.d.Payments.Update(ctx, acct.ID, obj.ProviderPaymentID, func(cur domain.Payment, found bool) (domain.Payment, error) {
 		pay := cur
 		if !found || pay.Status == "" || pay.Status == domain.Pending || pay.Status == domain.Failed {
@@ -358,6 +359,11 @@ func (p *Processor) paymentSucceeded(ctx context.Context, acct domain.ProviderAc
 				Reason: grantReason(pay.Kind), Ref: refOf(acct, pay, e)}); err != nil {
 				return cur, fmt.Errorf("grant credits for payment %s: %w", pay.ProviderPaymentID, err)
 			}
+		}
+		if announce == nil && retried && pay.Status == domain.Succeeded {
+			// An earlier attempt may have recorded this and then failed to announce it: say so again (see retriedEvent).
+			again := pay
+			announce = &again
 		}
 		return pay, nil
 	})
@@ -533,6 +539,7 @@ func (p *Processor) paymentRefunded(ctx context.Context, acct domain.ProviderAcc
 		return "", fmt.Errorf("%w: payment_refunded %s carries no payment id or refunded amount", md.ErrInvalid, e.ProviderEventID)
 	}
 	var announce *domain.Payment
+	retried := retriedEvent(le)
 	_, err := p.d.Payments.Update(ctx, acct.ID, obj.ProviderPaymentID, func(cur domain.Payment, found bool) (domain.Payment, error) {
 		if err := ownPayment(cur, found, obj.ProviderPaymentID, scope); err != nil {
 			return cur, err
@@ -555,7 +562,7 @@ func (p *Processor) paymentRefunded(ctx context.Context, acct domain.ProviderAcc
 		}
 		next := cur
 		next.RefundedMinor, next.CreditsRevoked, next.Status = plan.RefundedMinor, plan.RevokedTotal, plan.Status
-		if next != cur {
+		if next != cur || retried {
 			announce = &next
 		}
 		return next, nil
@@ -581,6 +588,7 @@ func (p *Processor) dispute(ctx context.Context, acct domain.ProviderAccount, sc
 	}
 	var announce *domain.Payment
 	var note string
+	retried := retriedEvent(le)
 	_, err := p.d.Payments.Update(ctx, acct.ID, obj.ProviderPaymentID, func(cur domain.Payment, found bool) (domain.Payment, error) {
 		if err := ownPayment(cur, found, obj.ProviderPaymentID, scope); err != nil {
 			return cur, err
@@ -629,7 +637,7 @@ func (p *Processor) dispute(ctx context.Context, acct domain.ProviderAccount, sc
 				return cur, fmt.Errorf("apply %s for dispute %s: %w", plan.Reason, obj.DisputeID, err)
 			}
 		}
-		if plan.Payment != cur {
+		if plan.Payment != cur || retried {
 			announce = &plan.Payment
 		}
 		return plan.Payment, nil
@@ -671,8 +679,16 @@ func (p *Processor) noteOf(pay domain.Payment, event string, amount int64, grace
 		Payment: pay.ProviderPaymentID, Amount: amount, Currency: pay.Amount.Currency, GraceUntil: graceUntil, ReceiptURL: pay.ReceiptURL}
 }
 
+// retriedEvent reports whether this is not the event's first attempt. A processor commits what an event did and then announces
+// it, and a failure to announce retries the event over a payment or a subscription that already holds the change — so the
+// retry cannot tell what it did from what it finds, and an announcement made only for a change the current pass made itself
+// would never be made at all. A retried event therefore announces what it finds, which makes announcements at-least-once: a
+// retry that failed after announcing announces again, and a host de-duplicates on the payment and the event.
+func retriedEvent(le ports.LeasedEvent) bool { return le.Attempts > 1 }
+
 // announcePayment publishes <prefix>.payment.<tag>. It happens before the event is marked processed and a failure
-// retries the event — every step before it is idempotent — so a notification is never lost to a bus that blinked.
+// retries the event — every step before it is idempotent, and a retried event announces again (see retriedEvent) — so a
+// notification is never lost to a bus that blinked.
 func (p *Processor) announcePayment(ctx context.Context, scope domain.Scope, n paymentNote) error {
 	return p.publish(ctx, p.d.SubjectPrefix+".payment."+scope.SubjectToken(), n)
 }
@@ -749,7 +765,7 @@ func (p *Processor) paymentFailed(ctx context.Context, acct domain.ProviderAccou
 	}
 	var grace *time.Time
 	if obj.ProviderSubscriptionID != "" {
-		res, err := p.applySubscription(ctx, acct, scope, e, obj.ProviderSubscriptionID)
+		res, err := p.applySubscription(ctx, acct, scope, e, obj.ProviderSubscriptionID, retriedEvent(le))
 		if err != nil {
 			return "", err
 		}
@@ -776,7 +792,7 @@ func (p *Processor) subscriptionChanged(ctx context.Context, acct domain.Provide
 	if e.Object.ProviderSubscriptionID == "" {
 		return "", fmt.Errorf("%w: %s %s carries no subscription id", md.ErrInvalid, e.Type, e.ProviderEventID)
 	}
-	res, err := p.applySubscription(ctx, acct, scope, e, e.Object.ProviderSubscriptionID)
+	res, err := p.applySubscription(ctx, acct, scope, e, e.Object.ProviderSubscriptionID, retriedEvent(le))
 	if err != nil {
 		return "", err
 	}
@@ -794,7 +810,7 @@ type subResult struct {
 
 // applySubscription fetches the provider's CURRENT subscription and writes it if it is newer than the one held,
 // then tells the entitlement layer. Status has exactly one writer — here (invariant 12).
-func (p *Processor) applySubscription(ctx context.Context, acct domain.ProviderAccount, scope domain.Scope, e domain.Event, subID string) (subResult, error) {
+func (p *Processor) applySubscription(ctx context.Context, acct domain.ProviderAccount, scope domain.Scope, e domain.Event, subID string, retried bool) (subResult, error) {
 	provider, ok := p.d.Providers[e.Provider]
 	if !ok {
 		return subResult{}, fmt.Errorf("%w: no adapter for provider %s", domain.ErrUnknownAccount, e.Provider)
@@ -830,11 +846,11 @@ func (p *Processor) applySubscription(ctx context.Context, acct domain.ProviderA
 	if err != nil {
 		return subResult{}, fmt.Errorf("apply subscription %s: %w", subID, err)
 	}
-	if applied {
+	if applied || retried {
 		if err := p.announceEntitlement(ctx, scope, "subscription"); err != nil {
 			return subResult{}, err
 		}
-		if sub.Status == domain.Canceled && (!same || held.Status != domain.Canceled) {
+		if sub.Status == domain.Canceled && (retried || !same || held.Status != domain.Canceled) {
 			if err := p.announcePayment(ctx, scope, paymentNote{Realm: string(scope.Realm.Or()), Scope: scopeRef{scope.Kind, scope.ID}, Event: "canceled"}); err != nil {
 				return subResult{}, err
 			}

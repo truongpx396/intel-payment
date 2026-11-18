@@ -697,9 +697,15 @@ A refund or a dispute names a payment, and the payment is the authority on whose
 customer is not the payment's owner fails loudly rather than moving another scope's credits. Both run
 under the payment's lock (`Payments.Update`), read `LotReader.LotsOf` for what expiry has taken — an
 outage of the reader is an error, never a zero — and are announced on `billing.payment.<tag>`
-(`refunded`, `disputed`, `charged_back`, `succeeded`) only when they changed something, **before** the
-event is marked processed: a bus that blinked retries the event, every step of which is idempotent, so a
-notification is never lost. A clawback whose payment commit failed after the grant was made is recomputed
+(`refunded`, `disputed`, `charged_back`, `succeeded`) when they changed something **or when the event is
+a retry**, **before** the event is marked processed: a bus that blinked retries the event, every step of which is
+idempotent, so a notification is never lost. A retry runs over a payment or a subscription that already holds the
+change an earlier attempt committed before it failed to announce, so it cannot tell what it did from what it finds
+and announces what it finds — on `billing.payment.<tag>` for a payment, on `billing.entitlement.<tag>` for a
+subscription, and it settles the charge slot of an auto top-up it fulfils. Announcements are therefore
+**at-least-once**: a retry that failed after announcing announces again, and a host de-duplicates on the payment
+and the event. An event on its first attempt announces only the change it made, so a redelivery of an event
+already fulfilled announces nothing. A clawback whose payment commit failed after the grant was made is recomputed
 identically on the retry and replays under the same key.
 
 ### Dispute lifecycle
