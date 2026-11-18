@@ -38,6 +38,34 @@ func TestProcessorGrants(t *testing.T) {
 	contracts.ProcessorGrants(t, processorUnderTest)
 }
 
+func TestProcessorUnderpayment(t *testing.T) {
+	t.Parallel()
+	contracts.ProcessorUnderpayment(t, processorUnderTest)
+}
+
+// The underpayment suite is shown to reject a processor that cannot see what a plan costs — the one that would mint a
+// whole pack for no money — by the subtest that names the invariant.
+func TestProcessorUnderpaymentRejectsAProcessorThatCannotSeeAPrice(t *testing.T) {
+	t.Parallel()
+	const held = "a payment of exactly nothing for a plan that costs money grants nothing, is retried, and in the end is dead and pages"
+	var rejected []string
+	for _, c := range contracts.UnderpaymentCases() {
+		var broken sync.Map // a case that builds several processors breaks its world once, before any of them runs
+		mk := func(t testing.TB, h *contracts.Harness) ports.WebhookProcessor {
+			if _, already := broken.LoadOrStore(h, true); !already {
+				h.Catalog.NoPrices = true
+			}
+			return processorUnderTest(t, h)
+		}
+		if failed, _ := contracts.Probe(30*time.Second, func(t testing.TB) { c.Run(t, mk) }); failed {
+			rejected = append(rejected, c.Name)
+		}
+	}
+	if !slices.Contains(rejected, held) {
+		t.Fatalf("a processor with no prices to compare was not rejected by %q; rejected: %q", held, rejected)
+	}
+}
+
 // The grants suite is shown to reject a processor whose collaborators are broken in the ways that lose or
 // duplicate money, each by a subtest that names the invariant.
 func TestProcessorGrantsRejectsEveryBrokenCollaboratorByName(t *testing.T) {

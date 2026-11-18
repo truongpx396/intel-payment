@@ -1046,6 +1046,9 @@ type MemCatalog struct {
 	// FallbackPlan, when set, is what PlanForPrice answers for a price it does not know: a default plan, the
 	// thing the catalogue must never do.
 	FallbackPlan *domain.Plan
+	// NoPrices, when set, makes PlanForPrice answer plans without the prices they sell at: a catalogue the processor
+	// cannot compare a payment against. It is how the underpayment suite is shown to have teeth.
+	NoPrices bool
 
 	log    *CallLog
 	mu     sync.Mutex
@@ -1124,6 +1127,9 @@ func (m *MemCatalog) PlanForPrice(_ context.Context, account, providerPriceID st
 		parts := strings.Split(k, "|")
 		for _, p := range m.plans {
 			if string(p.Realm.Or()) == parts[1] && p.Code == parts[2] {
+				if m.NoPrices {
+					p.Prices = nil
+				}
 				return p, true, nil
 			}
 		}
