@@ -291,9 +291,11 @@ make verify-schema       # migrations, seed and behavioural assertions on an emp
 |---|---|---|
 | `paymentd` REST | 8080 | fixed in `deploy/docker-compose.yml` |
 | `paymentd` gRPC | 9090 | fixed in `deploy/docker-compose.yml` |
-| Postgres | 5432 | `PAYMENT_POSTGRES_PORT` |
-| Redis | 6379 | `PAYMENT_REDIS_PORT` |
-| NATS (`make up-jetstream` only) | 4222 | fixed |
+| Postgres | 5432, **loopback only** | `PAYMENT_POSTGRES_PORT` |
+| Redis | 6379, **loopback only** | `PAYMENT_REDIS_PORT` |
+| NATS (`make up-jetstream` only) | 4222, **loopback only** | fixed |
+
+The data stores are bound to `127.0.0.1`, never to the network (a security review, [docs/hardening.md](docs/hardening.md), found them published on every interface beside credentials this repository documents). A host process on another machine reaches them through its own network path, not through this stack's published ports.
 
 </details>
 

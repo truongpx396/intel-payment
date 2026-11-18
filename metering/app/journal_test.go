@@ -3,6 +3,7 @@ package app_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -54,6 +55,68 @@ func TestReplayAppliesEntriesThroughTheHotFunction(t *testing.T) {
 	if got := r.bal.debited[0]; got.Fingerprint() != journalEntry("a", "k1", 0).Charge.Fingerprint() {
 		t.Fatal("a replay must not re-price")
 	}
+}
+
+// The backlog gauge is what MeteringDeferredUsageNotDraining pages on, for fifteen minutes. The writer settles a
+// journal entry when it books the intent, which is AFTER Replay applied it, so the count Replay reads straight after
+// its last batch is still above zero. Nothing is due on the next tick — so unless the gauge is refreshed then too, it
+// stays at that last value for good, and the page for "deferred usage is not draining" never clears after an outage in
+// which everything drained. (Found by the Phase 7 chaos run: the gauge read 12 over a journal that held nothing.)
+func TestTheBacklogGaugeFallsToZeroOnceTheWriterHasSettledTheLastEntriesAndNothingIsDueAnyMore(t *testing.T) {
+	t.Parallel()
+	r := newRig(t, rigOpt{})
+	r.journal.due = []ports.JournalEntry{journalEntry("a", "k1", 0), journalEntry("b", "k2", 0)}
+	r.journal.pending = 2
+	r.bal.debit = func(c domain.Charge) (domain.Receipt, error) {
+		return domain.Receipt{IdemKey: c.IdemKey, Applied: true, Seq: 5}, nil
+	}
+	jr := replayer(t, r)
+	if _, err := jr.Replay(context.Background(), 10); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.met.gauges[ports.MetricJournalPending]; got != 2 {
+		t.Fatalf("setup: both entries were applied but not yet settled, so the backlog is 2, got %d", got)
+	}
+
+	// The writer books both intents and settles both entries. The next tick finds nothing due.
+	r.journal.due, r.journal.pending = nil, 0
+	res, err := jr.Replay(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Claimed != 0 {
+		t.Fatalf("setup: nothing is due, yet %d entries were claimed", res.Claimed)
+	}
+	if got := r.met.gauges[ports.MetricJournalPending]; got != 0 {
+		t.Fatalf("the journal is empty but metering_journal_pending still says %d: the page for undrained deferred usage would never clear", got)
+	}
+}
+
+// Two replays at once — the worker's own loop and a `payment-worker tick journal` run by hand — share the set of realms
+// the replayer has reported. An unguarded map there is not a wrong number but a crash ("concurrent map writes").
+func TestReplaysRunningAtOnceDoNotRaceOnTheRealmsTheReplayerHasReported(t *testing.T) {
+	t.Parallel()
+	r := newRig(t, rigOpt{})
+	r.journal.due = []ports.JournalEntry{journalEntry("a", "k1", 0)}
+	r.journal.pending = 1
+	r.bal.debit = func(c domain.Charge) (domain.Receipt, error) {
+		return domain.Receipt{IdemKey: c.IdemKey, Applied: true, Seq: 5}, nil
+	}
+	jr := replayer(t, r)
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				if _, err := jr.Replay(context.Background(), 10); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestReplayBacksOffWhileTheHotTierIsDownAndNeverDropsAnEntry(t *testing.T) {

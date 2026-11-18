@@ -38,12 +38,12 @@ architecture is sized for; T130 measures them, and a miss is a design finding, n
 | Durable writer, `rollup` granularity | one Postgres primary | ≥ 50 000 events/s, per-event detail in a columnar `UsageArchive` | the archive's ingest rate |
 | Reconcile | active scopes per interval | cost proportional to scopes booked since the last run, not to history | shards, run in parallel |
 
-**Storage, as rules of thumb** (≈ 400 bytes per event row including indexes — to be measured):
+**Storage, as rules of thumb** (≈ 570 bytes per event row including indexes — **measured** by T130 at 569 bytes over 219 389 rows, [docs/hardening.md](../../docs/hardening.md); the first estimate was 400):
 
 | Sustained events/s | Ledger growth | Recommended configuration |
 |---|---|---|
-| < 1 000 | < 35 GB/day | `event` granularity; archive ledger partitions after 13 months |
-| 1 000 – 5  000 | 35 – 170 GB/day | `event` granularity on a dedicated Postgres; archive after 3 – 6 months |
+| < 1 000 | < 50 GB/day | `event` granularity; archive ledger partitions after 13 months |
+| 1 000 – 5 000 | 50 – 250 GB/day | `event` granularity on a dedicated Postgres; archive after 3 – 6 months |
 | > 5 000 | — | `rollup` granularity (ledger rows ∝ scopes × batches) with a columnar `UsageArchive` |
 
 `usage_idem` holds `UsageIdemWindow × rate` rows (72 h at 5 000/s ≈ 1.3 B rows across daily

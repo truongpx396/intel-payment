@@ -40,7 +40,7 @@ services:
       POSTGRES_PASSWORD: payment
       POSTGRES_DB: payment
     volumes: ["pgdata:/var/lib/postgresql/data"]
-    ports: ["${PAYMENT_POSTGRES_PORT:-5432}:5432"]
+    ports: ["127.0.0.1:${PAYMENT_POSTGRES_PORT:-5432}:5432"]  # loopback only: a data store is never published to the network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U payment"]
       interval: 5s
@@ -60,7 +60,7 @@ services:
     volumes:
       - redisdata:/data
       - ./redis/users.acl:/etc/redis/users.acl:ro
-    ports: ["${PAYMENT_REDIS_PORT:-6379}:6379"]
+    ports: ["127.0.0.1:${PAYMENT_REDIS_PORT:-6379}:6379"]  # loopback only: the balance Redis is network-isolated (docs/security.md)
     healthcheck:
       test: ["CMD", "redis-cli", "--user", "healthcheck", "--pass", "dev-health", "--no-auth-warning", "ping"]
       interval: 5s
@@ -74,7 +74,7 @@ services:
     image: nats:2-alpine
     command: ["-js", "-sd", "/data"]
     volumes: ["natsdata:/data"]
-    ports: ["4222:4222"]
+    ports: ["127.0.0.1:4222:4222"]  # loopback only
 
   # Applies the schema, then installs the Redis hot-path functions with the DEPLOY role's credential —
   # the only principal allowed to FUNCTION LOAD (deploy/redis/README.md).

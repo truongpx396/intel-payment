@@ -5,7 +5,7 @@ COMPOSE := docker compose -f deploy/docker-compose.yml $(if $(wildcard .env),--e
 MODULE  := github.com/truongpx396/intel-payment
 
 .DEFAULT_GOAL := help
-.PHONY: help build test test-integration fuzz mutation mutation-diff verify-red-green verify-tdd-gates verify-equivalence verify-clients lint arch-lint check-plan-branches verify-portability \
+.PHONY: help build test test-integration hardening fuzz mutation mutation-diff verify-red-green verify-tdd-gates verify-equivalence verify-clients lint arch-lint check-plan-branches verify-portability \
         ui-install ui-lint ui-test ui-build ui-ci verify-ui-boundary verify-ui-portability verify-boundary verify-schema verify-hot-path verify-deploy e2e e2e-install e2e-seed up up-jetstream down down-volumes logs \
         migrate seed proto proto-tools proto-check fmt vuln secrets ci clean
 
@@ -25,6 +25,12 @@ test: ## Unit tests + every conformance suite (parallel, shuffled, race detector
 
 test-integration: ## Integration tests (Testcontainers: real Redis + Postgres; needs Docker)
 	go test -race -count=1 -shuffle=on -tags=integration ./...
+
+# Phase 7 (docs/hardening.md): measurements, not features. They take minutes, want an otherwise idle machine and
+# measure each other if run together, so they are behind the `hardening` tag and NOT in `make ci` or `test-integration`.
+# HARDENING_RUN selects which (a `go test -run` pattern); the default is every measurement.
+hardening: ## Phase 7 measurements — load, chaos, security, recovery (Docker; minutes; run on an idle machine; HARDENING_RUN=<pattern>)
+	go test -count=1 -tags=integration,hardening -v -timeout 40m -run '$(or $(HARDENING_RUN),^Test(Load|Chaos|Security|Recovery))' ./integration/
 
 # Test-driven development, with the evidence checkable (docs/testing.md).
 fuzz: ## Search every fuzz target beyond its seeds (FUZZTIME=20s each); commit a failing input from testdata/fuzz with its fix

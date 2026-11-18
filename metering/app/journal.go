@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/truongpx396/intel-payment/metering"
@@ -19,6 +20,13 @@ type JournalReplayer struct {
 	d   Deps
 	met ports.Metrics
 	reh *rehydrator
+
+	// reported is every realm whose backlog this replayer has published. The writer settles an entry AFTER Replay has
+	// applied it, so the count read straight after a realm's last batch is still above zero; a tick that finds nothing
+	// due must therefore still bring the gauge down to what the journal holds now, or it would stay at that last value
+	// and metering_journal_pending would page for usage that has long since drained.
+	mu       sync.Mutex
+	reported map[domain.Realm]bool
 }
 
 // NewJournalReplayer builds the replayer over the same dependencies as the Meter.
@@ -34,7 +42,7 @@ func NewJournalReplayer(cfg metering.Config, d Deps) (*JournalReplayer, error) {
 	if met == nil {
 		met = nopMetrics{}
 	}
-	return &JournalReplayer{cfg: cfg, d: d, met: met, reh: newRehydrator(cfg, d, met)}, nil
+	return &JournalReplayer{cfg: cfg, d: d, met: met, reh: newRehydrator(cfg, d, met), reported: map[domain.Realm]bool{}}, nil
 }
 
 // ReplayResult counts what one tick did.
@@ -78,7 +86,16 @@ func (r *JournalReplayer) Replay(ctx context.Context, limit int) (ReplayResult, 
 			r.reschedule(ctx, e, now, err)
 		}
 	}
+	r.mu.Lock()
 	for realm := range realms {
+		r.reported[realm] = true
+	}
+	publish := make([]domain.Realm, 0, len(r.reported))
+	for realm := range r.reported {
+		publish = append(publish, realm)
+	}
+	r.mu.Unlock()
+	for _, realm := range publish {
 		if n, err := r.d.Journal.Pending(ctx, realm); err == nil {
 			r.met.Gauge(ports.MetricJournalPending, n, ports.Labels{"realm": string(realm)})
 		}
