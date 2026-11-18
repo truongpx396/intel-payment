@@ -142,7 +142,7 @@ Read by `paymentd`, which serves the host's `/v1` payment routes (plans, checkou
 
 | Variable | Default | Failure mode if wrong |
 |---|---|---|
-| `PAYMENT_CHECKOUT_RETURN_HOSTS` | *(empty)* | Comma-separated hosts (`host` or `host:port`, no scheme or path) a checkout's `success_url`/`cancel_url` and a portal's `return_url` may name; compared case-insensitively. A return URL is where a buyer is sent after paying, so a deployment that knows its hosts should list them. **Empty accepts any `https` host.** An entry that is a URL, has a path, or is empty stops the service at start |
+| `PAYMENT_CHECKOUT_RETURN_HOSTS` | *(empty)* | Comma-separated hosts (`host` or `host:port`, no scheme or path) a checkout's `success_url`/`cancel_url` and a portal's `return_url` may name; compared case-insensitively. A return URL is where a buyer is sent after paying, so a deployment that knows its hosts should list them. **Empty accepts any `https` host**, and `paymentd` says so in a warning at every start until hosts are listed. An entry that is a URL, has a path, or is empty stops the service at start |
 
 ### Dunning
 

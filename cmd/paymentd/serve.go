@@ -47,6 +47,9 @@ func serve(ctx context.Context, getenv func(string) string, _, stderr io.Writer)
 		return 2
 	}
 	log := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: s.LogLevel})).With("version", version)
+	for _, w := range s.Warnings() {
+		log.Warn("configuration leaves something permissive", "warning", w)
+	}
 	if err := runService(ctx, s, log, getenv); err != nil {
 		log.Error("paymentd stopped", "error", err.Error())
 		return 1

@@ -57,6 +57,7 @@ needs ~272; the compose Postgres is started with `max_connections=400`. Run repl
 | Deferred usage | `metering_record_deferred_total`, `metering_journal_pending` | zero outside an outage |
 | Fail-open | `metering_admit_failopen_total` | **zero** on a `fail_closed` deployment |
 | Uncapped admits | `metering_admit_uncapped_total` | zero once every caller passes `MaxCost` |
+| Admits with no balance limit | `metering_admit_no_balance_limit_total` | zero for a realm that sells credits: a realm with a rate card and no `scope_balance` limit admits an unfunded scope, and this counts every such call. Constant for a metering-only host that means it |
 | Pricing errors | `metering_price_error_total` | zero; non-zero means a card is missing a SKU |
 | **Webhook verification failures** | `billing_webhook_verify_failed_total` | zero. A security signal |
 | **Webhook inbox age** | `billing_webhook_inbox_age_seconds` | seconds |

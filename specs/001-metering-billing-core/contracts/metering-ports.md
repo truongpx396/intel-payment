@@ -1520,6 +1520,7 @@ Invariant 15 requires that every terminal state be observable, which means the m
 |---|---|---|
 | `metering_admit_latency_seconds` | histogram (`realm`, `outcome`) | `Admit` is on every request's critical path; a p99 above ~5 ms means metering became the bottleneck it exists to avoid |
 | `metering_admit_denied_total` | counter (`realm`, `limit`, `deny_code`) | a spike is either an abuse event or a limit misconfigured to zero |
+| `metering_admit_no_balance_limit_total` | counter (`realm`) | admits that ran with no `Balance` limit applying to the call, so the scope's funds were not checked — a metering-only host's choice or an omission, which the engine does not decide and so counts |
 | `metering_admit_uncapped_total` | counter (`realm`) | callers omitting `MaxCost` — the overshoot bound is not enforced for them (invariant 3) |
 | `metering_admit_failopen_total` | counter (`realm`) | work served while the hot tier was unavailable. Never non-zero on a `fail_closed` deployment |
 | `metering_record_deferred_total` | counter (`realm`) | usage journaled during an outage; `metering_journal_pending` is how much is still waiting |

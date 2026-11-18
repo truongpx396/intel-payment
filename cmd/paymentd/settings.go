@@ -130,6 +130,20 @@ func parseSettings(getenv func(string) string) (settings, error) {
 	return s, nil
 }
 
+// Warnings are what the configuration leaves permissive on purpose, each naming what to set. None is a refusal — a refusal of an
+// empty return-host list would break every deployment that has not listed hosts, and bearer over plaintext is the normal shape
+// behind a proxy that terminates TLS — so each is said once at start, where it is read, and goes away when the variable is set.
+func (s settings) Warnings() []string {
+	var w []string
+	if len(s.Selling.ReturnHosts) == 0 {
+		w = append(w, "PAYMENT_CHECKOUT_RETURN_HOSTS is empty: a checkout or portal return URL may name any https host, so a host that forwards a URL it did not write offers its customers an open redirect after payment; list the hosts a return may name")
+	}
+	if s.Auth == authBearer && s.TLSCertFile == "" && (!envcfg.Private(s.HTTPAddr) || !envcfg.Private(s.GRPCAddr)) {
+		w = append(w, "bearer tokens are accepted over plaintext on a listener others can reach: set PAYMENT_TLS_CERT_FILE and PAYMENT_TLS_KEY_FILE, or terminate TLS in front of it and be sure that is the only way in")
+	}
+	return w
+}
+
 // checkMetricsAddr holds /metrics to the rule PAYMENT_SERVICE_AUTH=none follows. /metrics carries no credential — a scraper
 // does not hold a service token — and it names every realm and its traffic, so on a listener others can reach it is public.
 // It may therefore share the API's listener only while that listener is private (loopback or a unix socket); otherwise it has
