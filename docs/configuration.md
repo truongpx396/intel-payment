@@ -169,8 +169,8 @@ What a plan unlocks — keys, the plans' entitlements, the free tier, overrides 
 | `PAYMENT_EVENTS_ALLOW_PRIVATE_ENDPOINTS` | `false` | **Development only.** Lets a webhook be sent to `localhost` (and `http://localhost`). In production the SSRF guard refuses a private, loopback, link-local or IPv4-mapped destination before any request is sent, and the worker logs a warning when this is on. A signing secret is named by `event_endpoints.secret_ref` (`env:NAME` or `file:/path`; several, comma-separated, during a rotation) |
 | `PAYMENT_EVENT_RETENTION` | `30d` | Outbound events, kept for `GET /v1/events` to backfill from (the contract's `EventRetention`); `payment-worker` deletes the older ones hourly, and never one something is still owed for. Days (`30d`) or a Go duration (`720h`); **at least `3d`**, the time a failed webhook is retried for, so a host recovering from a full outage still finds its events |
 | `PAYMENT_PAYMENT_EVENT_RETENTION` | `90d` | Processed webhook inbox rows, `payment-worker` deletes the older ones hourly. Days (`90d`) or a Go duration (`2160h`); **at least `7d`** — it MUST exceed the longest provider replay window, and past it the permanent grant guard still prevents a double grant. A row not yet processed, parked or dead is never deleted |
-| `PAYMENT_LEDGER_ONLINE_RETENTION` | `unlimited` | After this, a ledger partition fully covered by checkpoints is detached and archived — never dropped while needed to prove a balance |
-| `PAYMENT_USAGE_ARCHIVE_RETENTION` | `400d` | Per-event detail under `rollup` granularity |
+| `PAYMENT_LEDGER_ONLINE_RETENTION` | `unlimited` | **Not read.** No binary detaches or archives a ledger partition: the audit reports which are covered by checkpoints (the only ones that may go) and an operator detaches them — see [Backups and retention](operations.md#backups-and-retention). Until one does, the ledger grows without bound (569 bytes a row measured) |
+| `PAYMENT_USAGE_ARCHIVE_RETENTION` | `400d` | **Not read.** No binary applies it: per-event detail under `rollup` granularity is kept until an operator removes it |
 
 ### Transports & auth
 

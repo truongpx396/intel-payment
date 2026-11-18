@@ -635,8 +635,11 @@ bug — an edited card is impossible.
 
 ## Backups and retention
 
-- **Postgres** — the books. Test restores by restoring. Old ledger partitions are detached and
-  archived only once `ledger_checkpoints` covers them, so a balance stays provable after archival.
+- **Postgres** — the books. Test restores by restoring. **Nothing here detaches or archives a ledger partition for
+  you**: the ledger grows without bound (569 bytes a row measured) until an operator does it. The shard-0 audit lists the
+  partitions that may go (`DetachableLedgerPartitions`: wholly in the past, every row covered by a `ledger_checkpoints` row), and only
+  those may be detached and archived, so a balance stays provable after archival. `PAYMENT_LEDGER_ONLINE_RETENTION` and
+  `PAYMENT_USAGE_ARCHIVE_RETENTION` are documented as not read; plan the disk, and the detach job, yourself.
 - **Redis** — balances are rebuilt from the books, not restored. But it also holds undrained intents,
   which are not derived: AOF is load-bearing. Keep `appendfsync everysec` at minimum, use
   `HotAckWait`, or run `journal` settlement so an intent never depends on Redis alone.
