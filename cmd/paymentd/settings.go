@@ -178,7 +178,7 @@ func validListenAddr(addr string) error {
 	}
 	_, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("must be host:port or unix:/path (%v)", err)
+		return fmt.Errorf("must be host:port or unix:/path (%w)", err)
 	}
 	if n, err := strconv.Atoi(port); err != nil || n < 0 || n > 65535 {
 		return fmt.Errorf("the port must be a number from 0 to 65535")

@@ -94,7 +94,7 @@ func TestWithoutADeadlineTheRequestKeepsTheCallersOwnContext(t *testing.T) {
 	t.Parallel()
 	var saw atomic.Bool
 	h := buildWith(t, resthandler.Options{},
-		resthandler.Route{Method: "POST", Path: "/v1/ok", Surface: resthandler.V1, Privilege: auth.Record, Handler: func(w http.ResponseWriter, r *http.Request) {
+		resthandler.Route{Method: "POST", Path: "/v1/ok", Surface: resthandler.V1, Privilege: auth.Record, Handler: func(_ http.ResponseWriter, r *http.Request) {
 			_, ok := r.Context().Deadline()
 			saw.Store(ok)
 		}})
