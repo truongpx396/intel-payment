@@ -400,3 +400,33 @@ func TestAMetricsAddressThatCollidesOrIsMalformedIsRefusedNamingTheVariable(t *t
 		}
 	}
 }
+
+// A request that waits on the ledger holds a pooled connection until it is cancelled, so every request carries a deadline,
+// shorter than the 30s the server allows itself to write a response in, so the caller is answered and not cut off.
+
+func TestTheRequestTimeoutIsDocumentedAndLandsInItsField(t *testing.T) {
+	t.Parallel()
+	s, err := parseSettings(getenv(base()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.RequestTimeout != 25*time.Second {
+		t.Errorf("request timeout %v, documented default is 25s", s.RequestTimeout)
+	}
+	s, err = parseSettings(getenv(with("PAYMENT_REQUEST_TIMEOUT", "10s")))
+	if err != nil || s.RequestTimeout != 10*time.Second {
+		t.Errorf("PAYMENT_REQUEST_TIMEOUT=10s: got %v, %v", s.RequestTimeout, err)
+	}
+}
+
+func TestAnUnusableRequestTimeoutStopsTheServiceNamingTheVariable(t *testing.T) {
+	t.Parallel()
+	for _, v := range []string{"0", "0s", "-1s", "30s", "45s", "1m", "soon"} {
+		_, err := parseSettings(getenv(with("PAYMENT_REQUEST_TIMEOUT", v)))
+		if err == nil {
+			t.Errorf("PAYMENT_REQUEST_TIMEOUT=%q was accepted", v)
+		} else if !strings.Contains(err.Error(), "PAYMENT_REQUEST_TIMEOUT") {
+			t.Errorf("PAYMENT_REQUEST_TIMEOUT=%q: the error does not name the variable: %v", v, err)
+		}
+	}
+}

@@ -357,6 +357,38 @@ func TestPaymentdServesMetricsOnAListenerOfItsOwnAndNotOnTheAPIOne(t *testing.T)
 	}
 }
 
+// A route that waits on Postgres holds one of a few pooled connections until it is cancelled. net/http's WriteTimeout closes the
+// connection and cancels nothing, so without a deadline of the request's own a query stalled on a lock outlives the caller and
+// the connection stays held. With one the caller is answered `504` at the deadline and the service is whole again afterwards.
+func TestPaymentdCancelsARequestThatStallsOnTheLedgerAtItsDeadline(t *testing.T) {
+	t.Parallel()
+	realm, dsn := seededRealm(t)
+	d := startPaymentd(t, paymentdEnv(realm, dsn, "PAYMENT_REQUEST_TIMEOUT", "1s"))
+	base := d.httpURL(t)
+	c := &http.Client{Timeout: 8 * time.Second}
+	awaitReady(t, d, c, base)
+
+	pool, err := pgadapter.Connect(t.Context(), dsn)
+	must(t, err)
+	t.Cleanup(pool.Close)
+	tx, err := pool.Begin(t.Context())
+	must(t, err)
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	_, err = tx.Exec(t.Context(), `LOCK TABLE plans IN ACCESS EXCLUSIVE MODE`) // every read of the catalogue now waits
+	must(t, err)
+
+	start := time.Now()
+	code, body := httpDo(t, c, "GET", base+"/v1/admin/plans", serviceToken, "")
+	if took := time.Since(start); code != http.StatusGatewayTimeout || !strings.Contains(body, "deadline_exceeded") || took > 5*time.Second {
+		t.Fatalf("a read stalled on a lock was answered %d %s after %v, want 504 deadline_exceeded at about the 1s deadline", code, body, took)
+	}
+
+	must(t, tx.Rollback(t.Context())) // the lock is gone: the same call is answered, so no connection was left held
+	if code, body := httpDo(t, c, "GET", base+"/v1/admin/plans", serviceToken, ""); code != http.StatusOK {
+		t.Errorf("after the lock was released the same call was answered %d %s", code, body)
+	}
+}
+
 func TestPaymentdServesThePlatformEndpoints(t *testing.T) {
 	t.Parallel()
 	realm, dsn := seededRealm(t)
