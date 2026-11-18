@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/truongpx396/intel-payment/billing/domain"
+	"github.com/truongpx396/intel-payment/billing/ports"
 	md "github.com/truongpx396/intel-payment/metering/domain"
 	mports "github.com/truongpx396/intel-payment/metering/ports"
 )
@@ -499,6 +500,97 @@ func UnderpaymentCases() []ProcessorCase {
 func ProcessorUnderpayment(t *testing.T, mk ProcessorFactory) {
 	t.Helper()
 	runCases(t, UnderpaymentCases(), mk)
+}
+
+// PolicyFactory builds the processor under test over a harness with an underpayment policy: "hold_zero" (the default),
+// "hold" or "grant".
+type PolicyFactory func(t testing.TB, h *Harness, policy string) ports.WebhookProcessor
+
+// PolicyCase is one subtest of the underpayment-policy suite.
+type PolicyCase struct {
+	Name string
+	Run  func(t testing.TB, mk PolicyFactory)
+}
+
+// UnderpaymentPolicyCases are the subtests of the underpayment-policy suite. The default holds a payment of nothing and honours
+// a discount (UnderpaymentCases); a deployment that never runs a coupon asks for "hold" and has every payment below the price
+// held, and one that uses a provider's trial as free credits asks for "grant" and has nothing held — each counted either way.
+func UnderpaymentPolicyCases() []PolicyCase {
+	paid := func(h *Harness, minor int64, zero bool) FakeEvent {
+		ev := h.PaymentSucceeded("evt_1", "pay-1")
+		ev.Amount, ev.ZeroPaid = minor, zero
+		return ev
+	}
+	return []PolicyCase{
+		{"under hold, a discount is held like a payment of nothing, and a price put right grants it once", func(t testing.TB, mk PolicyFactory) {
+			h := NewHarness()
+			p := mk(t, h, "hold")
+			h.Persisted(paid(h, 500, false)) // the provider charges $5.00 for a pack the catalogue says costs $10.00
+
+			h.Tick(t, p)
+			if n := h.Meter.Grants("pay-1"); n != 0 {
+				t.Fatalf("a payment of 500 against a price of 1000 was granted under hold (%d grants)", n)
+			}
+			wantRow(t, h, "evt_1", RowFailed)
+			if got := h.Metrics.Counter(metricUnderpaid, fake("outcome", "held")); got != 1 {
+				t.Fatalf("%s{outcome=held} = %d, want 1", metricUnderpaid, got)
+			}
+
+			w := WorldPlans()[0] // an operator corrects the catalogue to what the provider charges
+			w.Plan.Prices = map[string]domain.Money{"USD": {MinorUnits: 500, Currency: "USD"}}
+			h.Catalog.Add(w.Plan, w.Account, w.Currency, w.ProviderPriceID)
+
+			h.Rounds(t, p, 1, time.Hour)
+			wantRow(t, h, "evt_1", RowProcessed)
+			if h.Meter.Grants("pay-1") != 1 || h.Meter.Balance(h.Scope, md.GeneralPool) != PackCredits {
+				t.Fatalf("the corrected payment was not granted once: %d grants, balance %d", h.Meter.Grants("pay-1"), h.Meter.Balance(h.Scope, md.GeneralPool))
+			}
+		}},
+		{"under hold, a payment of the price is granted and raises nothing", func(t testing.TB, mk PolicyFactory) {
+			h := NewHarness()
+			p := mk(t, h, "hold")
+			h.Persisted(paid(h, 1000, false))
+
+			h.Tick(t, p)
+			wantRow(t, h, "evt_1", RowProcessed)
+			if h.Meter.Grants("pay-1") != 1 {
+				t.Fatalf("a payment of the price was held under hold: %d grants", h.Meter.Grants("pay-1"))
+			}
+			for _, outcome := range []string{"held", "granted"} {
+				if got := h.Metrics.Counter(metricUnderpaid, fake("outcome", outcome)); got != 0 {
+					t.Fatalf("a full payment counted as an underpayment (%s=%s: %d)", metricUnderpaid, outcome, got)
+				}
+			}
+		}},
+		{"under grant, a payment of nothing is granted in full and counted, never held", func(t testing.TB, mk PolicyFactory) {
+			h := NewHarness()
+			p := mk(t, h, "grant")
+			h.Persisted(paid(h, 0, true)) // a provider trial, used on purpose as free credits
+
+			h.Tick(t, p)
+			wantRow(t, h, "evt_1", RowProcessed)
+			if h.Meter.Grants("pay-1") != 1 || h.Meter.Balance(h.Scope, md.GeneralPool) != PackCredits {
+				t.Fatalf("a payment of nothing was not granted under grant: %d grants, balance %d", h.Meter.Grants("pay-1"), h.Meter.Balance(h.Scope, md.GeneralPool))
+			}
+			if got := h.Metrics.Counter(metricUnderpaid, fake("outcome", "granted")); got != 1 {
+				t.Fatalf("a payment of nothing granted under grant was not counted: %s{outcome=granted} = %d, want 1", metricUnderpaid, got)
+			}
+			if got := h.Metrics.Counter(metricUnderpaid, fake("outcome", "held")); got != 0 {
+				t.Fatalf("a payment was held under grant: %s{outcome=held} = %d", metricUnderpaid, got)
+			}
+		}},
+	}
+}
+
+// ProcessorUnderpaymentPolicies is the specification of the three underpayment policies.
+func ProcessorUnderpaymentPolicies(t *testing.T, mk PolicyFactory) {
+	t.Helper()
+	for _, c := range UnderpaymentPolicyCases() {
+		t.Run(c.Name, func(t *testing.T) {
+			t.Parallel()
+			c.Run(t, mk)
+		})
+	}
 }
 
 // ProcessorGrants is the specification of fulfilment from the inbox (invariants 2, 3, 4, 5, 19; FR-019…022,

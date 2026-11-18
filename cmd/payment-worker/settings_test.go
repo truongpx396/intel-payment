@@ -10,6 +10,7 @@ import (
 
 	"go.uber.org/goleak"
 
+	billing "github.com/truongpx396/intel-payment/billing/domain"
 	"github.com/truongpx396/intel-payment/cmd/internal/envcfg"
 	"github.com/truongpx396/intel-payment/metering"
 )
@@ -153,7 +154,8 @@ func TestThePaymentSettingsOfTheWorkerAreReadAndChecked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := envcfg.Payments{WebhookTolerance: 5 * time.Minute, DunningGrace: 7 * 24 * time.Hour, WebhookTick: 5 * time.Second, EventRetention: 90 * 24 * time.Hour}
+	want := envcfg.Payments{WebhookTolerance: 5 * time.Minute, DunningGrace: 7 * 24 * time.Hour, WebhookTick: 5 * time.Second, EventRetention: 90 * 24 * time.Hour,
+		Underpayment: billing.UnderpaymentHoldZero}
 	if s.Payments != want {
 		t.Errorf("payment defaults %+v, want %+v", s.Payments, want)
 	}
@@ -161,7 +163,8 @@ func TestThePaymentSettingsOfTheWorkerAreReadAndChecked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (envcfg.Payments{WebhookTolerance: 2 * time.Minute, DunningGrace: 3 * 24 * time.Hour, WebhookTick: time.Second, EventRetention: 30 * 24 * time.Hour}); s.Payments != want {
+	if want := (envcfg.Payments{WebhookTolerance: 2 * time.Minute, DunningGrace: 3 * 24 * time.Hour, WebhookTick: time.Second, EventRetention: 30 * 24 * time.Hour,
+		Underpayment: billing.UnderpaymentHoldZero}); s.Payments != want {
 		t.Errorf("payment settings %+v, want %+v", s.Payments, want)
 	}
 	for name, bad := range map[string]string{
@@ -170,5 +173,21 @@ func TestThePaymentSettingsOfTheWorkerAreReadAndChecked(t *testing.T) {
 		if _, err := parseSettings(getenv(with(name, bad))); err == nil || !strings.Contains(err.Error(), name) {
 			t.Errorf("%s=%q: %v, want a refusal naming the variable", name, bad, err)
 		}
+	}
+}
+
+// The worker is the process that fulfils payments, so it is the one that applies the underpayment policy: it reads the policy,
+// and an unknown one stops it at start, naming the variable.
+func TestTheWorkerReadsTheUnderpaymentPolicyItAppliesAndRefusesAnUnknownOne(t *testing.T) {
+	t.Parallel()
+	s, err := parseSettings(getenv(with("PAYMENT_UNDERPAYMENT_POLICY", "hold")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Payments.Underpayment != billing.UnderpaymentHold {
+		t.Errorf("policy %q, want %q", s.Payments.Underpayment, billing.UnderpaymentHold)
+	}
+	if _, err := parseSettings(getenv(with("PAYMENT_UNDERPAYMENT_POLICY", "hold-all"))); err == nil || !strings.Contains(err.Error(), "PAYMENT_UNDERPAYMENT_POLICY") {
+		t.Errorf("an unknown policy was accepted, or its error does not name the variable: %v", err)
 	}
 }

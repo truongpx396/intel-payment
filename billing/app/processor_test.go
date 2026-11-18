@@ -43,6 +43,42 @@ func TestProcessorUnderpayment(t *testing.T) {
 	contracts.ProcessorUnderpayment(t, processorUnderTest)
 }
 
+// processorWithPolicy builds the processor under test with an underpayment policy.
+func processorWithPolicy(t testing.TB, h *contracts.Harness, policy string) ports.WebhookProcessor {
+	t.Helper()
+	p, err := app.NewProcessor(app.ProcessorDeps{
+		Inbox: h.Inbox, Accounts: h.Accounts, Providers: h.Providers(), Customers: h.Customers, Catalog: h.Catalog,
+		Payments: h.Payments, Subs: h.Subs, Meter: h.Meter, Lots: h.Lots, Clock: h.Clock, Metrics: h.Metrics, Bus: h.Bus, Recharges: h.Recharges,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Grace: contracts.GraceWindow, Underpayment: domain.UnderpaymentPolicy(policy),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestProcessorUnderpaymentPolicies(t *testing.T) {
+	t.Parallel()
+	contracts.ProcessorUnderpaymentPolicies(t, processorWithPolicy)
+}
+
+// A policy nobody chose is not replaced by one: a processor told to do something this code does not know refuses to be built,
+// rather than guess how to treat a payment that settled for less than its plan costs (constitution IV).
+func TestAProcessorWithAnUnknownUnderpaymentPolicyIsNotBuilt(t *testing.T) {
+	t.Parallel()
+	h := contracts.NewHarness()
+	for _, policy := range []string{"hold-all", "HOLD", "none", " hold"} {
+		_, err := app.NewProcessor(app.ProcessorDeps{
+			Inbox: h.Inbox, Accounts: h.Accounts, Providers: h.Providers(), Customers: h.Customers, Catalog: h.Catalog,
+			Payments: h.Payments, Subs: h.Subs, Meter: h.Meter, Lots: h.Lots, Clock: h.Clock, Metrics: h.Metrics,
+			Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Underpayment: domain.UnderpaymentPolicy(policy),
+		})
+		if err == nil || !strings.Contains(err.Error(), "Underpayment") {
+			t.Errorf("policy %q: got %v, want an error naming Underpayment", policy, err)
+		}
+	}
+}
+
 // The underpayment suite is shown to reject a processor that cannot see what a plan costs — the one that would mint a
 // whole pack for no money — by the subtest that names the invariant.
 func TestProcessorUnderpaymentRejectsAProcessorThatCannotSeeAPrice(t *testing.T) {
