@@ -58,6 +58,9 @@ type ProcessorDeps struct {
 	Grace time.Duration
 	// SubjectPrefix is the namespace the announcements go out under (default DefaultSubjectPrefix; PAYMENT_SUBJECT_PREFIX).
 	SubjectPrefix string
+	// Underpayment is what a payment that settled for less than its plan costs comes to (default domain.UnderpaymentHoldZero;
+	// PAYMENT_UNDERPAYMENT_POLICY). An unknown policy is refused, never replaced by another.
+	Underpayment domain.UnderpaymentPolicy
 }
 
 // Processor is stage 2 of the webhook flow, run by payment-worker: it fulfils verified events from the inbox.
@@ -96,6 +99,9 @@ func NewProcessor(d ProcessorDeps) (*Processor, error) {
 	if d.Batch < 0 || d.LeaseTTL < 0 || d.Grace < 0 || d.DriftPage < 0 {
 		errs = append(errs, errors.New("the Batch, LeaseTTL, Grace and DriftPage cannot be negative"))
 	}
+	if d.Underpayment != "" && !d.Underpayment.Valid() {
+		errs = append(errs, fmt.Errorf("the Underpayment policy must be hold_zero, hold or grant, got %q", d.Underpayment))
+	}
 	if err := errors.Join(errs...); err != nil {
 		return nil, fmt.Errorf("billing processor: %w", err)
 	}
@@ -104,6 +110,9 @@ func NewProcessor(d ProcessorDeps) (*Processor, error) {
 	}
 	if d.Log == nil {
 		d.Log = slog.Default()
+	}
+	if d.Underpayment == "" {
+		d.Underpayment = domain.UnderpaymentHoldZero
 	}
 	if d.Batch == 0 {
 		d.Batch = DefaultBatch
@@ -305,11 +314,12 @@ func (p *Processor) paymentSucceeded(ctx context.Context, acct domain.ProviderAc
 		return "", fmt.Errorf("%w: price %s is plan %s of realm %s and customer %s is in realm %s", md.ErrInvalid,
 			obj.ProviderPriceID, plan.Code, plan.Realm.Or(), obj.ProviderCustomerID, scope.Realm.Or())
 	}
-	// A plan's credits are minted from the catalogue, never from the amount paid, so a discount is honoured — and counted. A
-	// payment of NOTHING cannot be: it would mint the whole allotment for no money (constitution I, IV and XII).
+	// A plan's credits are minted from the catalogue, never from the amount paid, so by default a discount is honoured — and
+	// counted. A payment of NOTHING cannot be: it would mint the whole allotment for no money (constitution I, IV and XII). The
+	// deployment's policy says how far that goes.
 	if price, short := underpaid(plan, *obj.Amount); short {
 		outcome := "granted"
-		if obj.Amount.MinorUnits <= 0 {
+		if p.d.Underpayment.Holds(obj.Amount.MinorUnits) {
 			outcome = "held"
 		}
 		p.d.Metrics.Count(ports.MetricPaymentUnderpaid, 1, mports.Labels{"provider": string(e.Provider), "outcome": outcome})

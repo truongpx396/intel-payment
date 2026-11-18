@@ -149,6 +149,7 @@ Read by `paymentd`, which serves the host's `/v1` payment routes (plans, checkou
 | Variable | Default | Notes |
 |---|---|---|
 | `PAYMENT_DUNNING_GRACE_DAYS` | `7` | `payment-worker`: entitlements hold this long after a failed payment. A whole number of days, 1–365; `0` would silently become the default, so it is refused |
+| `PAYMENT_UNDERPAYMENT_POLICY` | `hold_zero` | `payment-worker`: `hold_zero` · `hold` · `grant`. What a verified payment that settled for **less than its plan costs** comes to. Credits come from the plan, never from the amount, so a coupon that takes a $10.00 pack to $5.00 still grants the pack. `hold_zero` holds only a payment of **nothing** (a trial invoice, a coupon of 100%) and grants a discount; `hold` holds everything below the price (for a deployment that never runs a coupon); `grant` holds nothing (for one that uses a provider trial as free credits). A held payment grants nothing, is retried and pages when its retries run out; each outcome is counted on `billing_payment_underpaid_total`. An unknown value stops the service at start |
 | `PAYMENT_DUNNING_SUSPEND_AFTER_DAYS` | `14` | Suspension after grace. **Not read**: entitlements lapse when the grace window ends, and no suspension stage after it is built |
 
 ### Entitlements

@@ -239,9 +239,11 @@ what the plan costs. Then decide which of these it is:
   (`PATCH /v1/admin/plans/{code}`). The next retry grants once.
 - **Nothing the operator did** (a leaked promotion code, a mis-mapped price): refund the payment at the provider.
 
-**A discount above nothing is not held.** A coupon that takes a $10.00 pack to $5.00 still grants the whole pack, as the contract says, and
+**A discount above nothing is not held by default.** A coupon that takes a $10.00 pack to $5.00 still grants the whole pack, as the contract says, and
 is counted on `billing_payment_underpaid_total{outcome="granted"}` with the same log line. That counter is the revenue given away; watch
-it if you run coupons, and if you do not, treat any increase as a price or a promotion code you did not mean to have.
+it if you run coupons. If you never do, set `PAYMENT_UNDERPAYMENT_POLICY=hold` on `payment-worker`: every payment below the plan's price is
+then held and this alert covers it too (a corrected price grants it on the next retry). A deployment that uses a provider trial as free
+credits on purpose sets `grant`, which holds nothing and only counts.
 
 ## Alert: outbound deliveries failing
 
