@@ -9,6 +9,7 @@ const (
 	MetricAdmitLatency      = "metering_admit_latency_seconds"           // histogram (realm, outcome)
 	MetricAdmitDenied       = "metering_admit_denied_total"              // counter (realm, limit, deny_code)
 	MetricAdmitUncapped     = "metering_admit_uncapped_total"            // counter (realm)
+	MetricAdmitNoBalance    = "metering_admit_no_balance_limit_total"    // counter (realm)
 	MetricAdmitFailOpen     = "metering_admit_failopen_total"            // counter (realm)
 	MetricRecordDeferred    = "metering_record_deferred_total"           // counter (realm)
 	MetricJournalPending    = "metering_journal_pending"                 // gauge (realm)
@@ -66,6 +67,7 @@ var Catalog = []MetricDef{
 	{MetricAdmitLatency, KindHistogram, []string{"realm", "outcome"}, "s", "Admit latency: on every request's critical path"},
 	{MetricAdmitDenied, KindCounter, []string{"realm", "limit", "deny_code"}, "{denial}", "Admissions denied"},
 	{MetricAdmitUncapped, KindCounter, []string{"realm"}, "{call}", "Admits without MaxCost: the overshoot bound is not enforced"},
+	{MetricAdmitNoBalance, KindCounter, []string{"realm"}, "{call}", "Admits that ran with no balance limit applying: the scope's funds were not checked"},
 	{MetricAdmitFailOpen, KindCounter, []string{"realm"}, "{call}", "Work served while the hot tier was unavailable"},
 	{MetricRecordDeferred, KindCounter, []string{"realm"}, "{event}", "Usage journaled during an outage"},
 	{MetricJournalPending, KindGauge, []string{"realm"}, "{entry}", "Deferred usage not yet applied to the hot tier"},

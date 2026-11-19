@@ -142,13 +142,14 @@ Read by `paymentd`, which serves the host's `/v1` payment routes (plans, checkou
 
 | Variable | Default | Failure mode if wrong |
 |---|---|---|
-| `PAYMENT_CHECKOUT_RETURN_HOSTS` | *(empty)* | Comma-separated hosts (`host` or `host:port`, no scheme or path) a checkout's `success_url`/`cancel_url` and a portal's `return_url` may name; compared case-insensitively. A return URL is where a buyer is sent after paying, so a deployment that knows its hosts should list them. **Empty accepts any `https` host.** An entry that is a URL, has a path, or is empty stops the service at start |
+| `PAYMENT_CHECKOUT_RETURN_HOSTS` | *(empty)* | Comma-separated hosts (`host` or `host:port`, no scheme or path) a checkout's `success_url`/`cancel_url` and a portal's `return_url` may name; compared case-insensitively. A return URL is where a buyer is sent after paying, so a deployment that knows its hosts should list them. **Empty accepts any `https` host**, and `paymentd` says so in a warning at every start until hosts are listed. An entry that is a URL, has a path, or is empty stops the service at start |
 
 ### Dunning
 
 | Variable | Default | Notes |
 |---|---|---|
 | `PAYMENT_DUNNING_GRACE_DAYS` | `7` | `payment-worker`: entitlements hold this long after a failed payment. A whole number of days, 1–365; `0` would silently become the default, so it is refused |
+| `PAYMENT_UNDERPAYMENT_POLICY` | `hold_zero` | `payment-worker`: `hold_zero` · `hold` · `grant`. What a verified payment that settled for **less than its plan costs** comes to. Credits come from the plan, never from the amount, so a coupon that takes a $10.00 pack to $5.00 still grants the pack. `hold_zero` holds only a payment of **nothing** (a trial invoice, a coupon of 100%) and grants a discount; `hold` holds everything below the price (for a deployment that never runs a coupon); `grant` holds nothing (for one that uses a provider trial as free credits). A held payment grants nothing, is retried and pages when its retries run out; each outcome is counted on `billing_payment_underpaid_total`. An unknown value stops the service at start |
 | `PAYMENT_DUNNING_SUSPEND_AFTER_DAYS` | `14` | Suspension after grace. **Not read**: entitlements lapse when the grace window ends, and no suspension stage after it is built |
 
 ### Entitlements
@@ -168,15 +169,16 @@ What a plan unlocks — keys, the plans' entitlements, the free tier, overrides 
 | `PAYMENT_EVENTS_ALLOW_PRIVATE_ENDPOINTS` | `false` | **Development only.** Lets a webhook be sent to `localhost` (and `http://localhost`). In production the SSRF guard refuses a private, loopback, link-local or IPv4-mapped destination before any request is sent, and the worker logs a warning when this is on. A signing secret is named by `event_endpoints.secret_ref` (`env:NAME` or `file:/path`; several, comma-separated, during a rotation) |
 | `PAYMENT_EVENT_RETENTION` | `30d` | Outbound events, kept for `GET /v1/events` to backfill from (the contract's `EventRetention`); `payment-worker` deletes the older ones hourly, and never one something is still owed for. Days (`30d`) or a Go duration (`720h`); **at least `3d`**, the time a failed webhook is retried for, so a host recovering from a full outage still finds its events |
 | `PAYMENT_PAYMENT_EVENT_RETENTION` | `90d` | Processed webhook inbox rows, `payment-worker` deletes the older ones hourly. Days (`90d`) or a Go duration (`2160h`); **at least `7d`** — it MUST exceed the longest provider replay window, and past it the permanent grant guard still prevents a double grant. A row not yet processed, parked or dead is never deleted |
-| `PAYMENT_LEDGER_ONLINE_RETENTION` | `unlimited` | After this, a ledger partition fully covered by checkpoints is detached and archived — never dropped while needed to prove a balance |
-| `PAYMENT_USAGE_ARCHIVE_RETENTION` | `400d` | Per-event detail under `rollup` granularity |
+| `PAYMENT_LEDGER_ONLINE_RETENTION` | `unlimited` | **Not read.** No binary detaches or archives a ledger partition: the audit reports which are covered by checkpoints (the only ones that may go) and an operator detaches them — see [Backups and retention](operations.md#backups-and-retention). Until one does, the ledger grows without bound (569 bytes a row measured) |
+| `PAYMENT_USAGE_ARCHIVE_RETENTION` | `400d` | **Not read.** No binary applies it: per-event detail under `rollup` granularity is kept until an operator removes it |
 
 ### Transports & auth
 
 | Variable | Default | Notes |
 |---|---|---|
 | `PAYMENT_GRPC_ADDR` | `:9090` | Hot path |
-| `PAYMENT_HTTP_ADDR` | `:8080` | REST + webhooks + `/healthz` + `/readyz` + `/metrics` |
+| `PAYMENT_HTTP_ADDR` | `:8080` | REST + webhooks + `/healthz` + `/readyz`, and `/metrics` only while this listener is private (loopback or a unix socket) and `PAYMENT_METRICS_ADDR` is unset |
+| `PAYMENT_METRICS_ADDR` | — | `host:port` or `unix:/path` of a listener that serves `/metrics` and nothing else. `/metrics` carries no credential (a scraper holds no service token) and names every realm and its traffic, so **it is required whenever `PAYMENT_HTTP_ADDR` can be reached by others — the default `:8080` is — and the service refuses to start without it**, naming the variable. With it set, the API listener does not serve `/metrics` at all. Plain HTTP: put it on a network only the scraper can reach and do not publish its port. Must differ from the REST and gRPC addresses |
 | `PAYMENT_SERVICE_AUTH` | `bearer` | `none` \| `mtls` \| `bearer`. **`none` is permitted only on loopback or a Unix socket** |
 | `PAYMENT_SERVICE_TOKENS` | — | bearer mode: `<caller-id>:<sha256-hex>:<realms>:<privileges>,…` — realms and privileges (`record`, `grant`, `admin`) each joined with `+`. The **digest** of the token, never the token: a plaintext token, a short or non-hex digest, a caller or a token listed twice, a wildcard realm or an unknown privilege stops the service at start-up. Empty accepts no caller |
 | `PAYMENT_SERVICE_CERTS` | — | mTLS mode: `<caller-id>:<certificate common name>:<realms>:<privileges>,…` — same rules. The listener verifies the chain against the private CA; this maps the verified leaf's subject to a caller |
@@ -184,6 +186,7 @@ What a plan unlocks — keys, the plans' entitlements, the free tier, overrides 
 | `PAYMENT_TLS_CLIENT_CA_FILE` | — | `mtls` only: the private CA a caller's certificate must chain to. A certificate is requested of every caller and verified when offered, so a probe with none can still reach `/healthz` and `/readyz`; `/v1/*` then refuses the call as `401` |
 | `PAYMENT_LEGACY_429_FOR_LIMITS` | `false` | Restores `429` instead of `409` for spent windows, for a host mid-migration |
 | `PAYMENT_SHUTDOWN_TIMEOUT` | `30s` | How long a stop waits for the calls in flight. On `SIGTERM` both listeners stop taking new calls at once, then what was taken is answered (a `Record` settles or is journalled); past this bound the rest is cut, the exit code is 1, and the log says calls were in flight — their callers retry with the same `Idempotency-Key`, which is booked once. A stop can take up to one second longer than this: the entitlement cache's subscription is given that long to stop, then abandoned with a warning. Must be positive. Set it above the longest deploy-time call (`PAYMENT_RECORD_TIMEOUT` is the usual bound) and below the orchestrator's kill grace period |
+| `PAYMENT_REQUEST_TIMEOUT` | `25s` | `paymentd`: the deadline every request's context is given, on every route (`/v1`, the webhook door, the platform). A route that waits on Postgres holds one of a few pooled connections until it is cancelled, and net/http's write timeout closes the connection without cancelling the query, so without it a stalled query outlives the caller and keeps its connection. A request that passes it is answered `504 deadline_exceeded`. Positive and **shorter than 30s**, the time the server allows itself to write a response in (a longer one is refused at start, naming the variable). The hot path has its own deadlines (`PAYMENT_ADMIT_TIMEOUT`, `PAYMENT_RECORD_TIMEOUT`) |
 | `PAYMENT_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error`. Logs are JSON on stderr; `listening` reports the address each transport bound |
 
 An address is `host:port`, or `unix:/path` for a unix socket. `paymentd` reads all of this at start, checks the

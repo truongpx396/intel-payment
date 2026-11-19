@@ -58,6 +58,9 @@ type ProcessorDeps struct {
 	Grace time.Duration
 	// SubjectPrefix is the namespace the announcements go out under (default DefaultSubjectPrefix; PAYMENT_SUBJECT_PREFIX).
 	SubjectPrefix string
+	// Underpayment is what a payment that settled for less than its plan costs comes to (default domain.UnderpaymentHoldZero;
+	// PAYMENT_UNDERPAYMENT_POLICY). An unknown policy is refused, never replaced by another.
+	Underpayment domain.UnderpaymentPolicy
 }
 
 // Processor is stage 2 of the webhook flow, run by payment-worker: it fulfils verified events from the inbox.
@@ -96,6 +99,9 @@ func NewProcessor(d ProcessorDeps) (*Processor, error) {
 	if d.Batch < 0 || d.LeaseTTL < 0 || d.Grace < 0 || d.DriftPage < 0 {
 		errs = append(errs, errors.New("the Batch, LeaseTTL, Grace and DriftPage cannot be negative"))
 	}
+	if d.Underpayment != "" && !d.Underpayment.Valid() {
+		errs = append(errs, fmt.Errorf("the Underpayment policy must be hold_zero, hold or grant, got %q", d.Underpayment))
+	}
 	if err := errors.Join(errs...); err != nil {
 		return nil, fmt.Errorf("billing processor: %w", err)
 	}
@@ -104,6 +110,9 @@ func NewProcessor(d ProcessorDeps) (*Processor, error) {
 	}
 	if d.Log == nil {
 		d.Log = slog.Default()
+	}
+	if d.Underpayment == "" {
+		d.Underpayment = domain.UnderpaymentHoldZero
 	}
 	if d.Batch == 0 {
 		d.Batch = DefaultBatch
@@ -305,8 +314,24 @@ func (p *Processor) paymentSucceeded(ctx context.Context, acct domain.ProviderAc
 		return "", fmt.Errorf("%w: price %s is plan %s of realm %s and customer %s is in realm %s", md.ErrInvalid,
 			obj.ProviderPriceID, plan.Code, plan.Realm.Or(), obj.ProviderCustomerID, scope.Realm.Or())
 	}
+	// A plan's credits are minted from the catalogue, never from the amount paid, so by default a discount is honoured — and
+	// counted. A payment of NOTHING cannot be: it would mint the whole allotment for no money (constitution I, IV and XII). The
+	// deployment's policy says how far that goes.
+	if price, short := underpaid(plan, *obj.Amount); short {
+		outcome := "granted"
+		if p.d.Underpayment.Holds(obj.Amount.MinorUnits) {
+			outcome = "held"
+		}
+		p.d.Metrics.Count(ports.MetricPaymentUnderpaid, 1, mports.Labels{"provider": string(e.Provider), "outcome": outcome})
+		p.d.Log.Warn("a verified payment settled for less than its plan costs", "outcome", outcome, "provider", string(e.Provider),
+			"account", acct.ID, "payment", obj.ProviderPaymentID, "plan", plan.Code, "paid", obj.Amount.MinorUnits, "price", price.MinorUnits, "currency", price.Currency)
+		if outcome == "held" {
+			return "", fmt.Errorf("%w: payment %s settled %d of %d %s for plan %s", domain.ErrUnderpaid, obj.ProviderPaymentID, obj.Amount.MinorUnits, price.MinorUnits, price.Currency, plan.Code)
+		}
+	}
 
 	var announce *domain.Payment
+	retried := retriedEvent(le)
 	_, err = p.d.Payments.Update(ctx, acct.ID, obj.ProviderPaymentID, func(cur domain.Payment, found bool) (domain.Payment, error) {
 		pay := cur
 		if !found || pay.Status == "" || pay.Status == domain.Pending || pay.Status == domain.Failed {
@@ -335,6 +360,11 @@ func (p *Processor) paymentSucceeded(ctx context.Context, acct domain.ProviderAc
 				return cur, fmt.Errorf("grant credits for payment %s: %w", pay.ProviderPaymentID, err)
 			}
 		}
+		if announce == nil && retried && pay.Status == domain.Succeeded {
+			// An earlier attempt may have recorded this and then failed to announce it: say so again (see retriedEvent).
+			again := pay
+			announce = &again
+		}
 		return pay, nil
 	})
 	if err != nil {
@@ -352,6 +382,17 @@ func (p *Processor) paymentSucceeded(ctx context.Context, acct domain.ProviderAc
 		p.settleRecharge(ctx, *announce, true, "")
 	}
 	return outcomeProcessed, nil
+}
+
+// underpaid reports whether paid is less than the plan's price in the currency it was paid in, and what that price is. It
+// compares the GROSS amount, so tax added on top can only hide a shortfall, never invent one: a customer who paid in full is
+// never counted short. A plan with no price in that currency has nothing to be compared with and is not.
+func underpaid(plan domain.Plan, paid md.Money) (price md.Money, short bool) {
+	price, ok := plan.Prices[paid.Currency]
+	if !ok {
+		return md.Money{}, false
+	}
+	return price, paid.MinorUnits < price.MinorUnits
 }
 
 // planOf finds what a verified payment bought. A purchase names the provider's price, and the catalogue maps it back to a
@@ -498,6 +539,7 @@ func (p *Processor) paymentRefunded(ctx context.Context, acct domain.ProviderAcc
 		return "", fmt.Errorf("%w: payment_refunded %s carries no payment id or refunded amount", md.ErrInvalid, e.ProviderEventID)
 	}
 	var announce *domain.Payment
+	retried := retriedEvent(le)
 	_, err := p.d.Payments.Update(ctx, acct.ID, obj.ProviderPaymentID, func(cur domain.Payment, found bool) (domain.Payment, error) {
 		if err := ownPayment(cur, found, obj.ProviderPaymentID, scope); err != nil {
 			return cur, err
@@ -520,7 +562,7 @@ func (p *Processor) paymentRefunded(ctx context.Context, acct domain.ProviderAcc
 		}
 		next := cur
 		next.RefundedMinor, next.CreditsRevoked, next.Status = plan.RefundedMinor, plan.RevokedTotal, plan.Status
-		if next != cur {
+		if next != cur || retried {
 			announce = &next
 		}
 		return next, nil
@@ -546,6 +588,7 @@ func (p *Processor) dispute(ctx context.Context, acct domain.ProviderAccount, sc
 	}
 	var announce *domain.Payment
 	var note string
+	retried := retriedEvent(le)
 	_, err := p.d.Payments.Update(ctx, acct.ID, obj.ProviderPaymentID, func(cur domain.Payment, found bool) (domain.Payment, error) {
 		if err := ownPayment(cur, found, obj.ProviderPaymentID, scope); err != nil {
 			return cur, err
@@ -594,7 +637,7 @@ func (p *Processor) dispute(ctx context.Context, acct domain.ProviderAccount, sc
 				return cur, fmt.Errorf("apply %s for dispute %s: %w", plan.Reason, obj.DisputeID, err)
 			}
 		}
-		if plan.Payment != cur {
+		if plan.Payment != cur || retried {
 			announce = &plan.Payment
 		}
 		return plan.Payment, nil
@@ -636,8 +679,16 @@ func (p *Processor) noteOf(pay domain.Payment, event string, amount int64, grace
 		Payment: pay.ProviderPaymentID, Amount: amount, Currency: pay.Amount.Currency, GraceUntil: graceUntil, ReceiptURL: pay.ReceiptURL}
 }
 
+// retriedEvent reports whether this is not the event's first attempt. A processor commits what an event did and then announces
+// it, and a failure to announce retries the event over a payment or a subscription that already holds the change — so the
+// retry cannot tell what it did from what it finds, and an announcement made only for a change the current pass made itself
+// would never be made at all. A retried event therefore announces what it finds, which makes announcements at-least-once: a
+// retry that failed after announcing announces again, and a host de-duplicates on the payment and the event.
+func retriedEvent(le ports.LeasedEvent) bool { return le.Attempts > 1 }
+
 // announcePayment publishes <prefix>.payment.<tag>. It happens before the event is marked processed and a failure
-// retries the event — every step before it is idempotent — so a notification is never lost to a bus that blinked.
+// retries the event — every step before it is idempotent, and a retried event announces again (see retriedEvent) — so a
+// notification is never lost to a bus that blinked.
 func (p *Processor) announcePayment(ctx context.Context, scope domain.Scope, n paymentNote) error {
 	return p.publish(ctx, p.d.SubjectPrefix+".payment."+scope.SubjectToken(), n)
 }
@@ -714,7 +765,7 @@ func (p *Processor) paymentFailed(ctx context.Context, acct domain.ProviderAccou
 	}
 	var grace *time.Time
 	if obj.ProviderSubscriptionID != "" {
-		res, err := p.applySubscription(ctx, acct, scope, e, obj.ProviderSubscriptionID)
+		res, err := p.applySubscription(ctx, acct, scope, e, obj.ProviderSubscriptionID, retriedEvent(le))
 		if err != nil {
 			return "", err
 		}
@@ -741,7 +792,7 @@ func (p *Processor) subscriptionChanged(ctx context.Context, acct domain.Provide
 	if e.Object.ProviderSubscriptionID == "" {
 		return "", fmt.Errorf("%w: %s %s carries no subscription id", md.ErrInvalid, e.Type, e.ProviderEventID)
 	}
-	res, err := p.applySubscription(ctx, acct, scope, e, e.Object.ProviderSubscriptionID)
+	res, err := p.applySubscription(ctx, acct, scope, e, e.Object.ProviderSubscriptionID, retriedEvent(le))
 	if err != nil {
 		return "", err
 	}
@@ -759,7 +810,7 @@ type subResult struct {
 
 // applySubscription fetches the provider's CURRENT subscription and writes it if it is newer than the one held,
 // then tells the entitlement layer. Status has exactly one writer — here (invariant 12).
-func (p *Processor) applySubscription(ctx context.Context, acct domain.ProviderAccount, scope domain.Scope, e domain.Event, subID string) (subResult, error) {
+func (p *Processor) applySubscription(ctx context.Context, acct domain.ProviderAccount, scope domain.Scope, e domain.Event, subID string, retried bool) (subResult, error) {
 	provider, ok := p.d.Providers[e.Provider]
 	if !ok {
 		return subResult{}, fmt.Errorf("%w: no adapter for provider %s", domain.ErrUnknownAccount, e.Provider)
@@ -795,11 +846,11 @@ func (p *Processor) applySubscription(ctx context.Context, acct domain.ProviderA
 	if err != nil {
 		return subResult{}, fmt.Errorf("apply subscription %s: %w", subID, err)
 	}
-	if applied {
+	if applied || retried {
 		if err := p.announceEntitlement(ctx, scope, "subscription"); err != nil {
 			return subResult{}, err
 		}
-		if sub.Status == domain.Canceled && (!same || held.Status != domain.Canceled) {
+		if sub.Status == domain.Canceled && (retried || !same || held.Status != domain.Canceled) {
 			if err := p.announcePayment(ctx, scope, paymentNote{Realm: string(scope.Realm.Or()), Scope: scopeRef{scope.Kind, scope.ID}, Event: "canceled"}); err != nil {
 				return subResult{}, err
 			}

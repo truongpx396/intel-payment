@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	billing "github.com/truongpx396/intel-payment/billing/domain"
 	"github.com/truongpx396/intel-payment/cmd/internal/envcfg"
 )
 
@@ -25,7 +26,8 @@ func TestThePaymentDefaultsAreTheDocumentedOnes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := envcfg.Payments{WebhookTolerance: 5 * time.Minute, DunningGrace: 7 * 24 * time.Hour, WebhookTick: 5 * time.Second, EventRetention: 90 * 24 * time.Hour}
+	want := envcfg.Payments{WebhookTolerance: 5 * time.Minute, DunningGrace: 7 * 24 * time.Hour, WebhookTick: 5 * time.Second, EventRetention: 90 * 24 * time.Hour,
+		Underpayment: billing.UnderpaymentHoldZero}
 	if p != want {
 		t.Fatalf("defaults %+v, want %+v", p, want)
 	}
@@ -35,12 +37,13 @@ func TestEveryPaymentVariableLandsInItsField(t *testing.T) {
 	t.Parallel()
 	p, err := read(map[string]string{
 		"PAYMENT_WEBHOOK_TOLERANCE": "90s", "PAYMENT_DUNNING_GRACE_DAYS": "3", "PAYMENT_WEBHOOK_TICK_INTERVAL": "750ms",
-		"PAYMENT_PAYMENT_EVENT_RETENTION": "30d",
+		"PAYMENT_PAYMENT_EVENT_RETENTION": "30d", "PAYMENT_UNDERPAYMENT_POLICY": "hold",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := envcfg.Payments{WebhookTolerance: 90 * time.Second, DunningGrace: 3 * 24 * time.Hour, WebhookTick: 750 * time.Millisecond, EventRetention: 30 * 24 * time.Hour}
+	want := envcfg.Payments{WebhookTolerance: 90 * time.Second, DunningGrace: 3 * 24 * time.Hour, WebhookTick: 750 * time.Millisecond, EventRetention: 30 * 24 * time.Hour,
+		Underpayment: billing.UnderpaymentHold}
 	if p != want {
 		t.Fatalf("got %+v, want %+v", p, want)
 	}
@@ -72,6 +75,10 @@ func TestAnUnusablePaymentValueStopsTheServiceNamingTheVariable(t *testing.T) {
 		{"PAYMENT_PAYMENT_EVENT_RETENTION", "6d"}, {"PAYMENT_PAYMENT_EVENT_RETENTION", "0d"}, {"PAYMENT_PAYMENT_EVENT_RETENTION", "0"},
 		{"PAYMENT_PAYMENT_EVENT_RETENTION", "-30d"}, {"PAYMENT_PAYMENT_EVENT_RETENTION", "90"}, {"PAYMENT_PAYMENT_EVENT_RETENTION", "forever"},
 		{"PAYMENT_PAYMENT_EVENT_RETENTION", "d"}, {"PAYMENT_PAYMENT_EVENT_RETENTION", "1.5d"}, {"PAYMENT_PAYMENT_EVENT_RETENTION", "167h"},
+		// How a payment below its plan's price is treated is one of three named policies. An unknown one is never replaced by a
+		// default nobody chose: that is how a deployment that meant "hold" would find out it was granting.
+		{"PAYMENT_UNDERPAYMENT_POLICY", "hold-all"}, {"PAYMENT_UNDERPAYMENT_POLICY", "HOLD"}, {"PAYMENT_UNDERPAYMENT_POLICY", "none"},
+		{"PAYMENT_UNDERPAYMENT_POLICY", "true"}, {"PAYMENT_UNDERPAYMENT_POLICY", "hold zero"},
 	} {
 		_, err := read(map[string]string{tc.name: tc.value})
 		if err == nil {
@@ -95,6 +102,18 @@ func TestEveryBadPaymentValueIsReportedAtOnce(t *testing.T) {
 	for _, name := range []string{"PAYMENT_WEBHOOK_TOLERANCE", "PAYMENT_DUNNING_GRACE_DAYS", "PAYMENT_WEBHOOK_TICK_INTERVAL", "PAYMENT_PAYMENT_EVENT_RETENTION"} {
 		if !strings.Contains(err.Error(), name) {
 			t.Errorf("%s is not named, so the operator fixes one and finds the next at the next start: %v", name, err)
+		}
+	}
+}
+
+func TestEveryUnderpaymentPolicyIsAcceptedByItsName(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[string]billing.UnderpaymentPolicy{
+		"hold_zero": billing.UnderpaymentHoldZero, "hold": billing.UnderpaymentHold, "grant": billing.UnderpaymentGrant,
+	} {
+		p, err := read(map[string]string{"PAYMENT_UNDERPAYMENT_POLICY": in})
+		if err != nil || p.Underpayment != want {
+			t.Errorf("%q: got %q, %v; want %q", in, p.Underpayment, err, want)
 		}
 	}
 }

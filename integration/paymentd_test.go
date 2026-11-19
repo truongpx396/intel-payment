@@ -332,6 +332,63 @@ func openScope(t *testing.T, addr, realm, dsn string, sc domain.Scope) {
 	must(t, store.OpenShard(ctx, sh, rec.Gen))
 }
 
+// /metrics carries no credential, so with a listener of its own for it the API listener does not serve it at all, and the
+// listener it is on serves nothing but it: a scraper's address is not a second way into the API.
+func TestPaymentdServesMetricsOnAListenerOfItsOwnAndNotOnTheAPIOne(t *testing.T) {
+	t.Parallel()
+	realm, dsn := seededRealm(t)
+	d := startPaymentd(t, paymentdEnv(realm, dsn, "PAYMENT_METRICS_ADDR", "127.0.0.1:0"))
+	base := d.httpURL(t)
+	c := &http.Client{Timeout: 10 * time.Second}
+	awaitReady(t, d, c, base)
+
+	if code, _ := httpDo(t, c, "GET", base+"/metrics", "", ""); code != http.StatusNotFound {
+		t.Fatalf("the API listener served /metrics (%d) although they have a listener of their own", code)
+	}
+	metrics := "http://" + d.listening(t, "metrics")
+	code, body := httpDo(t, c, "GET", metrics+"/metrics", "", "")
+	if code != 200 || !strings.Contains(body, "# TYPE metering_admit_denied_total counter") {
+		t.Errorf("the metrics listener's /metrics = %d and does not declare the catalogue:\n%.400s", code, body)
+	}
+	for _, path := range []string{"/healthz", "/readyz", "/v1/credits", "/webhooks/stripe/acct"} {
+		if code, _ := httpDo(t, c, "GET", metrics+path, "", ""); code != http.StatusNotFound {
+			t.Errorf("the metrics listener answered %s with %d: it serves /metrics and nothing else", path, code)
+		}
+	}
+}
+
+// A route that waits on Postgres holds one of a few pooled connections until it is cancelled. net/http's WriteTimeout closes the
+// connection and cancels nothing, so without a deadline of the request's own a query stalled on a lock outlives the caller and
+// the connection stays held. With one the caller is answered `504` at the deadline and the service is whole again afterwards.
+func TestPaymentdCancelsARequestThatStallsOnTheLedgerAtItsDeadline(t *testing.T) {
+	t.Parallel()
+	realm, dsn := seededRealm(t)
+	d := startPaymentd(t, paymentdEnv(realm, dsn, "PAYMENT_REQUEST_TIMEOUT", "1s"))
+	base := d.httpURL(t)
+	c := &http.Client{Timeout: 8 * time.Second}
+	awaitReady(t, d, c, base)
+
+	pool, err := pgadapter.Connect(t.Context(), dsn)
+	must(t, err)
+	t.Cleanup(pool.Close)
+	tx, err := pool.Begin(t.Context())
+	must(t, err)
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	_, err = tx.Exec(t.Context(), `LOCK TABLE plans IN ACCESS EXCLUSIVE MODE`) // every read of the catalogue now waits
+	must(t, err)
+
+	start := time.Now()
+	code, body := httpDo(t, c, "GET", base+"/v1/admin/plans", serviceToken, "")
+	if took := time.Since(start); code != http.StatusGatewayTimeout || !strings.Contains(body, "deadline_exceeded") || took > 5*time.Second {
+		t.Fatalf("a read stalled on a lock was answered %d %s after %v, want 504 deadline_exceeded at about the 1s deadline", code, body, took)
+	}
+
+	must(t, tx.Rollback(t.Context())) // the lock is gone: the same call is answered, so no connection was left held
+	if code, body := httpDo(t, c, "GET", base+"/v1/admin/plans", serviceToken, ""); code != http.StatusOK {
+		t.Errorf("after the lock was released the same call was answered %d %s", code, body)
+	}
+}
+
 func TestPaymentdServesThePlatformEndpoints(t *testing.T) {
 	t.Parallel()
 	realm, dsn := seededRealm(t)

@@ -279,6 +279,8 @@ type Payments struct {
 	DunningGrace     time.Duration // PAYMENT_DUNNING_GRACE_DAYS: how long entitlements hold after a failed payment
 	WebhookTick      time.Duration // PAYMENT_WEBHOOK_TICK_INTERVAL: how often the webhook inbox is worked
 	EventRetention   time.Duration // PAYMENT_PAYMENT_EVENT_RETENTION: how long a processed webhook event is kept
+	// Underpayment is PAYMENT_UNDERPAYMENT_POLICY: what a payment that settled for less than its plan costs comes to.
+	Underpayment billing.UnderpaymentPolicy
 }
 
 // The bounds of Payments, each with the reason it is there.
@@ -291,7 +293,16 @@ const (
 
 // Payments reads the payment layer's settings. An unusable value is reported, never replaced by a default nobody chose.
 func (r *Reader) Payments() Payments {
-	p := Payments{WebhookTolerance: 5 * time.Minute, DunningGrace: 7 * 24 * time.Hour, WebhookTick: 5 * time.Second, EventRetention: 90 * 24 * time.Hour}
+	p := Payments{WebhookTolerance: 5 * time.Minute, DunningGrace: 7 * 24 * time.Hour, WebhookTick: 5 * time.Second, EventRetention: 90 * 24 * time.Hour,
+		Underpayment: billing.UnderpaymentHoldZero}
+
+	if v := r.Str("PAYMENT_UNDERPAYMENT_POLICY"); v != "" {
+		if policy := billing.UnderpaymentPolicy(v); policy.Valid() {
+			p.Underpayment = policy
+		} else {
+			r.Fail("PAYMENT_UNDERPAYMENT_POLICY", fmt.Sprintf("must be hold_zero, hold or grant, got %q: how a payment that settled for less than its plan costs is treated is never guessed", v))
+		}
+	}
 
 	before := len(r.errs)
 	r.PositiveDuration("PAYMENT_WEBHOOK_TOLERANCE", &p.WebhookTolerance, "a tolerance of nothing rejects every delivery")

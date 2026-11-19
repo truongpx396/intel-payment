@@ -265,6 +265,7 @@ Run all of these in a provider sandbox before a real card touches it:
 | Generate a fresh `IdemKey` or `OccurredAt` per attempt | Every retry becomes a new charge, or is refused as stale | Derive both from the logical operation, once |
 | Treat `idempotency_conflict` as retryable | It is a key-derivation bug; retrying cannot fix it | Fix how keys are built |
 | Omit `MaxCost` | The overshoot bound becomes unknown | Pass an estimate; watch `metering_admit_uncapped_total` |
+| Configure no `scope_balance` limit | Nothing checks what a scope holds: an unfunded scope is admitted | Configure it (`PUT /v1/admin/limits/scope_balance`); watch `metering_admit_no_balance_limit_total`, which counts every call that ran without one |
 | Report a ceiling instead of actuals | Over-bills your own users | Report what was produced |
 | Price in a coarse unit to "keep numbers small" | Rounding up once per event then over-bills every small event | A fine unit in the books; `UnitLabels.scale` for display |
 | `if plan == "pro"` — for features *or* ceiling sizes | Scatters the rule; launching a plan becomes a code change | `Entitler`, and `max_entitlement` on limits |

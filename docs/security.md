@@ -192,6 +192,8 @@ indistinguishable from a bug.
 
 ## Pre-production checklist
 
+What a deployment must also decide, and which of it has been tried, is in [production.md](production.md).
+
 - [ ] `PAYMENT_SERVICE_AUTH` is `mtls` or `bearer`; `none` only on loopback/UDS.
 - [ ] Every caller credential is realm-bound and privilege-scoped; no host holds `grant` or `admin` unless it must.
 - [ ] No browser holds a `/v1/*` credential; the host proxies.
@@ -201,6 +203,6 @@ indistinguishable from a bug.
 - [ ] Each provider account's `realms` is as narrow as possible; secrets are references, not values.
 - [ ] Outbound endpoints are `https`; the SSRF guard refuses a private address.
 - [ ] Postgres: TLS, least-privilege role, backups tested by an actual restore.
-- [ ] `/metrics` and admin endpoints not publicly reachable.
+- [ ] `/metrics` is on its own listener (`PAYMENT_METRICS_ADDR`, which `paymentd` requires on a reachable API address) and no public network reaches it; admin endpoints are not publicly reachable.
 - [ ] Verification-failure and drift alerts reach a human.
 - [ ] A tampered webhook, a webhook for an unknown account, a cross-realm scope, a `record`-only caller attempting `Grant`, `Transfer` and an admin write, and a direct SQL config change (which must appear in `audit_log`) have each been tried against the deployment.

@@ -20,9 +20,11 @@ const (
 	plainToken      = "plaintext-token-do-not-echo"
 )
 
-// base is the least a bearer-mode paymentd needs.
+// base is the least a bearer-mode paymentd needs. The default API listener is every interface, and /metrics carries no
+// credential, so it also says where the metrics are served (TestMetricsAreNotServedOnAListenerOthersCanReach...).
 func base() map[string]string {
 	return map[string]string{
+		"PAYMENT_METRICS_ADDR":      "127.0.0.1:9092",
 		"PAYMENT_BALANCE_REDIS_URL": redisWithSecret,
 		"PAYMENT_LEDGER_DSN":        dsnWithSecret,
 		"PAYMENT_SERVICE_AUTH":      "bearer",
@@ -340,6 +342,139 @@ func TestTheSellingSettingsAreReadAndCheckedLikeTheRest(t *testing.T) {
 	for name, bad := range map[string]string{"PAYMENT_PLAN_CHANGE_POLICY": "never", "PAYMENT_TAX_STRATEGY": "external_hook", "PAYMENT_CHECKOUT_RETURN_HOSTS": "https://app.example.com"} {
 		if _, err := parseSettings(getenv(with(name, bad))); err == nil || !strings.Contains(err.Error(), name) {
 			t.Errorf("%s=%q: %v, want a refusal naming the variable", name, bad, err)
+		}
+	}
+}
+
+// /metrics carries no credential — a scraper does not hold a service token — and it names every realm and its traffic. It is
+// therefore never served on a listener others can reach beside the API: a deployment that exposes the API says where the
+// metrics go, and one that keeps the API on loopback or a unix socket may leave them there.
+
+func TestMetricsAreNotServedOnAListenerOthersCanReachWithoutAnAddressOfTheirOwn(t *testing.T) {
+	t.Parallel()
+	for _, addr := range []string{":8080", "0.0.0.0:8080", "[::]:8080", "10.0.0.5:8080", "203.0.113.7:8080", "api.internal:8080"} {
+		_, err := parseSettings(getenv(with("PAYMENT_HTTP_ADDR", addr, "PAYMENT_METRICS_ADDR", "-")))
+		if err == nil {
+			t.Errorf("PAYMENT_HTTP_ADDR=%q with no PAYMENT_METRICS_ADDR was accepted: /metrics would be served, with no credential, to whoever can reach the API", addr)
+			continue
+		}
+		if !strings.Contains(err.Error(), "PAYMENT_METRICS_ADDR") {
+			t.Errorf("PAYMENT_HTTP_ADDR=%q: the error does not name the variable to set: %v", addr, err)
+		}
+	}
+}
+
+func TestMetricsMayStayOnAnAPIListenerOnlyTheHostCanReach(t *testing.T) {
+	t.Parallel()
+	for _, addr := range []string{"127.0.0.1:8080", "localhost:8080", "[::1]:8080", "unix:/run/paymentd.sock"} {
+		if _, err := parseSettings(getenv(with("PAYMENT_HTTP_ADDR", addr, "PAYMENT_GRPC_ADDR", "127.0.0.1:9090", "PAYMENT_METRICS_ADDR", "-"))); err != nil {
+			t.Errorf("PAYMENT_HTTP_ADDR=%q with no PAYMENT_METRICS_ADDR was refused: %v", addr, err)
+		}
+	}
+}
+
+func TestMetricsOnAListenerOfTheirOwnAreAcceptedBesideAReachableAPI(t *testing.T) {
+	t.Parallel()
+	for _, addr := range []string{":9092", "0.0.0.0:9092", "10.0.0.5:9092", "127.0.0.1:9092", "unix:/run/metrics.sock"} {
+		if _, err := parseSettings(getenv(with("PAYMENT_HTTP_ADDR", ":8080", "PAYMENT_METRICS_ADDR", addr))); err != nil {
+			t.Errorf("PAYMENT_METRICS_ADDR=%q beside a reachable API was refused: %v", addr, err)
+		}
+	}
+}
+
+func TestAMetricsAddressThatCollidesOrIsMalformedIsRefusedNamingTheVariable(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, addr string }{
+		{"the REST listener's own address", "127.0.0.1:8080"},
+		{"the gRPC listener's own address", "127.0.0.1:9090"},
+		{"a port and no host separator", "9092"},
+		{"a host and no port", "metrics.internal"},
+		{"a port that is not a number", "127.0.0.1:metrics"},
+		{"a port out of range", "127.0.0.1:70000"},
+	} {
+		_, err := parseSettings(getenv(with("PAYMENT_HTTP_ADDR", "127.0.0.1:8080", "PAYMENT_GRPC_ADDR", "127.0.0.1:9090", "PAYMENT_METRICS_ADDR", tc.addr)))
+		if err == nil {
+			t.Errorf("%s (%q) was accepted", tc.name, tc.addr)
+		} else if !strings.Contains(err.Error(), "PAYMENT_METRICS_ADDR") {
+			t.Errorf("%s (%q): the error does not name the variable: %v", tc.name, tc.addr, err)
+		}
+	}
+}
+
+// A request that waits on the ledger holds a pooled connection until it is cancelled, so every request carries a deadline,
+// shorter than the 30s the server allows itself to write a response in, so the caller is answered and not cut off.
+
+func TestTheRequestTimeoutIsDocumentedAndLandsInItsField(t *testing.T) {
+	t.Parallel()
+	s, err := parseSettings(getenv(base()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.RequestTimeout != 25*time.Second {
+		t.Errorf("request timeout %v, documented default is 25s", s.RequestTimeout)
+	}
+	s, err = parseSettings(getenv(with("PAYMENT_REQUEST_TIMEOUT", "10s")))
+	if err != nil || s.RequestTimeout != 10*time.Second {
+		t.Errorf("PAYMENT_REQUEST_TIMEOUT=10s: got %v, %v", s.RequestTimeout, err)
+	}
+}
+
+func TestAnUnusableRequestTimeoutStopsTheServiceNamingTheVariable(t *testing.T) {
+	t.Parallel()
+	for _, v := range []string{"0", "0s", "-1s", "30s", "45s", "1m", "soon"} {
+		_, err := parseSettings(getenv(with("PAYMENT_REQUEST_TIMEOUT", v)))
+		if err == nil {
+			t.Errorf("PAYMENT_REQUEST_TIMEOUT=%q was accepted", v)
+		} else if !strings.Contains(err.Error(), "PAYMENT_REQUEST_TIMEOUT") {
+			t.Errorf("PAYMENT_REQUEST_TIMEOUT=%q: the error does not name the variable: %v", v, err)
+		}
+	}
+}
+
+// Two defaults are permissive on purpose and so must be loud: a checkout return URL may name any host until the deployment lists
+// the hosts it may (an open redirect after payment), and bearer tokens are accepted on a listener others can reach with no TLS of
+// its own (the usual shape behind a proxy that terminates it — and so a thing to have chosen). Each is a warning at start that
+// names the variable to set, and goes away when the variable is set.
+
+func warned(t *testing.T, env map[string]string, variable string) bool {
+	t.Helper()
+	s, err := parseSettings(getenv(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range s.Warnings() {
+		if strings.Contains(w, variable) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestAnEmptyReturnHostListIsWarnedAboutUntilHostsAreListed(t *testing.T) {
+	t.Parallel()
+	if !warned(t, base(), "PAYMENT_CHECKOUT_RETURN_HOSTS") {
+		t.Error("no warning that a checkout return URL may name any host while PAYMENT_CHECKOUT_RETURN_HOSTS is empty")
+	}
+	if warned(t, with("PAYMENT_CHECKOUT_RETURN_HOSTS", "shop.example.com"), "PAYMENT_CHECKOUT_RETURN_HOSTS") {
+		t.Error("warned about the return hosts although they are listed")
+	}
+}
+
+func TestBearerTokensOverAReachablePlaintextListenerAreWarnedAboutUnlessTLSIsConfigured(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		env  map[string]string
+		want bool
+	}{
+		{"every interface, no TLS", base(), true},
+		{"a private network address, no TLS", with("PAYMENT_HTTP_ADDR", "10.0.0.5:8080"), true},
+		{"only the gRPC listener reachable, no TLS", with("PAYMENT_HTTP_ADDR", "127.0.0.1:8080", "PAYMENT_GRPC_ADDR", ":9090"), true},
+		{"the API on loopback and gRPC on a unix socket", with("PAYMENT_HTTP_ADDR", "127.0.0.1:8080", "PAYMENT_GRPC_ADDR", "unix:/run/paymentd.sock"), false},
+		{"every interface, with TLS", with("PAYMENT_TLS_CERT_FILE", "/tls/cert.pem", "PAYMENT_TLS_KEY_FILE", "/tls/key.pem"), false},
+	} {
+		if got := warned(t, tc.env, "PAYMENT_TLS_CERT_FILE"); got != tc.want {
+			t.Errorf("%s: warned = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }

@@ -46,6 +46,7 @@ type FakeEvent struct {
 	Subscription string            `json:"subscription,omitempty"`
 	Price        string            `json:"price,omitempty"`
 	Amount       int64             `json:"amount,omitempty"`
+	ZeroPaid     bool              `json:"zero_paid,omitempty"` // an amount of exactly zero (a trial, a fully discounted invoice): Amount == 0 says "none"
 	Currency     string            `json:"currency,omitempty"`
 	RefundAmount int64             `json:"refund_amount,omitempty"` // this refund alone
 	Refunded     int64             `json:"refunded,omitempty"`      // cumulative, as a provider reports it
@@ -253,7 +254,7 @@ func (p *FakeProvider) normalize(acct domain.ProviderAccount, fe FakeEvent) doma
 	obj := domain.EventObject{ProviderCustomerID: fe.Customer, ProviderPaymentID: fe.Payment, ProviderSubscriptionID: fe.Subscription,
 		ProviderPriceID: fe.Price, ProviderRefundID: fe.Refund, DisputeID: fe.Dispute, Status: fe.Status, CancelAtPeriodEnd: fe.CancelAtEnd,
 		FailureReason: fe.Reason, PaymentMethodRef: fe.Method}
-	if fe.Amount != 0 {
+	if fe.Amount != 0 || fe.ZeroPaid {
 		obj.Amount = money(fe.Amount)
 	}
 	if fe.Refunded != 0 || fe.RefundAmount != 0 {

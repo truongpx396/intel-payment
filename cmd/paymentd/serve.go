@@ -47,6 +47,9 @@ func serve(ctx context.Context, getenv func(string) string, _, stderr io.Writer)
 		return 2
 	}
 	log := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: s.LogLevel})).With("version", version)
+	for _, w := range s.Warnings() {
+		log.Warn("configuration leaves something permissive", "warning", w)
+	}
 	if err := runService(ctx, s, log, getenv); err != nil {
 		log.Error("paymentd stopped", "error", err.Error())
 		return 1
@@ -57,7 +60,9 @@ func serve(ctx context.Context, getenv func(string) string, _, stderr io.Writer)
 
 // service is the wired engine and the things that must be closed with it.
 type service struct {
-	http    *http.Server
+	http *http.Server
+	// metrics serves /metrics and nothing else on a listener of its own, or is nil while the API listener is private and serves it.
+	metrics *http.Server
 	grpc    *grpc.Server
 	closers []func()
 }
@@ -84,11 +89,22 @@ func runService(ctx context.Context, s settings, log *slog.Logger, getenv func(s
 		_ = httpLn.Close()
 		return fmt.Errorf("PAYMENT_GRPC_ADDR: %w", err)
 	}
+	var metricsLn net.Listener
+	if svc.metrics != nil {
+		if metricsLn, err = listen(s.MetricsAddr); err != nil {
+			_ = httpLn.Close()
+			_ = grpcLn.Close()
+			return fmt.Errorf("PAYMENT_METRICS_ADDR: %w", err)
+		}
+	}
 	secure := s.TLSCertFile != ""
 	log.Info("listening", "transport", "http", "addr", describe(httpLn), "tls", secure)
 	log.Info("listening", "transport", "grpc", "addr", describe(grpcLn), "tls", secure)
+	if metricsLn != nil {
+		log.Info("listening", "transport", "metrics", "addr", describe(metricsLn), "tls", false) // a scraper's listener: plain HTTP, inside the network that may reach it
+	}
 
-	errc := make(chan error, 2)
+	errc := make(chan error, 3)
 	go func() {
 		var err error
 		if secure {
@@ -105,6 +121,13 @@ func runService(ctx context.Context, s settings, log *slog.Logger, getenv func(s
 			errc <- fmt.Errorf("grpc: %w", err)
 		}
 	}()
+	if metricsLn != nil {
+		go func() {
+			if err := svc.metrics.Serve(metricsLn); !errors.Is(err, http.ErrServerClosed) {
+				errc <- fmt.Errorf("metrics: %w", err)
+			}
+		}()
+	}
 
 	select {
 	case <-ctx.Done():
@@ -112,6 +135,9 @@ func runService(ctx context.Context, s settings, log *slog.Logger, getenv func(s
 		return svc.drain(s.ShutdownTimeout)
 	case err := <-errc:
 		_ = svc.http.Close()
+		if svc.metrics != nil {
+			_ = svc.metrics.Close()
+		}
 		svc.grpc.Stop()
 		return err
 	}
@@ -124,14 +150,22 @@ func runService(ctx context.Context, s settings, log *slog.Logger, getenv func(s
 func (s *service) drain(timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	done := make(chan struct{}, 2)
+	done := make(chan struct{}, 3)
+	stopping := 2
 	go func() { _ = s.http.Shutdown(ctx); done <- struct{}{} }()
 	go func() { s.grpc.GracefulStop(); done <- struct{}{} }()
-	for range 2 {
+	if s.metrics != nil {
+		stopping++
+		go func() { _ = s.metrics.Shutdown(ctx); done <- struct{}{} }()
+	}
+	for range stopping {
 		select {
 		case <-done:
 		case <-ctx.Done():
 			_ = s.http.Close()
+			if s.metrics != nil {
+				_ = s.metrics.Close()
+			}
 			s.grpc.Stop()
 			return fmt.Errorf("calls were still in flight after %v and were cut: raise PAYMENT_SHUTDOWN_TIMEOUT if deploys outlast it", timeout)
 		}
@@ -243,10 +277,15 @@ func wire(ctx context.Context, s settings, log *slog.Logger, getenv func(string)
 		return nil, err
 	}
 
+	// /metrics has no credential: with a listener of its own the API listener does not serve it at all.
+	apiMetrics := metricsHandler
+	if s.MetricsAddr != "" {
+		apiMetrics = nil
+	}
 	handler, err := resthandler.New(resthandler.Config{
 		Meter: engine, Balance: engine, Credits: engine, Ledger: st.Books, Transfers: st.Books, Admin: admin, Operations: adminOps, Drift: pgadapter.NewDrift(st.Pool),
 		Auth: s.Authenticator, Clock: system.Clock{}, Logger: log, Legacy429ForLimits: s.Legacy429,
-		Ready: readiness{db: st.DB, ms: st.Migrations, books: st.Books, shards: cfg.Shards}, Metrics: metricsHandler,
+		Ready: readiness{db: st.DB, ms: st.Migrations, books: st.Books, shards: cfg.Shards}, Metrics: apiMetrics, RequestTimeout: s.RequestTimeout,
 		Extra: slices.Concat([]resthandler.Route{{Method: http.MethodPost, Path: webhookhttp.Path, Surface: resthandler.Webhook, Handler: door}}, hostRoutes, entRoutes, feedRoutes),
 	})
 	if err != nil {
@@ -263,7 +302,12 @@ func wire(ctx context.Context, s settings, log *slog.Logger, getenv func(string)
 	}
 	svc.http = &http.Server{
 		Handler: handler, TLSConfig: tlsCfg, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
-		WriteTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute,
+		WriteTimeout: httpWriteTimeout, IdleTimeout: 2 * time.Minute,
+	}
+	if s.MetricsAddr != "" {
+		mux := http.NewServeMux()
+		mux.Handle("GET /metrics", metricsHandler)
+		svc.metrics = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: httpWriteTimeout, IdleTimeout: 2 * time.Minute}
 	}
 	opts := []grpc.ServerOption{grpc.UnaryInterceptor(grpcserver.AuthInterceptor(s.Authenticator, log))}
 	if tlsCfg != nil {

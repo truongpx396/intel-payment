@@ -697,9 +697,15 @@ A refund or a dispute names a payment, and the payment is the authority on whose
 customer is not the payment's owner fails loudly rather than moving another scope's credits. Both run
 under the payment's lock (`Payments.Update`), read `LotReader.LotsOf` for what expiry has taken — an
 outage of the reader is an error, never a zero — and are announced on `billing.payment.<tag>`
-(`refunded`, `disputed`, `charged_back`, `succeeded`) only when they changed something, **before** the
-event is marked processed: a bus that blinked retries the event, every step of which is idempotent, so a
-notification is never lost. A clawback whose payment commit failed after the grant was made is recomputed
+(`refunded`, `disputed`, `charged_back`, `succeeded`) when they changed something **or when the event is
+a retry**, **before** the event is marked processed: a bus that blinked retries the event, every step of which is
+idempotent, so a notification is never lost. A retry runs over a payment or a subscription that already holds the
+change an earlier attempt committed before it failed to announce, so it cannot tell what it did from what it finds
+and announces what it finds — on `billing.payment.<tag>` for a payment, on `billing.entitlement.<tag>` for a
+subscription, and it settles the charge slot of an auto top-up it fulfils. Announcements are therefore
+**at-least-once**: a retry that failed after announcing announces again, and a host de-duplicates on the payment
+and the event. An event on its first attempt announces only the change it made, so a redelivery of an event
+already fulfilled announces nothing. A clawback whose payment commit failed after the grant was made is recomputed
 identically on the retry and replays under the same key.
 
 ### Dispute lifecycle
@@ -940,6 +946,8 @@ paid.
 18. **Auto top-up is bounded and still webhook-fulfilled.** At most `max_per_day` distinct idempotent charges per scope per day; repeated failure disables it and tells the host; credits arrive only on the verified payment.
 19. **An account touches only its realms.** A verified event whose customer resolves to a realm outside the account's `realms` is ignored and counted as a security event.
 20. **A refund never claws back what expiry already took.** The clawback names the payment it reverses (`source_key`) and is capped at `credits_granted − Σ lot.Expired`, read from `LotReader.LotsOf`; credits that were spent are still revoked and fall to `NegativeBalancePolicy`. A chargeback is the same clawback by another name and is capped the same way.
+
+21. **A payment of nothing buys nothing, and a discount is counted.** A plan's credits are minted from the catalogue, never from the amount paid (a coupon that takes a pack from $10.00 to $5.00 still grants the whole pack), so a verified payment whose gross amount is **zero** for a plan that costs money (a trial invoice, a coupon of 100%) is **held**: nothing is granted, `billing_payment_underpaid_total{outcome="held"}` counts it, and the event fails and is retried like a charge the processor cannot fulfil, so it pages (`billing_webhook_dead_total`) when its retries run out. A gross amount above nothing and below the plan's price in the currency paid is granted as always and counted `{outcome="granted"}` with a log line naming what was paid and what the plan costs. `PAYMENT_UNDERPAYMENT_POLICY` says how far that goes: `hold_zero` (the default) is what is described above; `hold` holds **every** payment below the price, for a deployment that never runs a coupon; `grant` holds nothing and only counts, for a deployment that uses a provider trial as free credits. An unknown policy is a startup error and a processor refuses to be built with one. The comparison is of the gross amount, so tax added on top can hide a shortfall and never invent one; a plan with no price in the currency paid has nothing to be compared with and is neither held nor counted.
 
 ---
 

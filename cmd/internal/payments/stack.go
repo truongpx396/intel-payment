@@ -96,6 +96,7 @@ func NewWorker(c Common, m Money) (*Loops, error) {
 		Inbox: c.Books.Inbox, Accounts: c.Books.Accounts, Providers: providers, Customers: c.Books.Customers, Catalog: c.Books.Catalog,
 		Payments: c.Books.Payments, Subs: c.Books.Subs, Recharges: c.Books.Recharges, Meter: m.Meter, Lots: m.Lots,
 		Clock: c.Clock, Metrics: c.Metrics, Bus: c.Bus, Log: c.Log, Grace: c.Settings.DunningGrace, SubjectPrefix: c.SubjectPrefix,
+		Underpayment: c.Settings.Underpayment,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("payments: processor: %w", err)

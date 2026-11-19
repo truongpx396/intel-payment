@@ -1,10 +1,12 @@
 package contracts
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/truongpx396/intel-payment/billing/domain"
+	"github.com/truongpx396/intel-payment/billing/ports"
 	md "github.com/truongpx396/intel-payment/metering/domain"
 	mports "github.com/truongpx396/intel-payment/metering/ports"
 )
@@ -382,6 +384,212 @@ func GrantCases() []ProcessorCase {
 				t.Fatalf("%s = %d once drained, want 0", metricInboxAge, age)
 			}
 		}},
+	}
+}
+
+// metricUnderpaid is a payment that settled for less than its plan costs.
+const metricUnderpaid = "billing_payment_underpaid_total"
+
+// UnderpaymentCases are the subtests of the underpayment suite, under the default policy. A plan's credits are minted from the
+// catalogue and never from the amount paid (GrantCases): a provider-side coupon that takes a pack from $10.00 to $5.00 still
+// grants the whole pack. What no catalogue can honour is a payment of NOTHING — a trial invoice, a coupon of 100% — which would
+// mint a plan's whole allotment for no money at all. That is held: nothing is granted, it is announced, and the event is retried
+// and ends dead and paging, as a charge the processor cannot fulfil does. A discount above nothing is granted as before, and
+// counted, so that revenue given away is a figure and not a silence (constitution I, IV and XII).
+func UnderpaymentCases() []ProcessorCase {
+	paid := func(h *Harness, minor int64) FakeEvent {
+		ev := h.PaymentSucceeded("evt_1", "pay-1")
+		ev.Amount = minor
+		return ev
+	}
+	return []ProcessorCase{
+		{"a payment of exactly nothing for a plan that costs money grants nothing, is retried, and in the end is dead and pages", func(t testing.TB, mk ProcessorFactory) {
+			h := NewHarness()
+			p := mk(t, h)
+			ev := paid(h, 0)
+			ev.ZeroPaid = true // a trial, or an invoice a coupon took to zero
+			h.Persisted(ev)
+
+			h.Tick(t, p)
+			if n := h.Meter.Grants("pay-1"); n != 0 {
+				t.Fatalf("a payment of 0 against a price of 1000 granted the pack (%d grants, %d credits): credits were minted for no money", n, h.Meter.Balance(h.Scope, md.GeneralPool))
+			}
+			if r := wantRow(t, h, "evt_1", RowFailed); r.Err == "" {
+				t.Fatal("a held payment must keep its reason: an operator reads it to decide")
+			}
+			if got := h.Metrics.Counter(metricUnderpaid, fake("outcome", "held")); got != 1 {
+				t.Fatalf("%s{outcome=held} = %d, want 1: an underpayment is announced the moment it is seen", metricUnderpaid, got)
+			}
+
+			h.Rounds(t, p, 12, time.Hour) // past every backoff and the attempt cap
+			wantRow(t, h, "evt_1", RowDead)
+			if h.Meter.Grants("pay-1") != 0 {
+				t.Fatal("a held payment was granted on a retry")
+			}
+			if got := h.Metrics.Counter(metricDead, fake()); got != 1 {
+				t.Fatalf("%s = %d, want 1: a payment no one has fulfilled pages", metricDead, got)
+			}
+		}},
+		{"a discounted payment above nothing is still granted in full, and is counted as an underpayment", func(t testing.TB, mk ProcessorFactory) {
+			for i, minor := range []int64{500, 1} { // a coupon of half, and one cent
+				h := NewHarness()
+				p := mk(t, h)
+				id := fmt.Sprintf("pay-%d", i)
+				ev := h.PaymentSucceeded(fmt.Sprintf("evt_%d", i), id)
+				ev.Amount = minor
+				h.Persisted(ev)
+
+				h.Tick(t, p)
+				wantRow(t, h, ev.ID, RowProcessed)
+				if h.Meter.Grants(id) != 1 || h.Meter.Balance(h.Scope, md.GeneralPool) != PackCredits {
+					t.Fatalf("a payment of %d for a price of 1000: %d grants, balance %d, want one grant of %d (credits never come from the amount paid)",
+						minor, h.Meter.Grants(id), h.Meter.Balance(h.Scope, md.GeneralPool), PackCredits)
+				}
+				if got := h.Metrics.Counter(metricUnderpaid, fake("outcome", "granted")); got != 1 {
+					t.Fatalf("a payment of %d for a price of 1000 was granted without being counted: %s{outcome=granted} = %d, want 1", minor, metricUnderpaid, got)
+				}
+				if got := h.Metrics.Counter(metricUnderpaid, fake("outcome", "held")); got != 0 {
+					t.Fatalf("a discounted payment above nothing was held: %s{outcome=held} = %d", metricUnderpaid, got)
+				}
+			}
+		}},
+		{"a payment of the price, or of more because tax was added, is granted in full and raises nothing", func(t testing.TB, mk ProcessorFactory) {
+			for i, minor := range []int64{1000, 1080} { // the price, and the price plus 8% tax: a gross amount is never short of the price
+				h := NewHarness()
+				p := mk(t, h)
+				id := fmt.Sprintf("pay-%d", i)
+				ev := h.PaymentSucceeded(fmt.Sprintf("evt_%d", i), id)
+				ev.Amount = minor
+				h.Persisted(ev)
+
+				h.Tick(t, p)
+				wantRow(t, h, ev.ID, RowProcessed)
+				if h.Meter.Grants(id) != 1 || h.Meter.Balance(h.Scope, md.GeneralPool) != PackCredits {
+					t.Fatalf("a payment of %d for a price of 1000: %d grants, balance %d, want one grant of %d", minor, h.Meter.Grants(id), h.Meter.Balance(h.Scope, md.GeneralPool), PackCredits)
+				}
+				for _, outcome := range []string{"held", "granted"} {
+					if got := h.Metrics.Counter(metricUnderpaid, fake("outcome", outcome)); got != 0 {
+						t.Fatalf("a full payment counted as an underpayment (%s=%s: %d)", metricUnderpaid, outcome, got)
+					}
+				}
+			}
+		}},
+		{"a payment in a currency the plan has no price in is not compared with anything", func(t testing.TB, mk ProcessorFactory) {
+			h := NewHarness()
+			p := mk(t, h)
+			ev := paid(h, 0)
+			ev.ZeroPaid = true
+			ev.Currency = "EUR" // the pack is priced in USD only: there is nothing to hold the amount against
+			h.Persisted(ev)
+
+			h.Tick(t, p)
+			wantRow(t, h, "evt_1", RowProcessed)
+			if h.Meter.Grants("pay-1") != 1 {
+				t.Fatalf("a payment with no price to compare against was held: %d grants", h.Meter.Grants("pay-1"))
+			}
+			for _, outcome := range []string{"held", "granted"} {
+				if got := h.Metrics.Counter(metricUnderpaid, fake("outcome", outcome)); got != 0 {
+					t.Fatalf("a payment with no price to compare against was counted as an underpayment (%s=%s: %d)", metricUnderpaid, outcome, got)
+				}
+			}
+		}},
+	}
+}
+
+// ProcessorUnderpayment is the specification of what a payment buys when it settled for less than the plan costs.
+func ProcessorUnderpayment(t *testing.T, mk ProcessorFactory) {
+	t.Helper()
+	runCases(t, UnderpaymentCases(), mk)
+}
+
+// PolicyFactory builds the processor under test over a harness with an underpayment policy: "hold_zero" (the default),
+// "hold" or "grant".
+type PolicyFactory func(t testing.TB, h *Harness, policy string) ports.WebhookProcessor
+
+// PolicyCase is one subtest of the underpayment-policy suite.
+type PolicyCase struct {
+	Name string
+	Run  func(t testing.TB, mk PolicyFactory)
+}
+
+// UnderpaymentPolicyCases are the subtests of the underpayment-policy suite. The default holds a payment of nothing and honours
+// a discount (UnderpaymentCases); a deployment that never runs a coupon asks for "hold" and has every payment below the price
+// held, and one that uses a provider's trial as free credits asks for "grant" and has nothing held — each counted either way.
+func UnderpaymentPolicyCases() []PolicyCase {
+	paid := func(h *Harness, minor int64, zero bool) FakeEvent {
+		ev := h.PaymentSucceeded("evt_1", "pay-1")
+		ev.Amount, ev.ZeroPaid = minor, zero
+		return ev
+	}
+	return []PolicyCase{
+		{"under hold, a discount is held like a payment of nothing, and a price put right grants it once", func(t testing.TB, mk PolicyFactory) {
+			h := NewHarness()
+			p := mk(t, h, "hold")
+			h.Persisted(paid(h, 500, false)) // the provider charges $5.00 for a pack the catalogue says costs $10.00
+
+			h.Tick(t, p)
+			if n := h.Meter.Grants("pay-1"); n != 0 {
+				t.Fatalf("a payment of 500 against a price of 1000 was granted under hold (%d grants)", n)
+			}
+			wantRow(t, h, "evt_1", RowFailed)
+			if got := h.Metrics.Counter(metricUnderpaid, fake("outcome", "held")); got != 1 {
+				t.Fatalf("%s{outcome=held} = %d, want 1", metricUnderpaid, got)
+			}
+
+			w := WorldPlans()[0] // an operator corrects the catalogue to what the provider charges
+			w.Plan.Prices = map[string]domain.Money{"USD": {MinorUnits: 500, Currency: "USD"}}
+			h.Catalog.Add(w.Plan, w.Account, w.Currency, w.ProviderPriceID)
+
+			h.Rounds(t, p, 1, time.Hour)
+			wantRow(t, h, "evt_1", RowProcessed)
+			if h.Meter.Grants("pay-1") != 1 || h.Meter.Balance(h.Scope, md.GeneralPool) != PackCredits {
+				t.Fatalf("the corrected payment was not granted once: %d grants, balance %d", h.Meter.Grants("pay-1"), h.Meter.Balance(h.Scope, md.GeneralPool))
+			}
+		}},
+		{"under hold, a payment of the price is granted and raises nothing", func(t testing.TB, mk PolicyFactory) {
+			h := NewHarness()
+			p := mk(t, h, "hold")
+			h.Persisted(paid(h, 1000, false))
+
+			h.Tick(t, p)
+			wantRow(t, h, "evt_1", RowProcessed)
+			if h.Meter.Grants("pay-1") != 1 {
+				t.Fatalf("a payment of the price was held under hold: %d grants", h.Meter.Grants("pay-1"))
+			}
+			for _, outcome := range []string{"held", "granted"} {
+				if got := h.Metrics.Counter(metricUnderpaid, fake("outcome", outcome)); got != 0 {
+					t.Fatalf("a full payment counted as an underpayment (%s=%s: %d)", metricUnderpaid, outcome, got)
+				}
+			}
+		}},
+		{"under grant, a payment of nothing is granted in full and counted, never held", func(t testing.TB, mk PolicyFactory) {
+			h := NewHarness()
+			p := mk(t, h, "grant")
+			h.Persisted(paid(h, 0, true)) // a provider trial, used on purpose as free credits
+
+			h.Tick(t, p)
+			wantRow(t, h, "evt_1", RowProcessed)
+			if h.Meter.Grants("pay-1") != 1 || h.Meter.Balance(h.Scope, md.GeneralPool) != PackCredits {
+				t.Fatalf("a payment of nothing was not granted under grant: %d grants, balance %d", h.Meter.Grants("pay-1"), h.Meter.Balance(h.Scope, md.GeneralPool))
+			}
+			if got := h.Metrics.Counter(metricUnderpaid, fake("outcome", "granted")); got != 1 {
+				t.Fatalf("a payment of nothing granted under grant was not counted: %s{outcome=granted} = %d, want 1", metricUnderpaid, got)
+			}
+			if got := h.Metrics.Counter(metricUnderpaid, fake("outcome", "held")); got != 0 {
+				t.Fatalf("a payment was held under grant: %s{outcome=held} = %d", metricUnderpaid, got)
+			}
+		}},
+	}
+}
+
+// ProcessorUnderpaymentPolicies is the specification of the three underpayment policies.
+func ProcessorUnderpaymentPolicies(t *testing.T, mk PolicyFactory) {
+	t.Helper()
+	for _, c := range UnderpaymentPolicyCases() {
+		t.Run(c.Name, func(t *testing.T) {
+			t.Parallel()
+			c.Run(t, mk)
+		})
 	}
 }
 

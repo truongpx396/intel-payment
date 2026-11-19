@@ -41,7 +41,7 @@ threshold.
 |---|---|---|
 | **T130** load | measured, **open** | every primary-side target and the writer's rate met; exactly-once held across ~1.1 million records; SC-001 at the target load **not shown** on this machine |
 | **T131** chaos | six of seven run, **open** | each ends exact (nothing twice, nothing lost after retries) and pages where the contract says; one real defect found and fixed (a gauge that never cleared), and one query plan whose worst case is now bounded; a lagging-replica failover was **not** re-run under load |
-| **T132** security | executed, **open** | what the repository can execute was executed and refused every attack; two findings (one fixed, one open); the checklist items a deployment owns are listed, not claimed |
+| **T132** security | executed, **open** | what the repository can execute was executed and refused every attack; two findings, both fixed since; the checklist items a deployment owns are listed, not claimed |
 | **T133** recovery | partly, **open** | an operator's shard recovery under traffic and an empty hot tier rebuilt from the books are timed; the Postgres half of a region failover was **not** rehearsed |
 | **T134** adoption | run, guide corrected | both walkthroughs ran from an empty realm; the guide was wrong in four places and is fixed; the non-Go host ran against the built binaries, **not** the container image |
 | **T135** mutation, integration tier | **not done** | a cost model, with measured inputs, says why it cannot be a nightly job as specified |
@@ -265,9 +265,11 @@ not merely absent, with a positive control beside it so that a refusal means the
    (`5432`), Redis (`6379`) and NATS (`4222`) as `"5432:5432"` and so on, i.e. `0.0.0.0`, beside credentials this repository
    documents (`dev-payment`, …). The checklist asks for a network-isolated Redis. They are now bound to `127.0.0.1`
    (`make verify-deploy` after the change: 36 passed, 0 failed; its first attempt failed at "image builds" while the machine was loaded, and the identical build succeeded by hand and on the re-run). A host process on another machine reaches them by its own network path, not through this stack.
-2. **OPEN — `paymentd` serves `/metrics` on the same listener as the API, with no credential** (`200` with none). The checklist says
-   "not publicly reachable", and the engine does not enforce it: keeping the listener off the public network, or fronting `/metrics`
-   separately, is entirely the operator's. A second, internal listener would make it a property of the binary.
+2. **FIXED SINCE — `paymentd` served `/metrics` on the same listener as the API, with no credential** (`200` with none). The checklist says
+   "not publicly reachable", and the engine did not enforce it. It now does: `/metrics` shares the API listener only while that listener is
+   private (loopback or a unix socket); otherwise `PAYMENT_METRICS_ADDR` gives it a listener of its own that serves nothing else, the API
+   listener does not serve it, and `paymentd` refuses to start on a reachable API address without one (an integration test starts one and
+   asks both listeners). The metrics listener is plain HTTP with no credential: keeping it off a public network remains the operator's.
 3. **OBSERVED — a realm with a rate card and no balance ceiling admits an unfunded scope** (see [T134](#t134--adoption-walkthroughs)).
    Not a vulnerability, but a new host that follows the guide as it stood was unmetered without knowing.
 

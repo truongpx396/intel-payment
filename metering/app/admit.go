@@ -52,6 +52,12 @@ func (m *meter) admit(ctx context.Context, s domain.Scope, req domain.AdmitReque
 		return domain.Admission{}, "invalid", err
 	}
 
+	// A call that no balance limit governs checks nothing about what the scope holds. That can be a metering-only host's choice or
+	// an omission, and the engine does not decide which; it counts it, as it counts a call with no MaxCost (constitution XII).
+	if !hasBalanceLimit(limits) {
+		m.met.Count(ports.MetricAdmitNoBalance, 1, realmLabel(s))
+	}
+
 	final := req
 	final.Limits = limits
 	var adm domain.Admission
@@ -75,6 +81,16 @@ func (m *meter) admit(ctx context.Context, s domain.Scope, req domain.AdmitReque
 		outcome = "failopen_quota"
 	}
 	return adm, outcome, nil
+}
+
+// hasBalanceLimit reports whether any limit in the set is a Balance limit: the one that says what a scope must hold.
+func hasBalanceLimit(limits []domain.Limit) bool {
+	for _, l := range limits {
+		if l.Window == domain.Balance {
+			return true
+		}
+	}
+	return false
 }
 
 // admitOutage applies AdmitFailPolicy when the hot tier cannot answer. Record never drops usage

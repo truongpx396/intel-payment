@@ -102,7 +102,7 @@ func (p *Processor) sweepAccount(ctx context.Context, acct domain.ProviderAccoun
 				return rep, errors.Join(append(errs, err)...)
 			}
 			rep.Checked++
-			res, err := p.applySubscription(ctx, acct, sub.Scope, domain.Event{Provider: acct.Provider}, sub.ProviderSubscriptionID)
+			res, err := p.applySubscription(ctx, acct, sub.Scope, domain.Event{Provider: acct.Provider}, sub.ProviderSubscriptionID, false)
 			switch {
 			case err != nil:
 				rep.Failed++

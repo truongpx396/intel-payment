@@ -1,0 +1,22 @@
+# Dependencies are kept current by pull request, so a vulnerability fix or a patch release is a reviewed change and not a thing
+# someone remembers. The Go toolchain itself is tracked by CI's `go-version: '1.26'` (the latest 1.26.x) and the image's
+# `golang:1.26-alpine`, not here.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      go-minor-and-patch: { update-types: [minor, patch] }
+  - package-ecosystem: npm
+    directory: /ui
+    schedule: { interval: weekly }
+  - package-ecosystem: npm
+    directory: /e2e
+    schedule: { interval: weekly }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+  - package-ecosystem: docker
+    directory: /deploy
+    schedule: { interval: weekly }

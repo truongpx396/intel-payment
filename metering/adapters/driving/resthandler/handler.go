@@ -50,6 +50,8 @@ type Config struct {
 	UpgradeURL func(ctx context.Context, s domain.Scope) string
 	// MaxBodyBytes caps a request body. Default 1 MiB.
 	MaxBodyBytes int64
+	// RequestTimeout is the deadline every request's context is given (PAYMENT_REQUEST_TIMEOUT). Zero gives none.
+	RequestTimeout time.Duration
 
 	// Extra are routes a host adds to the table: the payment webhook receiver is the first. They are judged as the
 	// table's own are — a webhook route carries no authentication, a /v1 route always does, nothing is declared
@@ -77,7 +79,7 @@ func New(cfg Config) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return reg.Handler(Options{Auth: cfg.Auth, Logger: cfg.Logger, MaxBodyBytes: cfg.MaxBodyBytes})
+	return reg.Handler(Options{Auth: cfg.Auth, Logger: cfg.Logger, MaxBodyBytes: cfg.MaxBodyBytes, RequestTimeout: cfg.RequestTimeout})
 }
 
 // BuildRegistry is the production route table, for the checks that read it as data.

@@ -337,3 +337,36 @@ func TestADenialNamesItsLimitAndIsPublishedOnALiveBoundedContext(t *testing.T) {
 		t.Fatalf("a notification has its own deadline of at most 100ms: %v %v", p.hasDeadline, p.remaining)
 	}
 }
+
+// A realm with a rate card and no balance limit admits an unfunded scope: nothing says what a scope must hold, so nothing is
+// checked. That can be what a metering-only host wants and it can be an omission — a new host that followed the guide as it stood
+// was unmetered without knowing — and the engine does not decide which. It makes it a figure, as it does for a call with no
+// MaxCost, so an operator who did not mean it sees it (constitution XII).
+func TestAdmitCountsACallThatRanWithNoBalanceLimitToCheckItsFundsAgainst(t *testing.T) {
+	t.Parallel()
+	const metric = "metering_admit_no_balance_limit_total"
+	chat := daily("chat_daily", 100)
+	chat.Resource = "llm.chat"
+	storageBalance := balanceLimit
+	storageBalance.Resource = "storage" // a balance limit, but not one that governs a chat call
+
+	for _, tc := range []struct {
+		name   string
+		limits []domain.Limit
+		want   int64
+	}{
+		{"no limits at all", nil, 1},
+		{"only a daily limit", []domain.Limit{chat}, 1},
+		{"a balance limit for another resource", []domain.Limit{storageBalance, chat}, 1},
+		{"a balance limit that governs the call", []domain.Limit{balanceLimit, chat}, 0},
+		{"a balance limit for every resource", []domain.Limit{balanceLimit}, 0},
+	} {
+		r := newRig(t, rigOpt{limits: tc.limits})
+		if _, err := r.m.Admit(context.Background(), ws, domain.AdmitRequest{Resource: "llm.chat", Subjects: domain.Subjects{"user": "u1"}, MaxCost: 5}); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got := r.met.count(metric); got != tc.want {
+			t.Errorf("%s: %s = %d, want %d", tc.name, metric, got, tc.want)
+		}
+	}
+}

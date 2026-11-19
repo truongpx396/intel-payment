@@ -57,6 +57,7 @@ needs ~272; the compose Postgres is started with `max_connections=400`. Run repl
 | Deferred usage | `metering_record_deferred_total`, `metering_journal_pending` | zero outside an outage |
 | Fail-open | `metering_admit_failopen_total` | **zero** on a `fail_closed` deployment |
 | Uncapped admits | `metering_admit_uncapped_total` | zero once every caller passes `MaxCost` |
+| Admits with no balance limit | `metering_admit_no_balance_limit_total` | zero for a realm that sells credits: a realm with a rate card and no `scope_balance` limit admits an unfunded scope, and this counts every such call. Constant for a metering-only host that means it |
 | Pricing errors | `metering_price_error_total` | zero; non-zero means a card is missing a SKU |
 | **Webhook verification failures** | `billing_webhook_verify_failed_total` | zero. A security signal |
 | **Webhook inbox age** | `billing_webhook_inbox_age_seconds` | seconds |
@@ -221,6 +222,29 @@ restore the plan, or refund the charge at the provider. The admin API configures
 
 A `payment-worker` that cannot join the `<prefix>.balance.low.>` subscription exits `1` and says which; it does not run on
 without auto top-up.
+
+## Alert: a payment of nothing was held
+
+**Means:** the provider confirmed a payment whose amount is **zero** for a plan that costs money (a trial invoice, a coupon of
+100%), so `payment-worker` granted **nothing** and is retrying the event on its backoff (`billing_payment_underpaid_total{outcome="held"}`
+counts each attempt). Credits are minted from the plan, not from the amount, which is why it will not grant a pack for nothing.
+Left alone the event ends `dead` and pages again ([webhook inbox age, or dead events](#alert-webhook-inbox-age-or-dead-events)).
+
+The worker's log line `a verified payment settled for less than its plan costs` names the account, the payment, the plan, what was paid and
+what the plan costs. Then decide which of these it is:
+
+- **A trial or a coupon of 100% that you meant**: the engine has no trial and does not know about provider-side discounts. If the
+  customer should have credits, grant them by hand: `POST /v1/admin/adjustments` (a person and a reason are required) for what the
+  trial was meant to give. The held event keeps retrying and ends `dead` on its own, and stays as the record.
+- **A plan whose price is wrong in the catalogue** (it says it costs money and the provider sells it free): put the price right
+  (`PATCH /v1/admin/plans/{code}`). The next retry grants once.
+- **Nothing the operator did** (a leaked promotion code, a mis-mapped price): refund the payment at the provider.
+
+**A discount above nothing is not held by default.** A coupon that takes a $10.00 pack to $5.00 still grants the whole pack, as the contract says, and
+is counted on `billing_payment_underpaid_total{outcome="granted"}` with the same log line. That counter is the revenue given away; watch
+it if you run coupons. If you never do, set `PAYMENT_UNDERPAYMENT_POLICY=hold` on `payment-worker`: every payment below the plan's price is
+then held and this alert covers it too (a corrected price grants it on the next retry). A deployment that uses a provider trial as free
+credits on purpose sets `grant`, which holds nothing and only counts.
 
 ## Alert: outbound deliveries failing
 
@@ -611,8 +635,11 @@ bug — an edited card is impossible.
 
 ## Backups and retention
 
-- **Postgres** — the books. Test restores by restoring. Old ledger partitions are detached and
-  archived only once `ledger_checkpoints` covers them, so a balance stays provable after archival.
+- **Postgres** — the books. Test restores by restoring. **Nothing here detaches or archives a ledger partition for
+  you**: the ledger grows without bound (569 bytes a row measured) until an operator does it. The shard-0 audit lists the
+  partitions that may go (`DetachableLedgerPartitions`: wholly in the past, every row covered by a `ledger_checkpoints` row), and only
+  those may be detached and archived, so a balance stays provable after archival. `PAYMENT_LEDGER_ONLINE_RETENTION` and
+  `PAYMENT_USAGE_ARCHIVE_RETENTION` are documented as not read; plan the disk, and the detach job, yourself.
 - **Redis** — balances are rebuilt from the books, not restored. But it also holds undrained intents,
   which are not derived: AOF is load-bearing. Keep `appendfsync everysec` at minimum, use
   `HotAckWait`, or run `journal` settlement so an intent never depends on Redis alone.
