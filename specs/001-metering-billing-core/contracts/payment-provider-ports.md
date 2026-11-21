@@ -4,7 +4,7 @@
 
 This contract defines the layer that turns the credit engine into a monetized system. It is **strictly additive to consumption**: credits remain the single internal unit, and nothing here changes how they are spent. A payment provider converts fiat → credits (one-time top-up) or grants a recurring allotment (subscription), then the credits are created **through the same idempotent `Meter.Grant` any host would use**. The consumption hot path is untouched.
 
-> **Provenance.** Derived from the Phase 2 Billing & Payments design in [aisat-intel](https://github.com/truongpx396/aisat-intel) (`specs/draft-plan.md`, commits `e6b689d` → `cc02bc4`), elevated into a ports contract. The inbox, provider accounts, dispute lifecycle, partial-refund arithmetic and auto top-up were added in the second design review ([D34, D36, D43](../design-decisions.md#decisions-from-the-second-design-review)).
+> The inbox, provider accounts, dispute lifecycle, partial-refund arithmetic and auto top-up were added in the second design review ([D34, D36, D43](../design-decisions.md#decisions-from-the-second-design-review)).
 
 ---
 

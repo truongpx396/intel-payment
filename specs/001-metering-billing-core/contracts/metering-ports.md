@@ -4,8 +4,6 @@
 
 This contract defines the metering engine: a Redis-hot-balance + outbox + durable-ledger + reconcile machine that any host product drops in **without touching its tenancy model, its spend source, or its bus vocabulary**. Ports are given in Go (the implementation language). LLM-token metering is presented at the end as **one implementation** of these ports, not as the core.
 
-> **Provenance.** These ports were designed and hardened inside [aisat-intel](https://github.com/truongpx396/aisat-intel) as the reusability seam for its credit backbone, then extracted here with their history intact. Everything the seam promised — swap one `Pricer`, bind one `Scope`, change nothing on the money path — is now the product rather than a promise about one.
-
 ---
 
 ## Why these three seams exist
@@ -658,7 +656,7 @@ The binding that first exercised these ports was an AI product metering LLM toke
 
 | Generic port / type | LLM-metering binding |
 |---|---|
-| `Realm` | `"aisat-intel"` — one of N products on the deployment |
+| `Realm` | `"acme-ai"` — one of N products on the deployment |
 | `Scope` | `{Kind: "workspace", ID: workspace_id}`, later `{Kind: "organization", …}` — a binding change, no kernel edit |
 | `Subjects` | `{"user": member_id, "job": run_id}` from the request context |
 | `Pricer` | the `table` pricer over a card of rationals: gpt-4o input `{2500000, 1000000}`, output `{10000000, 1000000}`, cached `{1250000, 1000000}` at 1 credit = 1 µ$ |

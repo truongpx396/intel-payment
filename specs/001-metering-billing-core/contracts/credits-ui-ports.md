@@ -6,8 +6,6 @@ The server half of this system ([metering-ports.md](./metering-ports.md)) models
 
 This contract is the seam that stops it. The `credits-ui` package renders balances, limits, spend breakdowns, a ledger and a plan catalogue over an **opaque `Unit`** and an **opaque `Scope`**; only the `UnitLabels`, the registered `LedgerColumn`s, the `BreakdownSeries` and the `BillingAnchor` are product-specific.
 
-> **Provenance.** Extracted with history from [aisat-intel](https://github.com/truongpx396/aisat-intel), where it was written as the render seam for that product's credits screen.
-
 > **Framework independence.** The types below are TypeScript and framework-free. `model.ts` is pure — no React, no store, no fetch. Only the components bind to a framework; the reference implementation is React, and a Vue or Svelte port reuses `ports.ts` + `model.ts` unchanged. A host that wants none of it consumes [rest-api.md](./rest-api.md) directly and renders its own.
 
 ---
