@@ -108,6 +108,10 @@ docs or comments that imply more or less than that.
   in a file, a log line, a fixture or a commit.
 - `.claude/worktrees/` is git-ignored scratch space for agent worktrees; don't commit it or edit in it
   from the main checkout.
+- **Open engineering findings** (not yet fixed) are in
+  [docs/reviews/2026-11-21-go-engineering-review.md](docs/reviews/2026-11-21-go-engineering-review.md), each with
+  where, why, the red test to write first and how to verify. Read the entry before changing the code it names, and
+  mark it fixed there in the same PR.
 
 ## This directory's Claude configuration
 
