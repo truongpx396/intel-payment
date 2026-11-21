@@ -1,7 +1,6 @@
 # Feature Specification: Metering, Credits & Payments Core
 
 **Feature Branch**: `001-metering-billing-core` | **Status**: Design complete, implementation pending
-**Input**: Extracted from [aisat-intel](https://github.com/truongpx396/aisat-intel) — see [PROVENANCE.md](../../PROVENANCE.md)
 
 ## Overview
 

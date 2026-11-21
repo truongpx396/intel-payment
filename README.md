@@ -49,7 +49,6 @@ across rate cards over three disjoint unit spaces, so that is a test result rath
 - [🚧 Roadmap and known gaps](#-roadmap-and-known-gaps)
 - [🩺 Troubleshooting](#-troubleshooting)
 - [📚 Further reading](#-further-reading)
-- [🧬 Provenance](#-provenance)
 - [📄 License](#-license)
 
 * * *
@@ -730,12 +729,6 @@ design-system/         the credits screen design the UI was built from
 | [Constitution](.specify/memory/constitution.md) | The thirteen principles every change to the money path answers to |
 
 * * *
-
-## 🧬 Provenance
-
-Extracted from [aisat-intel](https://github.com/truongpx396/aisat-intel), where this engine was designed as that
-product's credit backbone and deliberately factored for reuse. [PROVENANCE.md](PROVENANCE.md) records what moved, what
-was generalized, and what was fixed on the way.
 
 ## 📄 License
 

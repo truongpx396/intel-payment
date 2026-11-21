@@ -2,7 +2,7 @@
 # Fails when a document still describes a RETIRED mechanism as current. The contracts are
 # normative; a contract that contradicts another is a defect even before any code exists.
 #
-# design-decisions.md and PROVENANCE.md are exempt: recording what was retired, and why, is their job.
+# design-decisions.md is exempt: recording what was retired, and why, is its job.
 # To retire another term, add a line below: <extended regex> | <what replaced it>.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -29,7 +29,7 @@ while IFS='|' read -r -a parts; do
   pattern="$(IFS='|'; echo "${parts[*]:0:$((n - 1))}")"
   # Tracked AND untracked-but-not-ignored files, so a local run catches drift before `git add`.
   hits=$(git ls-files -co --exclude-standard -- '*.md' '*.sql' '*.yml' '*.yaml' '*.lua' '*.go' '*.proto' 'Makefile' '.env.example' \
-           ':!specs/001-metering-billing-core/design-decisions.md' ':!PROVENANCE.md' \
+           ':!specs/001-metering-billing-core/design-decisions.md' \
          | xargs grep -nE "$pattern" 2>/dev/null || true)
   if [ -n "$hits" ]; then
     fail=1
