@@ -1,14 +1,10 @@
-# 💳 Intel Payment — Metering, Credits and Payments Engine
+<div align="center">
 
-### A reusable credit-metering and payments service: refuse-before-spend on Redis, the books on Postgres, money in from Stripe, Polar and PayPal
+# 💳 Intel Payment
 
-**A hot-path admission gate, exact pricing, exactly-once accounting and a single durable writer**, behind gRPC and REST,
-with a webhook door that persists a payment provider's delivery before it acknowledges it. Drop it in front of any
-product that needs to count usage, enforce budgets and take money, as a Go library or as a self-contained container.
+### Metering, Credits and Payments Engine
 
-The product-specific part is three parameters: a **rate card** (data), a **scope** with its **subjects** (your request
-context) and a **realm** (which product this is). Everything else is generic, and the conformance suites run unchanged
-across rate cards over three disjoint unit spaces, so that is a test result rather than a claim.
+A reusable credit-metering and payments service: refuse-before-spend on Redis, the books on Postgres, money in from Stripe, Polar and PayPal
 
 [![CI](https://github.com/truongpx396/intel-payment/actions/workflows/ci.yml/badge.svg)](https://github.com/truongpx396/intel-payment/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/go-1.26-00ADD8?logo=go&logoColor=white)](#-testing)
@@ -18,16 +14,16 @@ across rate cards over three disjoint unit spaces, so that is a test result rath
 [![Tests](https://img.shields.io/badge/Tests-test--first%20%C2%B7%20fuzz%20%C2%B7%20mutation-2ea44f)](#-testing)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-> **Status, stated honestly.** The **metering core**, the **payment pipeline** and the **entitlements** are built, verified
-> in CI and served by two binaries, `paymentd` and `payment-worker`. The **credits UI** ([`ui/`](ui/credits-ui/README.md)) is built and tested in jsdom and in Chromium over a live `paymentd` (with an axe-core audit), and is not published; all fourteen scheduled ticks (the subscription drift sweep among them), the operator's reconcile, recover, rehydrate, replay, sweep, unblock and adjustment requests, the drift read, the usage rollup (read by the credits snapshot for a scope's own spend, not for a member's), outbound events (signed webhooks and a cursor feed) and the parking of
-> messages the bus gave up on are built, and **post-paid invoicing**
-> ([Phase 2](specs/002-postpaid-invoicing/)) is designed, not built. The provider adapters have met their sandboxes
-> once ([docs/sandbox.md](docs/sandbox.md)): not a buyer approving a PayPal order, a paid Polar order, or a live account.
-> Sub-millisecond admission is the design target; it was load tested once, on a laptop, and the 99th percentile at the target
-> load was not shown ([docs/hardening.md](docs/hardening.md)). What a production deployment still has to decide and try is
-> [docs/production.md](docs/production.md). The task count and the gap list are in [ROADMAP.md](ROADMAP.md), which CI checks
-> against the task lists.
->
+</div>
+
+**A hot-path admission gate, exact pricing, exactly-once accounting and a single durable writer**, behind gRPC and REST,
+with a webhook door that persists a payment provider's delivery before it acknowledges it. Drop it in front of any
+product that needs to count usage, enforce budgets and take money, as a Go library or as a self-contained container.
+
+The product-specific part is three parameters: a **rate card** (data), a **scope** with its **subjects** (your request
+context) and a **realm** (which product this is). Everything else is generic, and the conformance suites run unchanged
+across rate cards over three disjoint unit spaces, so that is a test result rather than a claim.
+
 > **Scope:** a *metering, credits and payment-collection engine* for products that need an internal credit unit with
 > refuse-before-spend enforcement on the request path. If you do not need that, [ROADMAP.md](ROADMAP.md) names the
 > tools you probably want instead.
@@ -68,7 +64,8 @@ across rate cards over three disjoint unit spaces, so that is a test result rath
 | 🔌 Transports | **gRPC** and **REST** (OpenAPI) behind a service credential, bearer or mTLS; a Go client, and TypeScript and Python clients generated from the OpenAPI document |
 | 🚌 Bus | **Redis Streams** by default; **NATS JetStream** optional, for downstream replication |
 | 💳 Payments | **Stripe**, **Polar** and **PayPal** behind one provider port; signed webhooks into a Postgres inbox |
-| 📈 Observability | **OpenTelemetry** metrics exposed at `/metrics` in the Prometheus format |
+| 📣 Events | Signed, retried outbound webhooks to hosts, and a cursor feed (`GET /v1/events`) |
+| 📈 Observability | **OpenTelemetry** metrics in the Prometheus format on a listener of their own, and a Prometheus alert catalogue ([`deploy/alerts.yml`](deploy/alerts.yml)) held equal to the runbook by a test |
 | 🧪 Quality | Testcontainers, Playwright, `gremlins` mutation testing, fuzz targets, `go-arch-lint` + `depguard`, `govulncheck`, `gitleaks` |
 
 **Built and verified**
@@ -86,12 +83,13 @@ across rate cards over three disjoint unit spaces, so that is a test result rath
 - 📝 **Configuration you can trust.** An admin API for rate cards, ceilings, pools, plans, provider prices, provider accounts and customers; the database itself audits every change, even a direct SQL write.
 - 🎫 **Entitlements as data.** Flags, quotas and enums resolved with `override > subscription > default`, a grace window that lapses at the nanosecond, and provenance for every grant; `-1` is unlimited and is never compared as a number. A refusal says why in words and names the plan that would permit it. Served over REST and gRPC as a batch `Check`, cached with a bound and evicted the moment a subscription, an override or the configuration changes; the same resolution sizes any ceiling a plan sizes (`max_entitlement`).
 - 📦 **Library or container.** The same ports embedded in-process or behind gRPC and REST; a `Meter` behind gRPC is shown to be the same value as the engine, by a suite that is itself shown to reject five broken transports.
+- 📣 **Outbound events, so hosts never touch internals.** `payment-worker` records what the engine announces, sends it to each subscribed endpoint as a signed, retried webhook behind an SSRF guard, and purges it past retention; `paymentd` serves the same events as a cursor feed. Only the types in [outbound-events.md](specs/001-metering-billing-core/contracts/outbound-events.md#what-is-built) are emitted, and an endpoint is a SQL row for now (no admin API).
+- 🛠️ **The operator's requests and the scheduled work.** Reconcile, shard recovery, rehydrate, dead-letter replay, the subscription drift sweep, unblock and adjustment are recorded by `paymentd` (the person, a reason, an `Idempotency-Key`; it answers `202`) and done by `payment-worker`, which also serves fourteen idempotent scheduled ticks and parks every message the bus gave up on in `dead_letters`, paging once.
 - 🖼️ **A credits UI** ([`ui/`](ui/credits-ui/README.md)): balances per pool, ceilings (however many), spend, a ledger and plans over an opaque unit — a framework-free model, React components, and a reference binding. It never says a payment succeeded because the browser came back from checkout, refuses a float where an integer is meant, and is shown to pack, install into an unrelated app and build. Tested in jsdom and in Chromium over a live server, with an accessibility audit; not on a registry.
 - 🧱 **A boundary you cannot cross by accident.** `go-arch-lint` and `depguard` make the portability guarantee a CI gate, and `check-spec-drift` does the same for the contracts.
 
 **Designed, not built**
 
-- 📣 **Outbound events**: signed, retried webhooks and a cursor feed, so hosts never touch internals.
 - 🧾 **Post-paid invoicing**: rating, tiered schedules, commitments, immutable invoices and credit notes ([Phase 2](specs/002-postpaid-invoicing/)).
 
 * * *
@@ -121,8 +119,9 @@ flowchart TB
     subgraph paymentd_sg["paymentd (REST :8080, gRPC :9090)"]
         Metering["/v1 metering<br/>admit, record, grant, transfer,<br/>balance, ledger, credits"]
         PayRoutes["/v1 payments<br/>plans, checkout, subscription, portal,<br/>auto-recharge, payments, fulfilment"]
-        Admin["/v1/admin<br/>every change audited"]
+        Admin["/v1/admin<br/>every change audited;<br/>an operator's request is recorded, then done by the worker"]
         Entitlements["/v1 entitlements + entitlement.v1<br/>batch check, resolve"]
+        Feed["GET /v1/events<br/>the cursor feed"]
         Door["POST /webhooks/{provider}/{account}<br/>verify the raw body, persist, then 200"]
     end
 
@@ -132,6 +131,8 @@ flowchart TB
         Relay["Config relay<br/>a configuration change reaches every cache"]
         Processor["Webhook processor<br/>leases, retries, parked-delivery retry"]
         AutoTopUp["Auto top-up<br/>(Stripe only)"]
+        Outbound["Outbound events<br/>record, sign, send, retry, purge"]
+        Ticks["Scheduled ticks and operator requests<br/>reconcile, recover, replay, unblock, adjust"]
     end
 
     Redis[("Redis, single or Cluster<br/>hot balances + the outbox STREAM<br/>one Function per op, one shard slot")]
@@ -158,7 +159,6 @@ flowchart TB
     UI["credits-ui<br/>(ui/: built; jsdom and browser tested)"]
 
     subgraph planned_sg["Designed, not built"]
-        Events["events/<br/>signed outbound webhooks, cursor feed"]
         Invoicing["Post-paid invoicing<br/>(Phase 2)"]
     end
 
@@ -166,11 +166,15 @@ flowchart TB
     Entitlements -->|"cached, evicted by announcements"| Postgres
     Entitlements -->|"QuotaSource: sizes a limit by the plan"| Metering
     Postgres -->|"config relay: LISTEN to the bus"| Relay
-    Events -.-> host_sg
+    Host -->|"read the feed"| Feed
+    Feed --> Postgres
+    Outbound -->|"record, then send"| Postgres
+    Outbound -.->|"signed, retried webhooks"| host_sg
+    Postgres -->|"admin_operations"| Ticks
     UI -.-> Metering
 
     classDef planned stroke-dasharray: 5 5,color:#888
-    class Events,Invoicing planned
+    class Invoicing planned
 ```
 
 - 🧱 **Ports and adapters.** `metering/` and `billing/` are each `domain` → `ports` → `app` → `adapters/{driven,driving}`. `billing/` depends on metering's *ports* only; `metering/` never imports `billing`, `entitlement`, `events` or `cmd` (`make verify-portability`). `os.Getenv` is called only in `cmd/`, and there is no `time.Now` in the core.
@@ -192,7 +196,7 @@ flowchart TB
 
 - 🏷️ **Multi-product**: one deployment, one realm per product. Plans, cards, ceilings, pools, provider accounts, credentials and idempotency keys are all realm-partitioned.
 - 🌐 **Region**: one home region, with Postgres replicated to a DR region and Redis rebuilt from the books. Active-active is out of scope by decision ([D45](specs/001-metering-billing-core/design-decisions.md)).
-- 📦 **What ships for production**: a distroless, non-root image, the Redis ACL, and `make verify-deploy`, which builds the image, migrates an empty Postgres and proves the ACL by attempting what it forbids. **No production compose file, orchestrator manifests or infrastructure-as-code ship here**, and [the runbook](docs/operations.md) is written from reasoning, not from an incident.
+- 📦 **What ships for production**: a distroless, non-root image, the Redis ACL, the Prometheus alert rules ([`deploy/alerts.yml`](deploy/alerts.yml)), and `make verify-deploy`, which builds the image, migrates an empty Postgres and proves the ACL by attempting what it forbids. **No production compose file, orchestrator manifests or infrastructure-as-code ship here**, nor do dashboards or the routing of an alert to a person; [docs/production.md](docs/production.md) lists what a production manifest must say, and [the runbook](docs/operations.md) was exercised against injected faults, not in an incident.
 - 🔀 **Rollout order**: `make migrate` → `payment-worker` → `paymentd`. `/readyz` fails while the schema is behind head, so wire it as the rollout gate.
 
 * * *
@@ -343,7 +347,7 @@ curl -s "localhost:8080/v1/ledger?scope_kind=organization&scope_id=org_1&limit=1
 | Any call with no `Authorization` header | 🔑 `401 unauthenticated` |
 | The `record` token on `POST /v1/grant`, or on `/v1/admin/*` | 🚦 `403 forbidden`: the credential holds `record`, the call needs `grant` or `admin` |
 | `GET /readyz` | 🩺 `{"status":"ready","migrations":"head","shards":256}`; it fails while the schema is behind head |
-| `GET /metrics` | 📈 Prometheus text: `metering_admit_latency_seconds`, `metering_admit_denied_total`, … |
+| `GET /metrics` on `PAYMENT_METRICS_ADDR` (`:9092` in the compose stack) | 📈 Prometheus text: `metering_admit_latency_seconds`, `metering_admit_denied_total`, … It has no credential, so it is on a listener of its own that the compose stack deliberately does not publish: `:8080` does not serve it |
 
 **🔬 Beyond the API**
 
@@ -373,6 +377,8 @@ moves credits or changes a subscription, `admin` for configuration. The normativ
 | `POST /v1/transfer` · `GET /v1/transfers/{key}` | grant | Move credits between two scopes of one realm · where a transfer is |
 | `GET /v1/balance` · `/v1/ledger` · `/v1/credits` | record | A scope's balance · its booked rows, newest first · everything a credits screen shows |
 | `GET /v1/plans` | record | What the realm sells, in one currency |
+| `GET /v1/entitlements` · `POST /v1/entitlements/check` | record | Every effective grant for a scope, with where it came from · a batch check whose refusal says why (also gRPC `entitlement.v1`) |
+| `GET /v1/events` | record | The outbound event feed, a cursor over every realm the credential covers |
 | `POST /v1/checkout` · `GET /v1/portal` | record | Start a hosted checkout · the provider's page for cards and invoices |
 | `GET /v1/subscription` | record | The scope's subscription, or `null` |
 | `POST /v1/subscription/change` · `/cancel` | grant | Ask the provider to move or end the subscription (accepted, never reported as made) |
@@ -382,8 +388,10 @@ moves credits or changes a subscription, `admin` for configuration. The normativ
 | `/v1/admin/limits/{name}` · `/v1/admin/pools/{name}` | admin | Create, replace, read or remove a ceiling · a pool |
 | `/v1/admin/plans` · `/{code}` · `/{code}/provider-prices/{account}/{currency}` | admin | Plans, taking them on or off sale, and mapping a price to the provider's |
 | `/v1/admin/provider-accounts` · `/v1/admin/customers` | admin | Provider accounts (secrets are references) · linking a scope to a provider customer |
+| `POST /v1/admin/reconcile` · `/shards/{shard}/recover` · `/rehydrate` · `/dead-letters/{id}/replay` · `/subdrift` · `/unblock` · `/adjustments` | admin | An operator's request. `paymentd` has no writer, so it records the request and answers `202`; `payment-worker` does it. Each needs an `Idempotency-Key`, an `actor` and a `reason` |
+| `GET /v1/admin/operations/{id}` · `GET /v1/admin/drift` | admin | How a request went · the recent reconcile runs and the asking realm's own findings |
 | `POST /webhooks/{provider}/{account}` | signature | The provider's delivery. No credential, no CORS: the signature is the credential |
-| `GET /healthz` · `/readyz` · `/metrics` | none | Up · may be sent traffic · Prometheus exposition (`/metrics` is on `PAYMENT_METRICS_ADDR` unless the API listener is loopback) |
+| `GET /healthz` · `/readyz` · `/metrics` | none | Up · may be sent traffic · Prometheus exposition (`/metrics` is on `PAYMENT_METRICS_ADDR`, which `paymentd` requires unless the API listener is loopback or a unix socket) |
 
 Admin writes take `actor` and `reason` in the body; every change is audited.
 
@@ -418,6 +426,7 @@ admin API, so launching a price, a ceiling, a pool or a plan needs no deploy; **
 | `NegativeBalancePolicy` | `allow_debt` · `clamp_to_zero` · `block_and_flag` | `clamp_to_zero` | What a refund past consumed credits does |
 | `CreditExpiry` | `off` · `lots_fefo` | `off` | Whether grants expire; the lot that lapses soonest is spent first |
 | `PlanChangePolicy` | `at_period_end` · `immediate_prorate` · `immediate_no_prorate` | `at_period_end` | Mid-period upgrades |
+| `UnderpaymentPolicy` | `hold_zero` · `hold` · `grant` | `hold_zero` | A verified payment that settled for less than its plan costs. Credits come from the plan, not the amount: `hold_zero` holds a payment of nothing for an operator and grants a discounted one in full (counted), `hold` holds anything below the price, `grant` holds nothing |
 | `TaxStrategy` | `provider_managed` · `none` (`external_hook` when embedded as a library) | `provider_managed` | **Who** computes tax. The binary refuses `external_hook`: it cannot be given your tax service |
 | Dunning | grace days · suspend-after | `7` · `14` | How long a failed payment keeps access. Grace is enforced by the entitlements, which lapse at the instant it ends; suspend-after is read by nothing (no suspension stage is built) |
 
@@ -436,6 +445,7 @@ A purchase is only ever believed when the provider's webhook says so. The flow, 
 4. A purchase grants credits through `Meter.Grant`, exactly once. The host polls `GET /v1/fulfilment` and watches `processing` → `granted`.
 
 - ↩️ **Refunds are cumulative** and take back exactly the credits owed. A **chargeback** and a **won dispute** are exact inverses. Out-of-order deliveries are handled exactly.
+- 🧮 **Credits come from the plan, never from the amount paid.** A verified payment of *nothing* for a paid plan (a trial invoice, a 100% coupon) is held for an operator rather than granted, retried, and pages when its retries run out; a discounted one is granted in full and counted. `PAYMENT_UNDERPAYMENT_POLICY` (`hold_zero` by default) changes that.
 - ⏳ **A failed payment opens a grace window** (`PAYMENT_DUNNING_GRACE_DAYS`, 7 by default).
 - 🔋 **Auto top-up** charges the saved card when a pool falls under its threshold, at most `max_per_day` times a day. It works on **Stripe only**: Polar and PayPal cannot charge a saved method.
 - 🅿️ **PayPal** verifies each delivery with an API call to PayPal, and parks the delivery for retry when PayPal cannot answer.
@@ -498,9 +508,10 @@ Each one exists because its absence produces a specific money bug. The full list
 
 ## 📊 Observability
 
-- 📈 **Metrics:** OpenTelemetry instruments exposed at `/metrics` in the Prometheus format. Every terminal state emits a **named** metric, and the names are part of the contract (`metering/ports/metrics.go`, `billing/ports/metrics.go`).
+- 📈 **Metrics:** OpenTelemetry instruments exposed at `/metrics` in the Prometheus format, on a listener of their own (`PAYMENT_METRICS_ADDR`) because the route carries no credential; `payment-worker` serves its own on `PAYMENT_WORKER_ADDR`. Every terminal state emits a **named** metric, and the names are part of the contract (`metering/ports/metrics.go`, `billing/ports/metrics.go`).
 - 🩺 **Health:** `/healthz` says the process is up; `/readyz` says it may be sent traffic and fails while the schema is behind head.
 - 🪪 **Audit:** the database writes every configuration change to `audit_log`, even a direct SQL change.
+- 🚨 **Alerts:** [`deploy/alerts.yml`](deploy/alerts.yml) holds the Prometheus rules, each linking to its runbook entry. A test holds the two to one set and every metric either names to the ones the components export (`make test`); it does not parse the expressions, so run `promtool check rules deploy/alerts.yml` before loading them, and treat each threshold as a default.
 - 📓 **Runbook:** [docs/operations.md](docs/operations.md) has one entry per alert, each naming the metric that fires it.
 
 | Watch | Metric | Healthy |
@@ -513,8 +524,8 @@ Each one exists because its absence produces a specific money bug. The full list
 | **Webhook verification failures** | `billing_webhook_verify_failed_total` | Zero. A security signal |
 | Webhook inbox age | `billing_webhook_inbox_age_seconds` | Seconds |
 
-⚠️ **No alert rules or dashboards ship in this repository**, and the runbook has not been exercised in an incident.
-The table is what to build; [docs/operations.md](docs/operations.md) says what to page on.
+⚠️ **No dashboards ship in this repository, and nothing routes an alert to a person** (the Alertmanager receivers and the on-call schedule are the deployment's). The runbook was exercised in part against injected faults, not in an incident ([docs/hardening.md](docs/hardening.md)).
+The table is what to chart; [docs/operations.md](docs/operations.md) says what to page on.
 
 * * *
 
@@ -526,7 +537,7 @@ shape, properties and fuzzing, and when mutation testing applies.
 
 | Tier | Command | Needs | In CI | Proves |
 |---|---|---|---|---|
-| 🧪 Unit and conformance | `make test` | nothing | `go` | The domain, `app`, the pricers, and every conformance suite (`PricerContract`, `LedgerContract`, `LedgerWriterContract`, `ConsistencyContract`, `BusContract`), with `-race -shuffle=on` |
+| 🧪 Unit and conformance | `make test` | nothing | `go` | The domain, `app`, the pricers, every conformance suite (`PricerContract`, `LedgerContract`, `LedgerWriterContract`, `ConsistencyContract`, `BusContract`), and the check that the alert rules and the runbook are one set, with `-race -shuffle=on` |
 | 🐳 Integration | `make test-integration` | Docker | `go` | A real Redis and Postgres (Testcontainers): the writer, recovery, migrations, the transports and the payment routes |
 | 🔁 Equivalence | `make verify-equivalence` | Docker | `go` | A `Meter` behind gRPC is the same value as the engine, and the suite rejects five broken transports |
 | 🎲 Fuzz | `make fuzz` | nothing | `fuzz` (short) and nightly (deep) | Arithmetic, encodings and time logic |
@@ -536,13 +547,16 @@ shape, properties and fuzzing, and when mutation testing applies.
 | 🗄️ Schema | `make verify-schema` | Docker | `migrations` | Every migration, the seed and behavioural assertions on an empty Postgres, plus the Phase 2 draft |
 | ⚡ Hot path | `make verify-hot-path` | Docker | `hot-path` | The reference Redis Functions on Redis in cluster mode |
 | 🚢 Deploy | `make verify-deploy` | Docker | `deploy` | The image builds, an empty Postgres migrates, and the Redis ACL refuses what it should |
-| 🌐 End to end | `make e2e` | `make up`, Node | `e2e` | Playwright against the built image: health and credential checks |
+| 📏 Hardening | `make hardening` | Docker, an otherwise idle machine | none (not in `make ci` either) | Load, chaos, security and recovery **measurements**, not gates; what they showed and did not show is [docs/hardening.md](docs/hardening.md) |
+| 🌐 End to end | `make e2e` | `make up`, Node (the `ui` project also needs a service token and `make e2e-seed`, [e2e/README.md](e2e/README.md)) | `e2e` | Playwright against the built image: health and credential checks (the `api` project, 10 tests), and the credits screen in Chromium over a live `paymentd` with an axe-core audit (the `ui` project, 21 tests) |
 | 🧰 Clients | `make verify-clients` | Node ≥ 22, Python ≥ 3.11, network | `clients` | The TypeScript and Python clients generated from OpenAPI compile and round-trip an `Admit` |
-| 🖼️ Credits UI | `make ui-ci` | Node ≥ 22.12, network | `ui` | Lint and the boundary guards (each shown to reject a planted violation), types, 176 unit / property / render tests, and the package packed, installed into an unrelated app and built |
+| 🖼️ Credits UI | `make ui-ci` | Node ≥ 22.12, network | `ui` | Lint and the boundary guards (each shown to reject a planted violation), types, 211 unit / property / render tests, and the package packed, installed into an unrelated app and built |
 | 📜 Documents | `scripts/check-spec-drift.sh` | nothing | `drift`, `docs` | No document describes a retired mechanism as current, ROADMAP's task counts match `tasks.md`, and no relative link dangles |
 
-`make ci` runs the local equivalents of all of it **except** `verify-schema`, `verify-clients`, the e2e suite and the two
-gates that need a branch history (`verify-red-green`, `mutation-diff`): run those before opening a pull request.
+`make ci` runs the Go side: build, `proto-check`, tests, fuzz, integration, lint, portability, boundary, the TDD-gate checks,
+equivalence, `vuln`, hot path and deploy. It does **not** run `verify-schema`, `verify-clients`, `make ui-ci`, the e2e suite,
+`scripts/check-spec-drift.sh`, `make secrets`, `make hardening` or the two gates that need a branch history
+(`verify-red-green`, `mutation-diff`): run the ones your change touches before opening a pull request.
 `internal/chaos` is a fault-injecting proxy the integration tests use; `internal/pgtest` is their Postgres fixture.
 
 **Contributing.** Go 1.26+. Work happens on a branch and arrives as a pull request. The rules a change to the money path
@@ -580,18 +594,20 @@ answers to are the [constitution](.specify/memory/constitution.md); [CLAUDE.md](
 | `make test` · `make test-integration` | Unit and conformance (parallel, shuffled, race detector) · real Redis and Postgres (Docker) |
 | `make fuzz` · `make mutation` · `make mutation-diff` | Search the fuzz targets · mutation-test every target · mutation-test only the lines changed since `REF` |
 | `make verify-red-green` · `make verify-tdd-gates` | The branch was test-driven · the TDD gates refuse what they should |
+| `make hardening` | Load, chaos, security and recovery measurements (Docker; minutes; on an idle machine; not in `make ci`) |
 | **🔎 Verify** | |
 | `make verify-schema` · `make verify-hot-path` · `make verify-deploy` | Migrations and seed · the Redis Functions on a cluster · the image and the Redis ACL |
 | `make verify-clients` · `make verify-equivalence` | The generated clients · the transport-equivalence suite |
-| `make ui-ci` (`ui-lint` · `ui-test` · `verify-ui-boundary` · `verify-ui-portability`) | The credits UI: lint and guards · types and tests · each guard rejects a plant · pack, install into an unrelated app, build |
+| `make ui-ci` (`ui-install` · `ui-lint` · `ui-test` · `verify-ui-boundary` · `verify-ui-portability`; `ui-build` builds the package alone) | The credits UI: install · lint and guards · types and tests · each guard rejects a plant · pack, install into an unrelated app, build |
 | `make verify-portability` · `make verify-boundary` | `metering/` stands alone · the boundary gates reject violations |
 | **🧹 Quality** | |
 | `make fmt` · `make lint` · `make arch-lint` | Format · `golangci-lint` and the architecture graph · the architecture graph alone |
+| `make check-plan-branches` | No `if plan == "pro"` in production Go: entitlements are data |
 | `make vuln` · `make secrets` | `govulncheck` · `gitleaks` |
 | **🔌 API** | |
 | `make proto-tools` · `make proto` · `make proto-check` | Install the pinned generators · regenerate `api/meteringv1` · the generated code is current and breaks nothing |
 | **🌐 End to end** | |
-| `make e2e-install` · `make e2e` | Install the e2e dependencies · run Playwright against `E2E_BASE_URL` (the local stack by default) |
+| `make e2e-install` · `make e2e-seed` · `make e2e` | Install the e2e dependencies · give the running stack's realm the rate card and ceilings the browser tests need · run Playwright against `E2E_BASE_URL` (the local stack by default) |
 | **🏁 Everything** | |
 | `make ci` | What CI runs on every change (see [Testing](#-testing) for what it leaves out) |
 
@@ -620,8 +636,13 @@ entitlement/           what a plan unlocks; depends on metering's ports only (ne
   adapters/driven/     postgres
   adapters/driving/    entitlementhttp, entitlementgrpc, and the entitlementwire they share
   contracts/           the Entitler and store conformance suites and the in-memory store
-events/                designed; doc.go stub
-cmd/                   paymentd, payment-worker, payment-migrate; internal/{entitlements,envcfg,payments,wiring}
+events/                outbound delivery to hosts; depends on metering's ports only
+  (root)               the envelope, signature, retry schedule, SSRF guard and ids — pure
+  app/                 the recorder, the dispatcher (signed, retried webhooks) and the cursor feed
+  adapters/driven/     postgres, httpsend
+  adapters/driving/    eventshttp (GET /v1/events)
+  contracts/           the store conformance suite and the in-memory store
+cmd/                   paymentd, payment-worker, payment-migrate; internal/{entitlements,envcfg,events,payments,wiring}
 api/                   proto/ (buf), meteringv1/ and entitlementv1/ (generated Go), openapi/v1.yaml
 migrations/ migrate/   0001–0005, forward-only, and the migrator that applies them
 specs/                 001-metering-billing-core (spec, plan, tasks, decisions, contracts/) and 002-postpaid-invoicing (draft)
@@ -629,8 +650,8 @@ integration/           Testcontainers stack tests: writer, recovery, transports,
 internal/              pgtest (Postgres fixture), chaos (fault-injecting proxy)
 e2e/                   Playwright against the built image
 scripts/               every verification gate, seed.sql, the drift and task-pair checks
-deploy/                docker-compose.yml, the Dockerfile, the Redis ACL
-docs/                  configuration, integration-guide, operations, security, sandbox, testing
+deploy/                docker-compose.yml, the Dockerfile, the Redis ACL, alerts.yml (the Prometheus rules)
+docs/                  configuration, integration-guide, operations, production, security, hardening, sandbox, testing
 ui/                    credits-ui (the package) and examples/llm-credits (the reference binding); an npm workspace
 design-system/         the credits screen design the UI was built from
 .specify/memory/       the constitution
@@ -661,6 +682,7 @@ design-system/         the credits screen design the UI was built from
 - **Auto top-up works on Stripe only**; Polar and PayPal cannot charge a saved method.
 - **A provider's `4xx` reaches a host as `500 internal`** rather than `502 provider_error`, and a webhook about a customer not yet linked (`PUT /v1/admin/customers`) is ignored.
 - **Load tested, security reviewed and the runbook exercised, each in part, once, on a laptop** ([docs/hardening.md](docs/hardening.md)). The 99th percentile at the target load, Redis Cluster, a production network, the Postgres half of a region failover and every checklist item a deployment owns are not shown; [docs/production.md](docs/production.md) lists what to try before real money.
+- **Retention is the operator's.** Nothing detaches or archives a ledger partition, and `PAYMENT_LEDGER_ONLINE_RETENTION` and `PAYMENT_USAGE_ARCHIVE_RETENTION` are documented as **not read**: the ledger (569 bytes a row measured) and the per-event usage archive grow until an operator removes them. The shard-0 audit reports which ledger partitions are covered by checkpoints and so may be detached ([docs/operations.md](docs/operations.md#backups-and-retention)). What *is* bounded: the usage idempotency guard rotates its daily partitions, and `payment-worker` purges processed webhook events and outbound events past their retention.
 - **A GDPR erasure story** is designed nowhere yet. The billing tables hold `billing_email` and `actor_id`, and ledger rows must survive an erasure request for audit, so the answer is pseudonymization rather than deletion.
 - **Dunning's `suspend-after` is read by nothing.** Entitlements lapse when the grace window ends; no suspension stage after it is built.
 - **One Postgres connection per shard** per `payment-worker`, so a worker at 256 shards needs about 272.
@@ -679,6 +701,8 @@ design-system/         the credits screen design the UI was built from
 | `400 invalid_request: actor is required` on an admin write | Admin writes take `actor` and `reason` in the body |
 | `409 idempotency_conflict` | Expected: the same `Idempotency-Key` was sent with a different request. A new request needs a new key |
 | `paymentd` exits at start-up: `PAYMENT_CHECKOUT_RETURN_HOSTS must be a comma-separated list…` | Your `.env` was copied from an older `.env.example`: Compose reads `KEY=   # comment` as the value `# comment`. Put the comment on its own line (the current `.env.example` does) |
+| `paymentd` exits at start-up: `PAYMENT_METRICS_ADDR: is required while PAYMENT_HTTP_ADDR=… can be reached by others` | `/metrics` carries no credential, so it needs a listener of its own. Set `PAYMENT_METRICS_ADDR` (`.env.example` has `:9092`) and keep that port off any public network, or keep the API listener on loopback or a unix socket |
+| A verified purchase never reaches `granted` | If it settled for **nothing** (a trial invoice, a 100% coupon), the default `PAYMENT_UNDERPAYMENT_POLICY=hold_zero` holds it for an operator and the `BillingPaymentHeldUnderpaid` alert pages: [the runbook entry](docs/operations.md#alert-a-payment-of-nothing-was-held) |
 | `make up` cannot start `paymentd` | Something else holds host port 8080 or 9090; `paymentd`'s ports are fixed in `deploy/docker-compose.yml`. Move Postgres and Redis with `PAYMENT_POSTGRES_PORT` and `PAYMENT_REDIS_PORT` |
 | `/readyz` is not ready | The schema is behind head, or the configured shard count disagrees with `hot_config`. Run `make migrate` |
 | Changed `PAYMENT_SHARDS` after the first start | It cannot be changed without a reshard ([operations](docs/operations.md#resharding)) |
@@ -695,13 +719,13 @@ design-system/         the credits screen design the UI was built from
 | [**Integration guide**](docs/integration-guide.md) | Adopting it in a host, end to end, plus the anti-patterns |
 | [**Contracts**](specs/001-metering-billing-core/contracts/) | The normative surface: ports, invariants, conformance suites |
 | [Hot-path consistency](specs/001-metering-billing-core/contracts/hot-path-consistency.md) | How Redis and Postgres stay consistent: key layout, watermark, suspense, recovery |
-| [Payment providers](specs/001-metering-billing-core/contracts/payment-provider-ports.md) · [Outbound events](specs/001-metering-billing-core/contracts/outbound-events.md) | The provider port every adapter meets · how hosts will hear what happened |
+| [Payment providers](specs/001-metering-billing-core/contracts/payment-provider-ports.md) · [Outbound events](specs/001-metering-billing-core/contracts/outbound-events.md) | The provider port every adapter meets · how hosts hear what happened, and which types are emitted so far |
 | [Sandbox rehearsal](docs/sandbox.md) | What the provider adapters have met, what they found, and what is still owed |
 | [Spec](specs/001-metering-billing-core/spec.md) · [Data model](specs/001-metering-billing-core/data-model.md) | Requirements and success criteria · the schema and why each constraint exists |
 | [Design decisions](specs/001-metering-billing-core/design-decisions.md) | Every decision, with what was rejected, including the two design reviews |
 | [Plan](specs/001-metering-billing-core/plan.md) · [Tasks](specs/001-metering-billing-core/tasks.md) | The scale envelope, the build order, the task list |
 | [Post-paid invoicing (Phase 2)](specs/002-postpaid-invoicing/) | Rating, tiered schedules, commitments, immutable invoices, credit notes |
-| [Configuration](docs/configuration.md) · [Production](docs/production.md) · [Security](docs/security.md) · [Operations](docs/operations.md) · [Testing](docs/testing.md) | Every knob · what a deployment decides and has not yet tried · the threat model · the runbook · how the TDD gates work |
+| [Configuration](docs/configuration.md) · [Production](docs/production.md) · [Security](docs/security.md) · [Operations](docs/operations.md) · [Hardening](docs/hardening.md) · [Testing](docs/testing.md) | Every knob · what a deployment decides and has not yet tried · the threat model · the runbook · what was measured, and what was not · how the TDD gates work |
 | [Migrations](migrations/README.md) · [Redis ACL](deploy/redis/README.md) · [End-to-end tests](e2e/README.md) | Why they are forward-only · the money store's access rules · running Playwright |
 | [Constitution](.specify/memory/constitution.md) | The thirteen principles every change to the money path answers to |
 
