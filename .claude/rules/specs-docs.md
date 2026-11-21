@@ -4,7 +4,6 @@ paths:
   - "docs/**"
   - "README.md"
   - "ROADMAP.md"
-  - "PROVENANCE.md"
   - ".specify/**"
 ---
 
@@ -19,7 +18,7 @@ The documents here are checked by CI, and a stale one has already been a defect.
   Contract text and a conformance suite move together.
 - **`scripts/check-spec-drift.sh` must pass** (CI job `drift`; the Stop hook runs it too). It fails when a
   document describes a retired mechanism as current — to retire another term, add a line to the script.
-  `design-decisions.md` and `PROVENANCE.md` are exempt: recording what was retired is their job.
+  `design-decisions.md` is exempt: recording what was retired is its job.
 - **Status is derived, not asserted.** ROADMAP.md must state each spec's task count exactly as its
   `tasks.md` has it; marking a task `[x]` means editing ROADMAP.md in the same change. `[x]` means done
   **and verified**, with the verification named. Never write "implemented" for something CI does not

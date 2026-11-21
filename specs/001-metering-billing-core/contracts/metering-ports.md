@@ -4,7 +4,7 @@
 
 This contract defines the metering engine: a Redis-hot-balance + outbox + durable-ledger + reconcile machine that any host product drops in **without touching its tenancy model, its spend source, or its bus vocabulary**. Ports are given in Go (the implementation language). LLM-token metering is presented at the end as **one implementation** of these ports, not as the core.
 
-> **Provenance.** These ports were designed and hardened inside [aisat-intel](https://github.com/truongpx396/aisat-intel) as the reusability seam for its credit backbone, then extracted here with their history intact. See [PROVENANCE.md](../../../PROVENANCE.md). Everything the seam promised — swap one `Pricer`, bind one `Scope`, change nothing on the money path — is now the product rather than a promise about one.
+> **Provenance.** These ports were designed and hardened inside [aisat-intel](https://github.com/truongpx396/aisat-intel) as the reusability seam for its credit backbone, then extracted here with their history intact. Everything the seam promised — swap one `Pricer`, bind one `Scope`, change nothing on the money path — is now the product rather than a promise about one.
 
 ---
 
